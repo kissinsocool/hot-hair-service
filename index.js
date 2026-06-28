@@ -11,6 +11,10 @@ const { WebSocketServer } = require('ws');
 
 const app = express();
 const PORT = 3000;
+const AMAP_WEB_SERVICE_KEY =
+  process.env.AMAP_WEB_SERVICE_KEY ||
+  process.env.AMAP_WEB_KEY ||
+  '2285f50755ccb6f5339886b84b2c4039';
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
@@ -25,10 +29,11 @@ app.use('/uploads', express.static(uploadDir));
 const dataDir = path.join(__dirname, 'data');
 const favoritesFile = path.join(dataDir, 'favorites.json');
 fs.mkdirSync(dataDir, { recursive: true });
+const DEMO_USER_ID = 'demo';
 
 const bookingSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
-  userId: { type: String, default: 'demo-user', index: true },
+  userId: { type: String, default: DEMO_USER_ID, index: true },
   userName: { type: String, default: 'Demo 用户' },
   salonId: String,
   salonName: String,
@@ -63,7 +68,7 @@ const userPolicySchema = new mongoose.Schema({
 }, { timestamps: true });
 
 const favoriteSalonSchema = new mongoose.Schema({
-  userId: { type: String, default: 'demo-user', index: true },
+  userId: { type: String, default: DEMO_USER_ID, index: true },
   salonId: { type: String, required: true, index: true },
   salon: { type: mongoose.Schema.Types.Mixed, required: true },
 }, { timestamps: true });
@@ -76,6 +81,7 @@ const salonSchema = new mongoose.Schema({
   address: String,
   addressRegion: mongoose.Schema.Types.Mixed,
   addressDetail: String,
+  location: mongoose.Schema.Types.Mixed,
   rating: Number,
   image: String,
   images: [String],
@@ -92,6 +98,10 @@ const salonSchema = new mongoose.Schema({
   licenseRejectReason: { type: String, default: '' },
   licenseSubmittedAt: Date,
   licenseReviewedAt: Date,
+  contentReviewStatus: { type: String, default: 'pending', index: true },
+  contentRejectReason: { type: String, default: '' },
+  contentReviewedAt: Date,
+  pendingContent: mongoose.Schema.Types.Mixed,
 }, { timestamps: true });
 
 const staffProfileSchema = new mongoose.Schema({
@@ -112,6 +122,7 @@ const merchantUserSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true, index: true },
   displayName: String,
   salonId: { type: String, default: '1', index: true },
+  deposit: { type: Number, default: 0 },
   role: { type: String, default: 'merchant' },
   passwordHash: { type: String, required: true },
   passwordSalt: { type: String, required: true },
@@ -169,6 +180,24 @@ const normalizePhone = (phone) => String(phone || '').replace(/\D/g, '');
 
 const isValidPhone = (phone) => /^1\d{10}$/.test(phone);
 
+const normalizeClientAccount = (account) => {
+  const trimmed = String(account || '').trim();
+  const phone = normalizePhone(trimmed);
+  return isValidPhone(phone) ? phone : trimmed;
+};
+
+const normalizeUserId = (id) => String(id || '').trim().replace(/^user-/, '');
+
+const userIdAliases = (id) => {
+  const normalized = normalizeUserId(id);
+  if (!normalized) return [];
+  return normalized === DEMO_USER_ID
+    ? [DEMO_USER_ID, 'user-demo', 'demo-user']
+    : [normalized, `user-${normalized}`];
+};
+
+const newClientUserId = () => crypto.randomUUID();
+
 const maskPhone = (phone) =>
   phone.length === 11 ? `${phone.slice(0, 3)}****${phone.slice(7)}` : phone;
 
@@ -180,8 +209,35 @@ const buildMerchantUserPayload = (user) => ({
   username: user.username,
   displayName: user.displayName,
   salonId: user.salonId,
+  deposit: user.deposit || 0,
   role: user.role,
 });
+
+const buildAdminMerchantPayload = async (user, salonDocument = {}) => {
+  const salon = normalizeDocument(salonDocument);
+  const staffMap = await getStaffMapByIds(salon.staffIds || []);
+  const publicSalon = {
+    ...salon,
+    staff: (salon.staffIds || []).map(id => staffMap[id]).filter(Boolean).map(buildStaffPayload),
+  };
+  return {
+    ...buildMerchantUserPayload(user),
+    salonName: salon.name || '',
+    publishStatus: salon.publishStatus || 'offline',
+    licenseUrl: salon.licenseUrl || '',
+    licenseStatus: salon.licenseStatus || 'unsubmitted',
+    licenseRejectReason: salon.licenseRejectReason || '',
+    licenseSubmittedAt: salon.licenseSubmittedAt,
+    licenseReviewedAt: salon.licenseReviewedAt,
+    contentReviewStatus: salon.contentReviewStatus || 'pending',
+    contentRejectReason: salon.contentRejectReason || '',
+    contentReviewedAt: salon.contentReviewedAt,
+    salon: salon.pendingContent ? { ...publicSalon, ...salon.pendingContent } : publicSalon,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+    lastLoginAt: user.lastLoginAt,
+  };
+};
 
 const buildAdminUserPayload = (user) => ({
   id: user.id,
@@ -191,7 +247,7 @@ const buildAdminUserPayload = (user) => ({
 });
 
 const buildClientUserPayload = (user) => ({
-  id: user.id,
+  id: normalizeUserId(user.id),
   account: user.account,
   displayName: user.displayName,
   gender: user.gender || '保密',
@@ -238,13 +294,13 @@ const resolveRequestUser = async (req) => {
   const clientUser = await getClientUserFromRequest(req);
   if (clientUser) {
     return {
-      userId: clientUser.id,
+      userId: normalizeUserId(clientUser.id),
       userName: clientUser.displayName || clientUser.account,
     };
   }
 
   return {
-    userId: req.body?.userId || req.query?.userId || 'demo-user',
+    userId: normalizeUserId(req.body?.userId || req.query?.userId || DEMO_USER_ID),
     userName: req.body?.userName || 'Demo 用户',
   };
 };
@@ -418,6 +474,44 @@ const parsePriceValue = (price) => {
   return Number.isFinite(value) ? value : 0;
 };
 
+const normalizeDeposit = (deposit) => {
+  const value = Number(String(deposit ?? 0).replace(/[^\d.-]/g, ''));
+  return Number.isFinite(value) && value >= 0 ? value : null;
+};
+
+const fetchJson = async (url) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'hot-hair-service/1.0' },
+    });
+    if (!response.ok) return null;
+    return response.json();
+  } catch (_) {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const parseAmapReverseAddress = (data) => {
+  const raw = data?.regeocode;
+  if (!raw || typeof raw !== 'object') return '';
+  const address = String(raw.formatted_address || '').trim();
+  if (address) return address;
+
+  const component = raw.addressComponent;
+  if (!component || typeof component !== 'object') return '';
+  return [
+    component.province,
+    component.city,
+    component.district,
+    component.township,
+  ].map(part => String(part || '').trim()).filter(Boolean).join('');
+};
+
 const generateHalfHourSlots = (openingHours = '10:00 - 20:00') => {
   const { start, end } = parseOpeningHours(openingHours);
   const slots = [];
@@ -526,9 +620,122 @@ const buildSalonDetail = async (salonDocument) => {
   };
 };
 
+const contentFields = [
+  'name',
+  'address',
+  'addressRegion',
+  'addressDetail',
+  'location',
+  'description',
+  'fullDescription',
+  'image',
+  'images',
+  'promoImages',
+  'openingHours',
+  'phone',
+  'services',
+  'staff',
+];
+
+const buildContentDraft = async (salon, payload) => {
+  const draft = salon.pendingContent || await buildSalonDetail(salon);
+  const set = (key, value) => {
+    if (value !== undefined) draft[key] = value;
+  };
+
+  set('name', typeof payload.name === 'string' ? payload.name.trim() : undefined);
+  set('address', typeof payload.address === 'string' ? payload.address : undefined);
+  set('addressRegion', payload.addressRegion && typeof payload.addressRegion === 'object' ? payload.addressRegion : undefined);
+  set('addressDetail', typeof payload.addressDetail === 'string' ? payload.addressDetail : undefined);
+  set('location', payload.location && typeof payload.location === 'object' ? payload.location : undefined);
+  set('description', typeof payload.description === 'string' ? payload.description : undefined);
+  set('fullDescription', typeof payload.fullDescription === 'string' ? payload.fullDescription : undefined);
+  set('image', typeof payload.image === 'string' ? payload.image : undefined);
+  set('openingHours', typeof payload.openingHours === 'string' ? payload.openingHours : undefined);
+  set('phone', typeof payload.phone === 'string' ? payload.phone : undefined);
+
+  if (Array.isArray(payload.promoImages) || Array.isArray(payload.images)) {
+    const incomingImages = Array.isArray(payload.promoImages) ? payload.promoImages : payload.images;
+    draft.promoImages = [
+      ...new Set(incomingImages.map(item => item?.toString().trim()).filter(Boolean)),
+    ].slice(0, 20);
+    draft.images = draft.promoImages;
+  }
+
+  if (Array.isArray(payload.services)) {
+    draft.services = payload.services
+      .filter(service => service && service.name)
+      .map((service, index) => ({
+        id: service.id || `s1-${Date.now()}-${index}`,
+        name: service.name,
+        price: service.price || '',
+        duration: service.duration || '',
+        note: service.note || '',
+        imageUrl: service.imageUrl || '',
+      }));
+  }
+
+  if (Array.isArray(payload.staff)) {
+    const incomingStaffIds = payload.staff
+      .map((profile, index) => profile?.id || `merchant-staff-${Date.now()}-${index}`)
+      .filter(Boolean);
+    const existingStaffMap = await getStaffMapByIds(incomingStaffIds);
+    draft.staff = payload.staff
+      .filter(profile => profile && profile.name)
+      .map((profile, index) => {
+        const id = profile.id || `merchant-staff-${Date.now()}-${index}`;
+        const previousStaff = existingStaffMap[id] || {};
+        return {
+          id,
+          name: profile.name,
+          role: profile.role || '',
+          experience: profile.experience || '',
+          extraServiceFee: Number(profile.extraServiceFee || 0),
+          imageUrl: profile.imageUrl || '',
+          bio: profile.bio || '',
+          unavailableSlots: normalizeUnavailableSlots(profile.unavailableSlots),
+          rating: Number(profile.rating || previousStaff.rating || 4.8),
+          reviews: Array.isArray(profile.reviews) ? profile.reviews : previousStaff.reviews || [],
+        };
+      });
+  }
+
+  return Object.fromEntries(contentFields.map(key => [key, draft[key]]));
+};
+
+const applyPendingContent = async (salon) => {
+  const draft = salon.pendingContent || {};
+  contentFields
+    .filter(key => key !== 'staff')
+    .forEach(key => {
+      if (draft[key] !== undefined) salon[key] = draft[key];
+    });
+
+  if (Array.isArray(draft.staff)) {
+    salon.staffIds = draft.staff.map(profile => profile.id).filter(Boolean);
+    await Promise.all(draft.staff.map(profile =>
+      StaffProfile.findOneAndUpdate(
+        { id: profile.id },
+        profile,
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      )
+    ));
+  }
+
+  salon.pendingContent = undefined;
+};
+
+const refreshFavoriteSalonSnapshots = async (salon) => {
+  await FavoriteSalon.updateMany(
+    { salonId: salon.id },
+    { $set: { salon: await buildSalonDetail(salon) } },
+  );
+};
+
 const buildMerchantSalonPayload = async (salonId = '1') => {
   const salon = await Salon.findOne({ id: salonId });
-  return buildSalonDetail(salon);
+  const payload = await buildSalonDetail(salon);
+  return salon.pendingContent ? { ...payload, ...salon.pendingContent } : payload;
 };
 
 const ensureSalonForMerchant = async ({ salonId, displayName }) => {
@@ -538,10 +745,11 @@ const ensureSalonForMerchant = async ({ salonId, displayName }) => {
 
   return Salon.create({
     id: normalizedSalonId,
-    name: displayName || `商家店铺 ${normalizedSalonId}`,
+    name: '',
     address: '',
     addressRegion: {},
     addressDetail: '',
+    location: null,
     rating: 4.8,
     image: '',
     images: [],
@@ -570,16 +778,16 @@ const readFavoriteSalonsFromFile = () => {
   }
 };
 
-const readFavoriteSalons = async (userId = 'demo-user') => {
+const readFavoriteSalons = async (userId = DEMO_USER_ID) => {
   const favorites = await FavoriteSalon
-    .find({ userId })
+    .find({ userId: { $in: userIdAliases(userId) } })
     .sort({ createdAt: -1 })
     .lean();
   return favorites.map(favorite => favorite.salon);
 };
 
 const migrateFavoriteSalonsFromFile = async () => {
-  const existingCount = await FavoriteSalon.countDocuments({ userId: 'demo-user' });
+  const existingCount = await FavoriteSalon.countDocuments({ userId: { $in: userIdAliases(DEMO_USER_ID) } });
   if (existingCount > 0) return;
 
   const favorites = readFavoriteSalonsFromFile();
@@ -589,7 +797,7 @@ const migrateFavoriteSalonsFromFile = async () => {
     favorites
       .filter(salon => salon?.id)
       .map(salon => ({
-        userId: 'demo-user',
+        userId: DEMO_USER_ID,
         salonId: salon.id.toString(),
         salon,
       })),
@@ -648,10 +856,11 @@ const migrateSeedDataToMongo = async () => {
     const salon = await Salon.findOne({ id: user.salonId });
     if (!salon || !legacyMockSalonNames.has(salon.name)) return;
 
-    salon.name = user.displayName || `${user.username} 店铺`;
+    salon.name = '';
     salon.address = '';
     salon.addressRegion = {};
     salon.addressDetail = '';
+    salon.location = null;
     salon.image = '';
     salon.images = [];
     salon.promoImages = [];
@@ -699,7 +908,7 @@ const migrateSeedDataToMongo = async () => {
   if (clientCount === 0) {
     const { salt, hash } = hashPassword('123456');
     await ClientUser.create({
-      id: 'user-demo',
+      id: DEMO_USER_ID,
       account: 'demo',
       displayName: 'Demo 用户',
       passwordSalt: salt,
@@ -771,7 +980,7 @@ app.post('/api/favorites/toggle', async (req, res) => {
   const salonId = req.body?.id?.toString();
   if (!salonId) return res.status(400).json({ message: 'Salon id is required' });
 
-  const existingFavorite = await FavoriteSalon.findOne({ userId, salonId });
+  const existingFavorite = await FavoriteSalon.findOne({ userId: { $in: userIdAliases(userId) }, salonId });
 
   if (existingFavorite) {
     await existingFavorite.deleteOne();
@@ -827,12 +1036,12 @@ app.post('/api/auth/sms/verify', async (req, res) => {
   verification.consumedAt = new Date();
   await verification.save();
 
-  let user = await ClientUser.findOne({ account: phone });
+  let user = await ClientUser.findOne({ $or: [{ account: phone }, { phone }] });
   if (!user) {
     const password = crypto.randomBytes(16).toString('hex');
     const { salt, hash } = hashPassword(password);
     user = await ClientUser.create({
-      id: `user-${Date.now()}`,
+      id: newClientUserId(),
       account: phone,
       displayName: maskPhone(phone),
       gender: '保密',
@@ -853,7 +1062,7 @@ app.post('/api/auth/sms/verify', async (req, res) => {
 });
 
 app.post('/api/auth/register', async (req, res) => {
-  const account = String(req.body.account || '').trim();
+  const account = normalizeClientAccount(req.body.account);
   const password = String(req.body.password || '');
   const displayName = String(req.body.displayName || '').trim();
 
@@ -864,12 +1073,14 @@ app.post('/api/auth/register', async (req, res) => {
     return res.status(400).json({ message: '密码至少 6 位' });
   }
 
-  const existingUser = await ClientUser.findOne({ account });
+  const existingUser = isValidPhone(account)
+    ? await ClientUser.findOne({ $or: [{ account }, { phone: account }] })
+    : await ClientUser.findOne({ account });
   if (existingUser) return res.status(409).json({ message: '该账号已注册' });
 
   const { salt, hash } = hashPassword(password);
   const user = await ClientUser.create({
-    id: `user-${Date.now()}`,
+    id: newClientUserId(),
     account,
     displayName,
     passwordSalt: salt,
@@ -885,14 +1096,16 @@ app.post('/api/auth/register', async (req, res) => {
 });
 
 app.post('/api/auth/login', async (req, res) => {
-  const account = String(req.body.account || '').trim();
+  const account = normalizeClientAccount(req.body.account);
   const password = String(req.body.password || '');
 
   if (!account || !password) {
     return res.status(400).json({ message: 'account and password are required' });
   }
 
-  const user = await ClientUser.findOne({ account });
+  const user = isValidPhone(account)
+    ? await ClientUser.findOne({ $or: [{ account }, { phone: account }] })
+    : await ClientUser.findOne({ account });
   if (!user) return res.status(401).json({ message: '账号或密码错误' });
 
   const { hash } = hashPassword(password, user.passwordSalt);
@@ -929,7 +1142,7 @@ app.patch('/api/auth/profile', requireClientAuth, async (req, res) => {
   }
 
   const existingUser = await ClientUser.findOne({
-    account: phone,
+    $or: [{ account: phone }, { phone }],
     id: { $ne: req.clientUser.id },
   });
   if (existingUser) {
@@ -1044,19 +1257,9 @@ app.get('/api/admin/merchants', requireAdminAuth, async (req, res) => {
       .map(salon => [salon.id, salon]),
   );
 
-  res.json(merchants.map(user => ({
-    ...buildMerchantUserPayload(user),
-    salonName: salonsById[user.salonId]?.name || '',
-    publishStatus: salonsById[user.salonId]?.publishStatus || 'offline',
-    licenseUrl: salonsById[user.salonId]?.licenseUrl || '',
-    licenseStatus: salonsById[user.salonId]?.licenseStatus || 'unsubmitted',
-    licenseRejectReason: salonsById[user.salonId]?.licenseRejectReason || '',
-    licenseSubmittedAt: salonsById[user.salonId]?.licenseSubmittedAt,
-    licenseReviewedAt: salonsById[user.salonId]?.licenseReviewedAt,
-    createdAt: user.createdAt,
-    updatedAt: user.updatedAt,
-    lastLoginAt: user.lastLoginAt,
-  })));
+  res.json(await Promise.all(
+    merchants.map(user => buildAdminMerchantPayload(user, salonsById[user.salonId]))
+  ));
 });
 
 app.post('/api/admin/merchants', requireAdminAuth, async (req, res) => {
@@ -1064,10 +1267,12 @@ app.post('/api/admin/merchants', requireAdminAuth, async (req, res) => {
   const password = String(req.body.password || '');
   const displayName = String(req.body.displayName || '').trim();
   const salonId = String(req.body.salonId || '1').trim();
+  const deposit = normalizeDeposit(req.body.deposit);
 
   if (!username || !password || !displayName) {
     return res.status(400).json({ message: 'username, password and displayName are required' });
   }
+  if (deposit === null) return res.status(400).json({ message: '保证金必须是非负数字' });
   if (password.length < 6) return res.status(400).json({ message: '密码至少 6 位' });
   if (await MerchantUser.findOne({ username })) {
     return res.status(409).json({ message: '该商家账号已存在' });
@@ -1080,6 +1285,7 @@ app.post('/api/admin/merchants', requireAdminAuth, async (req, res) => {
     username,
     displayName,
     salonId: salon.id,
+    deposit,
     role: 'merchant',
     passwordSalt: salt,
     passwordHash: hash,
@@ -1096,6 +1302,9 @@ app.patch('/api/admin/merchants/:id', requireAdminAuth, async (req, res) => {
   const displayName = String(req.body.displayName || '').trim();
   const salonId = String(req.body.salonId || '').trim();
   const password = String(req.body.password || '');
+  const deposit = req.body.deposit === undefined ? undefined : normalizeDeposit(req.body.deposit);
+
+  if (deposit === null) return res.status(400).json({ message: '保证金必须是非负数字' });
 
   if (username && username !== user.username) {
     if (await MerchantUser.findOne({ username })) {
@@ -1118,6 +1327,7 @@ app.patch('/api/admin/merchants/:id', requireAdminAuth, async (req, res) => {
     user.passwordHash = hash;
     user.sessionToken = '';
   }
+  if (deposit !== undefined) user.deposit = deposit;
 
   await user.save();
   res.json({ user: buildMerchantUserPayload(user) });
@@ -1141,18 +1351,31 @@ app.patch('/api/admin/merchants/:id/license', requireAdminAuth, async (req, res)
   salon.licenseReviewedAt = new Date();
   await salon.save();
 
-  res.json({
-    merchant: {
-      ...buildMerchantUserPayload(user),
-      salonName: salon.name,
-      publishStatus: salon.publishStatus || 'offline',
-      licenseUrl: salon.licenseUrl || '',
-      licenseStatus: salon.licenseStatus,
-      licenseRejectReason: salon.licenseRejectReason || '',
-      licenseSubmittedAt: salon.licenseSubmittedAt,
-      licenseReviewedAt: salon.licenseReviewedAt,
-    },
-  });
+  res.json({ merchant: await buildAdminMerchantPayload(user, salon) });
+});
+
+app.patch('/api/admin/merchants/:id/content', requireAdminAuth, async (req, res) => {
+  const action = String(req.body.action || '').trim();
+  const reason = String(req.body.reason || '').trim();
+  if (!['approve', 'reject'].includes(action)) {
+    return res.status(400).json({ message: 'action must be approve or reject' });
+  }
+
+  const user = await MerchantUser.findOne({ id: req.params.id }).lean();
+  if (!user) return res.status(404).json({ message: 'Merchant user not found' });
+  const salon = await Salon.findOne({ id: user.salonId });
+  if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
+
+  if (action === 'approve') {
+    await applyPendingContent(salon);
+  }
+  salon.contentReviewStatus = action === 'approve' ? 'approved' : 'rejected';
+  salon.contentRejectReason = action === 'reject' ? reason : '';
+  salon.contentReviewedAt = new Date();
+  await salon.save();
+  if (action === 'approve') await refreshFavoriteSalonSnapshots(salon);
+
+  res.json({ merchant: await buildAdminMerchantPayload(user, salon) });
 });
 
 app.patch('/api/admin/merchants/:id/publish', requireAdminAuth, async (req, res) => {
@@ -1168,22 +1391,14 @@ app.patch('/api/admin/merchants/:id/publish', requireAdminAuth, async (req, res)
   if (action === 'online' && salon.licenseStatus !== 'approved') {
     return res.status(409).json({ message: '营业执照审核通过后才能上架' });
   }
+  if (action === 'online' && salon.contentReviewStatus !== 'approved') {
+    return res.status(409).json({ message: '店铺内容审核通过后才能上架' });
+  }
 
   salon.publishStatus = action;
   await salon.save();
 
-  res.json({
-    merchant: {
-      ...buildMerchantUserPayload(user),
-      salonName: salon.name,
-      publishStatus: salon.publishStatus,
-      licenseUrl: salon.licenseUrl || '',
-      licenseStatus: salon.licenseStatus || 'unsubmitted',
-      licenseRejectReason: salon.licenseRejectReason || '',
-      licenseSubmittedAt: salon.licenseSubmittedAt,
-      licenseReviewedAt: salon.licenseReviewedAt,
-    },
-  });
+  res.json({ merchant: await buildAdminMerchantPayload(user, salon) });
 });
 
 app.get('/api/admin/users', requireAdminAuth, async (req, res) => {
@@ -1206,6 +1421,38 @@ app.get('/api/admin/bookings', requireAdminAuth, async (req, res) => {
 });
 
 app.use('/api/merchant', requireMerchantAuth);
+
+app.post('/api/merchant/geocode', async (req, res) => {
+  const address = String(req.body.address || '').trim();
+  if (!address) return res.status(400).json({ message: 'address is required' });
+  const url = new URL('https://restapi.amap.com/v3/geocode/geo');
+  url.searchParams.set('key', AMAP_WEB_SERVICE_KEY);
+  url.searchParams.set('address', address);
+  url.searchParams.set('output', 'json');
+  const data = await fetchJson(url);
+  const result = Array.isArray(data?.geocodes) ? data.geocodes[0] : null;
+  const location = String(result?.location || '').split(',');
+  res.json({
+    latitude: location[1] ? Number(location[1]) : null,
+    longitude: location[0] ? Number(location[0]) : null,
+    address: result?.formatted_address || address,
+  });
+});
+
+app.post('/api/merchant/reverse-geocode', async (req, res) => {
+  const latitude = Number(req.body.latitude);
+  const longitude = Number(req.body.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return res.status(400).json({ message: 'latitude and longitude are required' });
+  }
+  const url = new URL('https://restapi.amap.com/v3/geocode/regeo');
+  url.searchParams.set('key', AMAP_WEB_SERVICE_KEY);
+  url.searchParams.set('location', `${longitude},${latitude}`);
+  url.searchParams.set('extensions', 'base');
+  url.searchParams.set('output', 'json');
+  const data = await fetchJson(url);
+  res.json({ latitude, longitude, address: parseAmapReverseAddress(data) });
+});
 
 app.get('/api/merchant/account', async (req, res) => {
   res.json({ user: buildMerchantUserPayload(req.merchantUser) });
@@ -1288,97 +1535,20 @@ app.get('/api/merchant/salon', async (req, res) => {
 app.patch('/api/merchant/salon', async (req, res) => {
   const salon = await Salon.findOne({ id: req.merchantUser.salonId || '1' });
   if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
-  const {
-    address,
-    addressRegion,
-    addressDetail,
-    description,
-    fullDescription,
-    image,
-    images,
-    promoImages,
-    name,
-    openingHours,
-    phone,
-    services,
-    staff: staffProfiles,
-  } = req.body;
 
-  if (typeof name === 'string') salon.name = name;
-  if (typeof address === 'string') salon.address = address;
-  if (addressRegion && typeof addressRegion === 'object') {
-    salon.addressRegion = addressRegion;
-  }
-  if (typeof addressDetail === 'string') salon.addressDetail = addressDetail;
-  if (typeof description === 'string') salon.description = description;
-  if (typeof fullDescription === 'string') salon.fullDescription = fullDescription;
-  if (typeof image === 'string') salon.image = image;
-  if (Array.isArray(promoImages) || Array.isArray(images)) {
-    const incomingImages = Array.isArray(promoImages) ? promoImages : images;
-    salon.promoImages = [
-      ...new Set(
-        incomingImages
-          .map(item => item?.toString().trim())
-          .filter(Boolean)
-      ),
-    ].slice(0, 20);
-    salon.images = salon.promoImages;
-  }
-  if (typeof openingHours === 'string') salon.openingHours = openingHours;
-  if (typeof phone === 'string') salon.phone = phone;
-
-  if (Array.isArray(services)) {
-    salon.services = services
-      .filter(service => service && service.name)
-      .map((service, index) => ({
-        id: service.id || `s1-${Date.now()}-${index}`,
-        name: service.name,
-        price: service.price || '',
-        duration: service.duration || '',
-        note: service.note || '',
-        imageUrl: service.imageUrl || '',
-      }));
+  const draft = await buildContentDraft(salon, req.body);
+  if (typeof draft.name === 'string' && draft.name) {
+    const existingSalon = await Salon.findOne({
+      id: { $ne: salon.id },
+      name: draft.name,
+    }).lean();
+    if (existingSalon) return res.status(409).json({ message: '店名已存在' });
   }
 
-  if (Array.isArray(staffProfiles)) {
-    const nextStaffIds = [];
-    const incomingStaffIds = staffProfiles
-      .map((profile, index) => profile?.id || `merchant-staff-${Date.now()}-${index}`)
-      .filter(Boolean);
-    const existingStaffMap = await getStaffMapByIds(incomingStaffIds);
-    const staffUpdates = [];
-
-    staffProfiles
-      .filter(profile => profile && profile.name)
-      .forEach((profile, index) => {
-        const id = profile.id || `merchant-staff-${Date.now()}-${index}`;
-        nextStaffIds.push(id);
-        const previousStaff = existingStaffMap[id] || {};
-        staffUpdates.push({
-          id,
-          name: profile.name,
-          role: profile.role || '',
-          experience: profile.experience || '',
-          extraServiceFee: Number(profile.extraServiceFee || 0),
-          imageUrl: profile.imageUrl || '',
-          bio: profile.bio || '',
-          unavailableSlots: normalizeUnavailableSlots(profile.unavailableSlots),
-          rating: Number(profile.rating || previousStaff.rating || 4.8),
-          reviews: Array.isArray(profile.reviews)
-            ? profile.reviews
-            : previousStaff.reviews || [],
-        });
-      });
-    salon.staffIds = nextStaffIds;
-    await Promise.all(staffUpdates.map(profile =>
-      StaffProfile.findOneAndUpdate(
-        { id: profile.id },
-        profile,
-        { upsert: true, new: true, setDefaultsOnInsert: true },
-      )
-    ));
-  }
-
+  salon.pendingContent = draft;
+  salon.contentReviewStatus = 'pending';
+  salon.contentRejectReason = '';
+  salon.contentReviewedAt = null;
   await salon.save();
   res.json(await buildMerchantSalonPayload(req.merchantUser.salonId || '1'));
 });
@@ -1431,9 +1601,9 @@ app.get('/api/bookings', async (req, res) => {
   const requestUser = await resolveRequestUser(req);
   const query = {};
   if (userId) {
-    query.userId = userId;
-  } else if (requestUser.userId !== 'demo-user') {
-    query.userId = requestUser.userId;
+    query.userId = { $in: userIdAliases(userId) };
+  } else if (requestUser.userId !== DEMO_USER_ID) {
+    query.userId = { $in: userIdAliases(requestUser.userId) };
   }
   if (staffId) query.staffId = staffId;
   if (status) query.status = status;
@@ -1443,7 +1613,7 @@ app.get('/api/bookings', async (req, res) => {
 
 app.patch('/api/bookings/:id/cancel', async (req, res) => {
   const { userId } = await resolveRequestUser(req);
-  const booking = await Booking.findOne({ id: req.params.id, userId });
+  const booking = await Booking.findOne({ id: req.params.id, userId: { $in: userIdAliases(userId) } });
   if (!booking) return res.status(404).json({ message: 'Booking not found' });
   if (!['pending', 'accepted'].includes(booking.status)) {
     return res.status(409).json({ message: 'Only pending or accepted bookings can be canceled by user' });
