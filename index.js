@@ -25,9 +25,46 @@ app.use('/uploads', express.static(uploadDir));
 const dataDir = path.join(__dirname, 'data');
 const favoritesFile = path.join(dataDir, 'favorites.json');
 fs.mkdirSync(dataDir, { recursive: true });
+const addressSearchCache = new Map();
+const addressSearchCacheTtlMs = 5 * 60 * 1000;
+
+function getPublicBaseUrl(req) {
+  return `${req.protocol}://${req.get('host')}`;
+}
+
+function rewriteLocalAssetUrls(value, baseUrl) {
+  if (typeof value === 'string') {
+    return value.replace(/^http:\/\/(?:localhost|127\.0\.0\.1):3000/, baseUrl);
+  }
+
+  if (value instanceof Date) {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(item => rewriteLocalAssetUrls(item, baseUrl));
+  }
+
+  if (value && typeof value === 'object') {
+    const next = {};
+    for (const [key, item] of Object.entries(value)) {
+      next[key] = rewriteLocalAssetUrls(item, baseUrl);
+    }
+    return next;
+  }
+
+  return value;
+}
+
+app.use((req, res, next) => {
+  const originalJson = res.json.bind(res);
+  res.json = body => originalJson(rewriteLocalAssetUrls(body, getPublicBaseUrl(req)));
+  next();
+});
 
 const bookingSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
+  orderNo: { type: String, index: true },
   userId: { type: String, default: 'demo-user', index: true },
   userName: { type: String, default: 'Demo 用户' },
   salonId: String,
@@ -76,6 +113,7 @@ const salonSchema = new mongoose.Schema({
   address: String,
   addressRegion: mongoose.Schema.Types.Mixed,
   addressDetail: String,
+  location: mongoose.Schema.Types.Mixed,
   rating: Number,
   image: String,
   images: [String],
@@ -464,6 +502,7 @@ const findActiveBookingAtTimeExcluding = (staffId, startTime, bookingId) =>
 
 const normalizeBooking = (booking) => ({
   ...(typeof booking.toObject === 'function' ? booking.toObject() : booking),
+  orderNo: booking.orderNo || booking.id,
   statusLabel: {
     pending: '等待商家确认',
     accepted: '预约成功',
@@ -542,6 +581,7 @@ const ensureSalonForMerchant = async ({ salonId, displayName }) => {
     address: '',
     addressRegion: {},
     addressDetail: '',
+    location: {},
     rating: 4.8,
     image: '',
     images: [],
@@ -615,7 +655,6 @@ const migrateSeedDataToMongo = async () => {
       { ordered: false },
     ).catch(() => {});
   }
-
   if (merchantCount === 0) {
     const { salt, hash } = hashPassword('123456');
     await MerchantUser.create({
@@ -638,7 +677,6 @@ const migrateSeedDataToMongo = async () => {
       licenseRejectReason: '',
     }).catch(() => {});
   }
-
   const merchantUsers = await MerchantUser.find({}).lean();
   await Promise.all(merchantUsers.map(user =>
     ensureSalonForMerchant({ salonId: user.salonId, displayName: user.displayName })
@@ -652,6 +690,7 @@ const migrateSeedDataToMongo = async () => {
     salon.address = '';
     salon.addressRegion = {};
     salon.addressDetail = '';
+    salon.location = {};
     salon.image = '';
     salon.images = [];
     salon.promoImages = [];
@@ -752,6 +791,141 @@ app.get('/api/salons', async (req, res) => {
       images: buildSalonImageList(s),
     };
   }));
+});
+
+function buildSalonListItem(salon) {
+  const {
+    fullDescription,
+    openingHours,
+    phone,
+    staffIds,
+    services,
+    staff,
+    reviews,
+    _id,
+    __v,
+    createdAt,
+    updatedAt,
+    ...basic
+  } = salon;
+
+  return {
+    ...basic,
+    images: buildSalonImageList(salon),
+  };
+}
+
+function normalizeCityName(value) {
+  const city = String(value || '').trim();
+  if (!city) return '';
+  return city.replace(/市辖区|县/g, '').trim();
+}
+
+function extractCityFromAddress(address = '') {
+  const text = String(address || '');
+  const direct = text.match(/(北京市|上海市|天津市|重庆市|[^省,，\s]+市)/);
+  return direct ? normalizeCityName(direct[1]) : '';
+}
+
+const directCityDistricts = {
+  '北京市': [
+    '东城区',
+    '西城区',
+    '朝阳区',
+    '丰台区',
+    '石景山区',
+    '海淀区',
+    '门头沟区',
+    '房山区',
+    '通州区',
+    '顺义区',
+    '昌平区',
+    '大兴区',
+    '怀柔区',
+    '平谷区',
+    '密云区',
+    '延庆区',
+  ],
+};
+
+function inferDirectCityFromAddress(address = '') {
+  const text = String(address || '');
+  for (const [city, districts] of Object.entries(directCityDistricts)) {
+    if (districts.some(district => text.includes(district))) return city;
+  }
+  return '';
+}
+
+function extractSalonCity(salon) {
+  const region = salon.addressRegion || {};
+  const cityName = normalizeCityName(region.cityName);
+  if (cityName) return cityName;
+
+  const provinceName = normalizeCityName(region.provinceName);
+  if (provinceName && ['北京市', '上海市', '天津市', '重庆市'].includes(region.provinceName)) {
+    return provinceName;
+  }
+
+  return extractCityFromAddress(salon.address) || inferDirectCityFromAddress(salon.address);
+}
+
+function extractReverseGeocodeCity(data) {
+  const address = data && typeof data === 'object' ? data.address || {} : {};
+  const city =
+    extractCityFromAddress(data?.display_name) ||
+    address.city ||
+    address.town ||
+    address.state ||
+    address.county;
+
+  return normalizeCityName(city);
+}
+
+function normalizeSearchText(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/(.)\1+/g, '$1');
+}
+
+app.get('/api/salons/suggestions', async (req, res) => {
+  const keyword = normalizeSearchText(req.query.keyword);
+  if (!keyword) return res.json([]);
+
+  const latitude = Number(req.query.latitude);
+  const longitude = Number(req.query.longitude);
+  let currentCity = normalizeCityName(req.query.city);
+
+  if (
+    !currentCity &&
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude) &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    longitude >= -180 &&
+    longitude <= 180
+  ) {
+    try {
+      const data = await reverseGeocodeByNominatim(latitude, longitude);
+      currentCity = extractReverseGeocodeCity(data);
+    } catch (error) {
+      console.warn('Suggestion city lookup failed:', error.message);
+    }
+  }
+
+  const salonList = await getAllSalons();
+  const suggestions = salonList
+    .filter(salon => normalizeSearchText(salon.name).includes(keyword))
+    .filter(salon => {
+      if (!currentCity) return true;
+      const salonCity = extractSalonCity(salon);
+      return salonCity && salonCity === currentCity;
+    })
+    .slice(0, 6)
+    .map(buildSalonListItem);
+
+  res.json(suggestions);
 });
 
 app.get('/api/salons/:id', async (req, res) => {
@@ -1285,6 +1459,415 @@ app.get('/api/merchant/salon', async (req, res) => {
   res.json(await buildMerchantSalonPayload(req.merchantUser.salonId || '1'));
 });
 
+function formatReverseGeocodeAddress(data) {
+  const sourceAddress = data && typeof data === 'object' ? data.address || {} : {};
+  const displayLocalParts = String(data?.display_name || '')
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean)
+    .filter(value => {
+      if (value === '中国') return false;
+      if (/^\d{4,}$/.test(value)) return false;
+      if (value.endsWith('省') || value.endsWith('市')) return false;
+      return true;
+    })
+    .reverse();
+
+  const structuredParts = [
+    sourceAddress.city_district || sourceAddress.district || sourceAddress.county,
+    sourceAddress.suburb ||
+      sourceAddress.neighbourhood ||
+      sourceAddress.quarter ||
+      sourceAddress.residential ||
+      sourceAddress.village ||
+      sourceAddress.hamlet ||
+      sourceAddress.locality ||
+      sourceAddress.city_block,
+    sourceAddress.road ||
+      sourceAddress.pedestrian ||
+      sourceAddress.footway ||
+      sourceAddress.path,
+    sourceAddress.house_number,
+    sourceAddress.building || sourceAddress.apartments || sourceAddress.house,
+    sourceAddress.amenity ||
+      sourceAddress.shop ||
+      sourceAddress.office ||
+      sourceAddress.company ||
+      sourceAddress.tourism ||
+      sourceAddress.commercial ||
+      sourceAddress.retail ||
+      sourceAddress.industrial ||
+      sourceAddress.place,
+    data?.name,
+  ]
+    .map(value => String(value || '').trim())
+    .filter(Boolean);
+
+  const parts = [...displayLocalParts, ...structuredParts].reduce((items, value) => {
+    if (!items.includes(value)) items.push(value);
+    return items;
+  }, []);
+
+  return parts.join('') || String(data?.display_name || data?.name || '').trim();
+}
+
+async function reverseGeocodeByNominatim(latitude, longitude) {
+  const url = new URL('https://nominatim.openstreetmap.org/reverse');
+  url.searchParams.set('format', 'jsonv2');
+  url.searchParams.set('lat', latitude.toString());
+  url.searchParams.set('lon', longitude.toString());
+  url.searchParams.set('zoom', '18');
+  url.searchParams.set('addressdetails', '1');
+  url.searchParams.set('accept-language', 'zh-CN,zh,en');
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'hot-hair-local-dev/1.0',
+      },
+    });
+
+    if (!response.ok) throw new Error(`Reverse geocode failed: ${response.status}`);
+    return response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function searchAddressByNominatim(keyword, options = {}) {
+  const url = new URL('https://nominatim.openstreetmap.org/search');
+  url.searchParams.set('format', 'jsonv2');
+  url.searchParams.set('q', keyword);
+  url.searchParams.set('limit', String(options.limit || 20));
+  url.searchParams.set('addressdetails', '1');
+  url.searchParams.set('namedetails', '1');
+  url.searchParams.set('extratags', '1');
+  url.searchParams.set('accept-language', 'zh-CN,zh,en');
+  url.searchParams.set('countrycodes', 'cn');
+  if (options.location) {
+    const latitudeDelta = Number(options.latitudeDelta || 0.6);
+    const longitudeDelta = Number(options.longitudeDelta || 0.8);
+    const { latitude, longitude } = options.location;
+    url.searchParams.set(
+      'viewbox',
+      [
+        longitude - longitudeDelta,
+        latitude + latitudeDelta,
+        longitude + longitudeDelta,
+        latitude - latitudeDelta,
+      ].join(','),
+    );
+    url.searchParams.set('bounded', '0');
+  }
+
+  const cacheKey = url.toString();
+  const cached = addressSearchCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'hot-hair-local-dev/1.0',
+      },
+    });
+
+    if (!response.ok) throw new Error(`Address search failed: ${response.status}`);
+    const value = await response.json();
+    addressSearchCache.set(cacheKey, {
+      value,
+      expiresAt: Date.now() + addressSearchCacheTtlMs,
+    });
+    return value;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function buildAddressSearchKeywords(keyword) {
+  const text = String(keyword || '').trim();
+  if (!text) return [];
+
+  const keywords = [text];
+  const hasPlaceSuffix = /(大厦|小区|公司|企业|花园|公寓|家园|新村|社区|苑|里|府|湾|城|广场|中心)$/.test(text);
+  if (!hasPlaceSuffix) {
+    keywords.push(`${text}大厦`, `${text}小区`, `${text}公司`);
+  }
+  return keywords;
+}
+
+function normalizeAddressSearchText(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/（/g, '(')
+    .replace(/）/g, ')');
+}
+
+function collectAddressSearchValues(item) {
+  if (!item || typeof item !== 'object') return [];
+  const address = item.address && typeof item.address === 'object' ? item.address : {};
+  const namedetails = item.namedetails && typeof item.namedetails === 'object' ? item.namedetails : {};
+  const extratags = item.extratags && typeof item.extratags === 'object' ? item.extratags : {};
+  return [
+    item.name,
+    item.display_name,
+    item.type,
+    item.class,
+    namedetails.name,
+    namedetails['name:zh'],
+    namedetails['name:zh-CN'],
+    namedetails.brand,
+    namedetails.operator,
+    extratags.name,
+    extratags.brand,
+    extratags.operator,
+    address.amenity,
+    address.office,
+    address.company,
+    address.shop,
+    address.commercial,
+    address.retail,
+    address.industrial,
+    address.building,
+    address.apartments,
+    address.house,
+    address.residential,
+    address.neighbourhood,
+    address.suburb,
+    address.quarter,
+    address.road,
+    address.city_district,
+    address.district,
+    address.city,
+    address.town,
+    address.state,
+  ].map(value => String(value || '').trim()).filter(Boolean);
+}
+
+function addressSuggestionMatchesKeyword(item, keyword) {
+  const normalizedKeyword = normalizeAddressSearchText(keyword);
+  if (!normalizedKeyword) return false;
+  return normalizeAddressSearchText(collectAddressSearchValues(item).join(' ')).includes(normalizedKeyword);
+}
+
+function buildAddressSuggestion(item, currentLocation) {
+  const latitude = Number(item.lat);
+  const longitude = Number(item.lon);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+
+  const address = formatReverseGeocodeAddress(item);
+  const name = String(item.name || item.namedetails?.['name:zh-CN'] || item.namedetails?.['name:zh'] || '').trim();
+  const distanceMeters = currentLocation
+    ? Math.round(distanceMetersBetween(currentLocation, { latitude, longitude }))
+    : undefined;
+
+  return {
+    name,
+    address: address || String(item.display_name || item.name || '').trim(),
+    displayAddress: String(item.display_name || ''),
+    latitude,
+    longitude,
+    distanceMeters,
+    source: 'nominatim',
+  };
+}
+
+async function fetchMergedAddressSuggestions(keyword, currentLocation) {
+  const fetchedItems = [];
+  const seenRawItems = new Set();
+  const searchKeywords = buildAddressSearchKeywords(keyword);
+  let lastError = null;
+
+  const appendItems = batch => {
+    for (const item of Array.isArray(batch) ? batch : []) {
+      const rawKey = [
+        item.osm_type,
+        item.osm_id,
+        item.place_id,
+        item.lat,
+        item.lon,
+        item.display_name,
+      ].join('|');
+      if (seenRawItems.has(rawKey)) continue;
+      seenRawItems.add(rawKey);
+      fetchedItems.push(item);
+    }
+  };
+
+  const buildSuggestions = () => {
+    const seenAddresses = new Set();
+    return fetchedItems
+      .filter(item => addressSuggestionMatchesKeyword(item, keyword))
+      .map(item => buildAddressSuggestion(item, currentLocation))
+      .filter(Boolean)
+      .filter(item => {
+        const key = normalizeAddressSearchText(`${item.name}${item.address}${item.latitude.toFixed(6)}${item.longitude.toFixed(6)}`);
+        if (!key || seenAddresses.has(key)) return false;
+        seenAddresses.add(key);
+        return true;
+      })
+      .sort((left, right) => {
+        if (!currentLocation) return 0;
+        return (left.distanceMeters ?? Number.POSITIVE_INFINITY) -
+          (right.distanceMeters ?? Number.POSITIVE_INFINITY);
+      })
+      .slice(0, 10);
+  };
+
+  for (const searchKeyword of searchKeywords) {
+    const searches = currentLocation
+      ? [
+          {
+            keyword: searchKeyword,
+            options: {
+              location: currentLocation,
+              limit: 20,
+            },
+          },
+          {
+            keyword: searchKeyword,
+            options: { limit: 20 },
+          },
+        ]
+      : [
+          {
+            keyword: searchKeyword,
+            options: { limit: 20 },
+          },
+        ];
+
+    for (const search of searches) {
+      try {
+        const batch = await searchAddressByNominatim(search.keyword, search.options);
+        appendItems(batch);
+      } catch (error) {
+        lastError = error;
+        console.warn('Address search batch failed:', error.message);
+      }
+
+      const suggestions = buildSuggestions();
+      if (suggestions.length > 0) return suggestions;
+    }
+  }
+
+  const suggestions = buildSuggestions();
+  if (suggestions.length > 0) return suggestions;
+  if (lastError) throw lastError;
+  return [];
+}
+
+function parseRequestLocation(req) {
+  const latitude = Number(req.body.latitude);
+  const longitude = Number(req.body.longitude);
+  const isValid =
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude) &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    longitude >= -180 &&
+    longitude <= 180;
+
+  return isValid ? { latitude, longitude } : null;
+}
+
+function parseQueryLocation(req) {
+  const latitude = Number(req.query.latitude ?? req.query.lat);
+  const longitude = Number(req.query.longitude ?? req.query.lng);
+  const isValid =
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude) &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    longitude >= -180 &&
+    longitude <= 180;
+
+  return isValid ? { latitude, longitude } : null;
+}
+
+function distanceMetersBetween(left, right) {
+  const toRadians = value => value * Math.PI / 180;
+  const earthRadiusMeters = 6371000;
+  const deltaLatitude = toRadians(right.latitude - left.latitude);
+  const deltaLongitude = toRadians(right.longitude - left.longitude);
+  const leftLatitude = toRadians(left.latitude);
+  const rightLatitude = toRadians(right.latitude);
+  const a =
+    Math.sin(deltaLatitude / 2) ** 2 +
+    Math.cos(leftLatitude) *
+      Math.cos(rightLatitude) *
+      Math.sin(deltaLongitude / 2) ** 2;
+  return earthRadiusMeters * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+app.get('/api/location/suggestions', async (req, res) => {
+  const keyword = String(req.query.keyword || '').trim();
+  if (!keyword) return res.json([]);
+  const currentLocation = parseQueryLocation(req);
+
+  try {
+    const suggestions = await fetchMergedAddressSuggestions(keyword, currentLocation);
+    res.json(suggestions);
+  } catch (error) {
+    console.error('Address suggestion failed:', error);
+    res.status(502).json({ message: '地址搜索服务暂时不可用' });
+  }
+});
+
+app.post('/api/location/reverse', async (req, res) => {
+  const location = parseRequestLocation(req);
+  if (!location) {
+    return res.status(400).json({ message: 'latitude and longitude are required' });
+  }
+
+  try {
+    const data = await reverseGeocodeByNominatim(location.latitude, location.longitude);
+    const address = formatReverseGeocodeAddress(data);
+    if (!address) return res.status(404).json({ message: '无法解析当前位置地址' });
+
+    res.json({
+      ...location,
+      address,
+      displayAddress: String(data?.display_name || address || ''),
+      source: 'nominatim',
+    });
+  } catch (error) {
+    console.error('Reverse geocode failed:', error);
+    res.status(502).json({ message: '地址解析服务暂时不可用' });
+  }
+});
+
+app.post('/api/merchant/reverse-geocode', async (req, res) => {
+  const location = parseRequestLocation(req);
+  if (!location) {
+    return res.status(400).json({ message: 'Invalid location' });
+  }
+
+  const fallbackAddress = '已选择地图位置';
+  try {
+    const data = await reverseGeocodeByNominatim(location.latitude, location.longitude);
+    const address = formatReverseGeocodeAddress(data);
+
+    res.json({
+      address: address || fallbackAddress,
+      latitude: location.latitude,
+      longitude: location.longitude,
+    });
+  } catch (_) {
+    res.json({
+      address: fallbackAddress,
+      latitude: location.latitude,
+      longitude: location.longitude,
+    });
+  }
+});
+
 app.patch('/api/merchant/salon', async (req, res) => {
   const salon = await Salon.findOne({ id: req.merchantUser.salonId || '1' });
   if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
@@ -1292,6 +1875,7 @@ app.patch('/api/merchant/salon', async (req, res) => {
     address,
     addressRegion,
     addressDetail,
+    location,
     description,
     fullDescription,
     image,
@@ -1310,6 +1894,23 @@ app.patch('/api/merchant/salon', async (req, res) => {
     salon.addressRegion = addressRegion;
   }
   if (typeof addressDetail === 'string') salon.addressDetail = addressDetail;
+  if (location && typeof location === 'object') {
+    const latitude = Number(location.latitude);
+    const longitude = Number(location.longitude);
+    if (
+      Number.isFinite(latitude) &&
+      Number.isFinite(longitude) &&
+      latitude >= -90 &&
+      latitude <= 90 &&
+      longitude >= -180 &&
+      longitude <= 180
+    ) {
+      salon.location = {
+        latitude: Number(latitude.toFixed(6)),
+        longitude: Number(longitude.toFixed(6)),
+      };
+    }
+  }
   if (typeof description === 'string') salon.description = description;
   if (typeof fullDescription === 'string') salon.fullDescription = fullDescription;
   if (typeof image === 'string') salon.image = image;
@@ -1671,8 +2272,10 @@ app.post('/api/bookings', async (req, res) => {
   const serviceBasePrice = parsePriceValue(service.price);
   const staffExtraServiceFee = isNoPreference ? 0 : Number(staffMember.extraServiceFee || 0);
   const totalPrice = serviceBasePrice + staffExtraServiceFee;
+  const orderNo = 'BK' + Date.now();
   const booking = await Booking.create({
-    id: 'BK' + Date.now(),
+    id: orderNo,
+    orderNo,
     userId,
     userName,
     salonId: salon.id,
