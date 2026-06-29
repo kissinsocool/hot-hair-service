@@ -82,6 +82,10 @@ const salonSchema = new mongoose.Schema({
   addressRegion: mongoose.Schema.Types.Mixed,
   addressDetail: String,
   location: mongoose.Schema.Types.Mixed,
+  geoLocation: {
+    type: { type: String, enum: ['Point'] },
+    coordinates: [Number],
+  },
   rating: Number,
   image: String,
   images: [String],
@@ -103,6 +107,9 @@ const salonSchema = new mongoose.Schema({
   contentReviewedAt: Date,
   pendingContent: mongoose.Schema.Types.Mixed,
 }, { timestamps: true });
+
+salonSchema.index({ geoLocation: '2dsphere' });
+salonSchema.index({ publishStatus: 1 });
 
 const staffProfileSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
@@ -427,9 +434,115 @@ const staff = {
 const normalizeDocument = (document) =>
   typeof document?.toObject === 'function' ? document.toObject() : document;
 
-const getAllSalons = async () => {
+const getAllSalons = async (limit) => {
+  if (limit) {
+    return Salon.find({ publishStatus: 'online' }).sort({ id: 1 }).limit(limit).lean();
+  }
   const salonList = await Salon.find({ publishStatus: 'online' }).lean();
   return salonList.sort((a, b) => Number(a.id) - Number(b.id));
+};
+
+const toFiniteNumber = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+};
+
+const getCoordinates = (location) => {
+  if (!location) return null;
+  if (typeof location === 'string') {
+    const [longitude, latitude] = location.split(',').map(toFiniteNumber);
+    return latitude !== null && longitude !== null ? { latitude, longitude } : null;
+  }
+  if (Array.isArray(location?.coordinates)) {
+    const [longitude, latitude] = location.coordinates.map(toFiniteNumber);
+    return latitude !== null && longitude !== null ? { latitude, longitude } : null;
+  }
+  const latitude = toFiniteNumber(location.latitude ?? location.lat);
+  const longitude = toFiniteNumber(location.longitude ?? location.lng ?? location.lon);
+  return latitude !== null && longitude !== null ? { latitude, longitude } : null;
+};
+
+const buildGeoLocation = (location) => {
+  const coordinates = getCoordinates(location);
+  return coordinates
+    ? { type: 'Point', coordinates: [coordinates.longitude, coordinates.latitude] }
+    : null;
+};
+
+const calculateDistanceKm = (from, to) => {
+  const toRadians = (degrees) => degrees * Math.PI / 180;
+  const deltaLatitude = toRadians(to.latitude - from.latitude);
+  const deltaLongitude = toRadians(to.longitude - from.longitude);
+  const startLatitude = toRadians(from.latitude);
+  const endLatitude = toRadians(to.latitude);
+  const a = Math.sin(deltaLatitude / 2) ** 2
+    + Math.cos(startLatitude) * Math.cos(endLatitude) * Math.sin(deltaLongitude / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+const filterNearbySalons = (salonList, userLocation, radiusKm = 10) =>
+  salonList
+    .map((salon) => {
+      const salonLocation = getCoordinates(salon.location || salon.geoLocation);
+      if (!salonLocation) return null;
+      return { ...salon, distanceKm: Number(calculateDistanceKm(userLocation, salonLocation).toFixed(2)) };
+    })
+    .filter(Boolean)
+    .filter((salon) => salon.distanceKm <= radiusKm)
+    .sort((a, b) => a.distanceKm - b.distanceKm);
+
+const normalizeLimit = (value, fallback = 50, max = 100) => {
+  const limit = Math.floor(Number(value));
+  return Number.isFinite(limit) && limit > 0 ? Math.min(limit, max) : fallback;
+};
+
+const buildSearchRadii = (radiusKm, maxRadiusKm) => {
+  const radii = [];
+  let currentRadiusKm = Math.max(radiusKm, 0.1);
+  const stopRadiusKm = Math.max(currentRadiusKm, maxRadiusKm);
+  while (currentRadiusKm <= stopRadiusKm) {
+    radii.push(currentRadiusKm);
+    currentRadiusKm *= 2;
+  }
+  return radii;
+};
+
+const findNearbySalons = async (userLocation, radiusKm, limit) => {
+  const maxDistance = Math.max(radiusKm, 0.1) * 1000;
+  const query = {
+    publishStatus: 'online',
+    geoLocation: {
+      $nearSphere: {
+        $geometry: {
+          type: 'Point',
+          coordinates: [userLocation.longitude, userLocation.latitude],
+        },
+        $maxDistance: maxDistance,
+      },
+    },
+  };
+  const salonList = await Salon.find(query).limit(limit).lean();
+  return salonList
+    .map((salon) => {
+      const salonLocation = getCoordinates(salon.location || salon.geoLocation);
+      return salonLocation
+        ? { ...salon, distanceKm: Number(calculateDistanceKm(userLocation, salonLocation).toFixed(2)) }
+        : salon;
+    })
+    .sort((a, b) => (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity));
+};
+
+const getNearbySalons = async (userLocation, radiusKm, limit, minResults = 10, maxRadiusKm = 5000) => {
+  const targetCount = Math.min(limit, minResults);
+  let salonList = [];
+
+  for (const searchRadiusKm of buildSearchRadii(radiusKm, maxRadiusKm)) {
+    salonList = await findNearbySalons(userLocation, searchRadiusKm, limit);
+    if (salonList.length >= targetCount) return salonList;
+  }
+
+  // ponytail: legacy coordinate fallback, remove after every salon has geoLocation.
+  return filterNearbySalons(await getAllSalons(), userLocation, maxRadiusKm).slice(0, limit);
 };
 
 const getServiceById = async (serviceId) => {
@@ -710,6 +823,7 @@ const applyPendingContent = async (salon) => {
     .forEach(key => {
       if (draft[key] !== undefined) salon[key] = draft[key];
     });
+  if (draft.location !== undefined) salon.geoLocation = buildGeoLocation(draft.location);
 
   if (Array.isArray(draft.staff)) {
     salon.staffIds = draft.staff.map(profile => profile.id).filter(Boolean);
@@ -750,6 +864,7 @@ const ensureSalonForMerchant = async ({ salonId, displayName }) => {
     addressRegion: {},
     addressDetail: '',
     location: null,
+    geoLocation: null,
     rating: 4.8,
     image: '',
     images: [],
@@ -803,6 +918,27 @@ const migrateFavoriteSalonsFromFile = async () => {
       })),
     { ordered: false },
   ).catch(() => {});
+};
+
+const syncSalonGeoLocations = async () => {
+  const salonList = await Salon.find({ location: { $ne: null } }, { id: 1, location: 1, geoLocation: 1 }).lean();
+  const updates = salonList
+    .map((salon) => ({ salon, geoLocation: buildGeoLocation(salon.location) }))
+    .filter(({ geoLocation }) => geoLocation)
+    .filter(({ salon, geoLocation }) => {
+      const existing = getCoordinates(salon.geoLocation);
+      return !existing
+        || existing.latitude !== geoLocation.coordinates[1]
+        || existing.longitude !== geoLocation.coordinates[0];
+    })
+    .map(({ salon, geoLocation }) => ({
+      updateOne: {
+        filter: { _id: salon._id },
+        update: { $set: { geoLocation } },
+      },
+    }));
+
+  if (updates.length > 0) await Salon.bulkWrite(updates, { ordered: false });
 };
 
 const migrateSeedDataToMongo = async () => {
@@ -953,9 +1089,15 @@ const generateSlotsForNoPreferenceAndDate = async (candidateStaffIds, date) => {
 };
 
 app.get('/api/salons', async (req, res) => {
-  const salonList = await getAllSalons();
+  const userLocation = getCoordinates(req.query);
+  if (!userLocation) return res.status(400).json({ message: 'latitude and longitude are required' });
+  const radiusKm = toFiniteNumber(req.query.radiusKm) ?? 10;
+  const limit = normalizeLimit(req.query.limit);
+  const minResults = normalizeLimit(req.query.minResults, 10, limit);
+  const maxRadiusKm = toFiniteNumber(req.query.maxRadiusKm) ?? 5000;
+  const salonList = await getNearbySalons(userLocation, radiusKm, limit, minResults, maxRadiusKm);
   res.json(salonList.map(s => {
-    const { fullDescription, openingHours, phone, staffIds, services, staff, reviews, _id, __v, createdAt, updatedAt, ...basic } = s;
+    const { fullDescription, openingHours, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = s;
     return {
       ...basic,
       images: buildSalonImageList(s),
@@ -2001,7 +2143,9 @@ const startServer = async () => {
   }
 
   await mongoose.connect(mongoUri);
+  await Salon.createIndexes();
   await migrateSeedDataToMongo();
+  await syncSalonGeoLocations();
   await migrateFavoriteSalonsFromFile();
   console.log('MongoDB connected');
 
@@ -2010,7 +2154,17 @@ const startServer = async () => {
   });
 };
 
-startServer().catch((error) => {
-  console.error('Failed to start backend:', error.message);
-  process.exit(1);
-});
+if (require.main === module) {
+  startServer().catch((error) => {
+    console.error('Failed to start backend:', error.message);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  buildGeoLocation,
+  buildSearchRadii,
+  calculateDistanceKm,
+  filterNearbySalons,
+  getCoordinates,
+};
