@@ -1,6 +1,12 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { buildGeoLocation, buildSearchRadii, filterNearbySalons, getCoordinates } = require('./index');
+const {
+  acceptedBookingAtTimeQuery,
+  buildGeoLocation,
+  buildSearchRadii,
+  filterNearbySalons,
+  getCoordinates,
+} = require('./index');
 
 test('getCoordinates accepts common location shapes', () => {
   assert.deepEqual(getCoordinates('121.4737,31.2304'), { latitude: 31.2304, longitude: 121.4737 });
@@ -32,4 +38,13 @@ test('filterNearbySalons returns only nearby salons sorted by distance', () => {
     filterNearbySalons(salons, { latitude: 31.2304, longitude: 121.4737 }, 1).map(salon => salon.id),
     ['near-1', 'near-2'],
   );
+});
+
+test('acceptedBookingAtTimeQuery only blocks already accepted bookings', () => {
+  const query = acceptedBookingAtTimeQuery('S1', '2026-06-21T03:30:00.000Z', 'BK1');
+
+  assert.equal(query.staffId, 'S1');
+  assert.equal(query.startTime.getTime(), Date.parse('2026-06-21T03:30:00.000Z'));
+  assert.deepEqual(query.id, { $ne: 'BK1' });
+  assert.equal(query.status, 'accepted');
 });

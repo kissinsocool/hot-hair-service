@@ -1,187 +1,80 @@
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 const express = require('express');
 const cors = require('cors');
-const bodyParser = require('body-parser');
 const fs = require('fs');
-const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { WebSocketServer } = require('ws');
+const {
+  PORT,
+  DEMO_USER_ID,
+  uploadDir,
+  imageCacheDir,
+  dataDir,
+  favoritesFile,
+  picturesDir,
+  amapWebServiceKey,
+  wechatAppId,
+  wechatAppSecret,
+  allowedOrigins,
+} = require('./src/config');
+const {
+  Booking,
+  UserPolicy,
+  FavoriteSalon,
+  Salon,
+  StaffProfile,
+  MerchantUser,
+  AdminUser,
+  ClientUser,
+  SmsVerification,
+} = require('./src/models');
+const {
+  compressedImageMiddleware,
+  imageExists,
+  publicImageUrl,
+  saveBase64Image,
+} = require('./src/images');
 
 const app = express();
-const PORT = 3000;
-const AMAP_WEB_SERVICE_KEY =
-  process.env.AMAP_WEB_SERVICE_KEY ||
-  process.env.AMAP_WEB_KEY ||
-  '2285f50755ccb6f5339886b84b2c4039';
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
-app.use(cors());
-app.use(bodyParser.json({ limit: '10mb' }));
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
+}));
+app.use(express.json({ limit: process.env.JSON_LIMIT || '10mb' }));
 
 // 静态资源托管
-app.use('/images', express.static('/Users/alice/Pictures'));
-const uploadDir = path.join(__dirname, 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
+fs.mkdirSync(imageCacheDir, { recursive: true });
+app.use('/cached-images', express.static(imageCacheDir));
+app.get(/^\/images\/(.+)/, compressedImageMiddleware(picturesDir));
+app.use('/images', express.static(picturesDir));
+app.get(/^\/uploads\/(.+)/, compressedImageMiddleware(uploadDir));
 app.use('/uploads', express.static(uploadDir));
-const dataDir = path.join(__dirname, 'data');
-const favoritesFile = path.join(dataDir, 'favorites.json');
 fs.mkdirSync(dataDir, { recursive: true });
-const DEMO_USER_ID = 'demo';
-
-const bookingSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true, index: true },
-  userId: { type: String, default: DEMO_USER_ID, index: true },
-  userName: { type: String, default: 'Demo 用户' },
-  salonId: String,
-  salonName: String,
-  staffId: { type: String, required: true, index: true },
-  staffName: String,
-  serviceId: { type: String, required: true },
-  serviceName: String,
-  servicePrice: String,
-  serviceDuration: String,
-  serviceBasePrice: { type: Number, default: 0 },
-  staffExtraServiceFee: { type: Number, default: 0 },
-  totalPrice: { type: Number, default: 0 },
-  startTime: { type: Date, required: true, index: true },
-  note: { type: String, default: '' },
-  status: { type: String, default: 'pending', index: true },
-  merchantMessage: String,
-  userMessage: String,
-  rejectReason: { type: String, default: '' },
-  reviewed: { type: Boolean, default: false },
-  review: mongoose.Schema.Types.Mixed,
-  complained: { type: Boolean, default: false },
-  complaint: mongoose.Schema.Types.Mixed,
-  createdAt: Date,
-  updatedAt: Date,
-}, { id: false });
-
-const userPolicySchema = new mongoose.Schema({
-  userId: { type: String, required: true, unique: true, index: true },
-  noShowCount: { type: Number, default: 0 },
-  isBlacklisted: { type: Boolean, default: false },
-  updatedAt: Date,
-}, { timestamps: true });
-
-const favoriteSalonSchema = new mongoose.Schema({
-  userId: { type: String, default: DEMO_USER_ID, index: true },
-  salonId: { type: String, required: true, index: true },
-  salon: { type: mongoose.Schema.Types.Mixed, required: true },
-}, { timestamps: true });
-
-favoriteSalonSchema.index({ userId: 1, salonId: 1 }, { unique: true });
-
-const salonSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true, index: true },
-  name: String,
-  address: String,
-  addressRegion: mongoose.Schema.Types.Mixed,
-  addressDetail: String,
-  location: mongoose.Schema.Types.Mixed,
-  geoLocation: {
-    type: { type: String, enum: ['Point'] },
-    coordinates: [Number],
-  },
-  rating: Number,
-  image: String,
-  images: [String],
-  promoImages: [String],
-  description: String,
-  fullDescription: String,
-  openingHours: String,
-  phone: String,
-  staffIds: [String],
-  services: [mongoose.Schema.Types.Mixed],
-  publishStatus: { type: String, default: 'online', index: true },
-  licenseUrl: { type: String, default: '' },
-  licenseStatus: { type: String, default: 'unsubmitted', index: true },
-  licenseRejectReason: { type: String, default: '' },
-  licenseSubmittedAt: Date,
-  licenseReviewedAt: Date,
-  contentReviewStatus: { type: String, default: 'pending', index: true },
-  contentRejectReason: { type: String, default: '' },
-  contentReviewedAt: Date,
-  pendingContent: mongoose.Schema.Types.Mixed,
-}, { timestamps: true });
-
-salonSchema.index({ geoLocation: '2dsphere' });
-salonSchema.index({ publishStatus: 1 });
-
-const staffProfileSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true, index: true },
-  name: String,
-  role: String,
-  experience: String,
-  extraServiceFee: { type: Number, default: 0 },
-  imageUrl: String,
-  bio: String,
-  rating: Number,
-  reviews: [mongoose.Schema.Types.Mixed],
-  unavailableSlots: [String],
-}, { timestamps: true });
-
-const merchantUserSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true, index: true },
-  username: { type: String, required: true, unique: true, index: true },
-  displayName: String,
-  salonId: { type: String, default: '1', index: true },
-  deposit: { type: Number, default: 0 },
-  role: { type: String, default: 'merchant' },
-  passwordHash: { type: String, required: true },
-  passwordSalt: { type: String, required: true },
-  sessionToken: { type: String, default: '' },
-  lastLoginAt: Date,
-}, { timestamps: true });
-
-const adminUserSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true, index: true },
-  username: { type: String, required: true, unique: true, index: true },
-  displayName: String,
-  role: { type: String, default: 'admin' },
-  passwordHash: { type: String, required: true },
-  passwordSalt: { type: String, required: true },
-  sessionToken: { type: String, default: '', index: true },
-  lastLoginAt: Date,
-}, { timestamps: true });
-
-const clientUserSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true, index: true },
-  account: { type: String, required: true, unique: true, index: true },
-  displayName: String,
-  gender: { type: String, default: '保密' },
-  avatarUrl: { type: String, default: '' },
-  phone: { type: String, default: '' },
-  passwordHash: { type: String, required: true },
-  passwordSalt: { type: String, required: true },
-  sessionToken: { type: String, default: '', index: true },
-  lastLoginAt: Date,
-}, { timestamps: true });
-
-const smsVerificationSchema = new mongoose.Schema({
-  phone: { type: String, required: true, index: true },
-  codeHash: { type: String, required: true },
-  expiresAt: { type: Date, required: true, index: true },
-  consumedAt: Date,
-}, { timestamps: true });
-
-const Booking = mongoose.model('Booking', bookingSchema);
-const UserPolicy = mongoose.model('UserPolicy', userPolicySchema);
-const FavoriteSalon = mongoose.model('FavoriteSalon', favoriteSalonSchema);
-const Salon = mongoose.model('Salon', salonSchema);
-const StaffProfile = mongoose.model('StaffProfile', staffProfileSchema);
-const MerchantUser = mongoose.model('MerchantUser', merchantUserSchema);
-const AdminUser = mongoose.model('AdminUser', adminUserSchema);
-const ClientUser = mongoose.model('ClientUser', clientUserSchema);
-const SmsVerification = mongoose.model('SmsVerification', smsVerificationSchema);
 
 const hashPassword = (password, salt = crypto.randomBytes(16).toString('hex')) => ({
   salt,
-  hash: crypto.createHash('sha256').update(`${salt}:${password}`).digest('hex'),
+  hash: crypto.pbkdf2Sync(String(password), salt, 120000, 32, 'sha256').toString('hex'),
 });
+
+const timingSafeEqualHex = (left, right) => {
+  const leftBuffer = Buffer.from(String(left || ''), 'hex');
+  const rightBuffer = Buffer.from(String(right || ''), 'hex');
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+};
+
+const verifyPassword = (password, user) => {
+  const currentHash = hashPassword(password, user.passwordSalt).hash;
+  const legacyHash = crypto.createHash('sha256').update(`${user.passwordSalt}:${password}`).digest('hex');
+  return timingSafeEqualHex(currentHash, user.passwordHash) || timingSafeEqualHex(legacyHash, user.passwordHash);
+};
 
 const normalizePhone = (phone) => String(phone || '').replace(/\D/g, '');
 
@@ -261,6 +154,96 @@ const buildClientUserPayload = (user) => ({
   avatarUrl: user.avatarUrl || '',
   phone: user.phone || user.account,
 });
+
+let wechatTokenCache = { token: '', expiresAt: 0 };
+
+const getWechatAccessToken = async () => {
+  if (wechatTokenCache.token && wechatTokenCache.expiresAt > Date.now()) return wechatTokenCache.token;
+
+  const url = new URL('https://api.weixin.qq.com/cgi-bin/token');
+  url.searchParams.set('grant_type', 'client_credential');
+  url.searchParams.set('appid', wechatAppId);
+  url.searchParams.set('secret', wechatAppSecret);
+  const data = await fetchJson(url);
+  if (!data?.access_token) throw new Error(data?.errmsg || '获取微信 access_token 失败');
+
+  wechatTokenCache = {
+    token: data.access_token,
+    expiresAt: Date.now() + Math.max(Number(data.expires_in || 7200) - 300, 60) * 1000,
+  };
+  return wechatTokenCache.token;
+};
+
+const getWechatPhoneNumber = async (code) => {
+  const accessToken = await getWechatAccessToken();
+  const data = await fetchJson(`https://api.weixin.qq.com/wxa/business/getuserphonenumber?access_token=${accessToken}`, {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+    headers: { 'content-type': 'application/json' },
+  });
+  const phone = normalizePhone(data?.phone_info?.phoneNumber);
+  if (!isValidPhone(phone)) throw new Error(data?.errmsg || '微信手机号授权失败');
+  return phone;
+};
+
+const getWechatSessionKey = async (loginCode) => {
+  const url = new URL('https://api.weixin.qq.com/sns/jscode2session');
+  url.searchParams.set('appid', wechatAppId);
+  url.searchParams.set('secret', wechatAppSecret);
+  url.searchParams.set('js_code', loginCode);
+  url.searchParams.set('grant_type', 'authorization_code');
+  const data = await fetchJson(url);
+  if (!data?.session_key) throw new Error(data?.errmsg || '微信登录失败');
+  return data.session_key;
+};
+
+const decryptWechatPhoneNumber = async ({ encryptedData, iv, loginCode }) => {
+  if (!encryptedData || !iv || !loginCode) throw new Error('微信手机号授权失败');
+  const sessionKey = await getWechatSessionKey(loginCode);
+  const decipher = crypto.createDecipheriv(
+    'aes-128-cbc',
+    Buffer.from(sessionKey, 'base64'),
+    Buffer.from(iv, 'base64'),
+  );
+  decipher.setAutoPadding(true);
+  const decrypted = Buffer.concat([
+    decipher.update(Buffer.from(encryptedData, 'base64')),
+    decipher.final(),
+  ]);
+  const data = JSON.parse(decrypted.toString('utf8'));
+  if (data?.watermark?.appid && data.watermark.appid !== wechatAppId) {
+    throw new Error('微信手机号授权失败');
+  }
+  const phone = normalizePhone(data.phoneNumber || data.purePhoneNumber);
+  if (!isValidPhone(phone)) throw new Error('微信手机号授权失败');
+  return phone;
+};
+
+const loginClientByPhone = async (phone) => {
+  let user = await ClientUser.findOne({ $or: [{ account: phone }, { phone }] });
+  if (!user) {
+    const password = crypto.randomBytes(16).toString('hex');
+    const { salt, hash } = hashPassword(password);
+    user = await ClientUser.create({
+      id: newClientUserId(),
+      account: phone,
+      displayName: maskPhone(phone),
+      gender: '保密',
+      phone,
+      passwordSalt: salt,
+      passwordHash: hash,
+    });
+  }
+
+  user.sessionToken = crypto.randomBytes(32).toString('hex');
+  user.lastLoginAt = new Date();
+  await user.save();
+
+  return {
+    token: user.sessionToken,
+    user: buildClientUserPayload(user),
+  };
+};
 
 const requireMerchantAuth = async (req, res, next) => {
   const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
@@ -592,13 +575,14 @@ const normalizeDeposit = (deposit) => {
   return Number.isFinite(value) && value >= 0 ? value : null;
 };
 
-const fetchJson = async (url) => {
+const fetchJson = async (url, options = {}) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
     const response = await fetch(url, {
+      ...options,
       signal: controller.signal,
-      headers: { 'User-Agent': 'hot-hair-service/1.0' },
+      headers: { 'User-Agent': 'hot-hair-service/1.0', ...(options.headers || {}) },
     });
     if (!response.ok) return null;
     return response.json();
@@ -669,6 +653,16 @@ const findActiveBookingAtTimeExcluding = (staffId, startTime, bookingId) =>
     status: { $in: ['pending', 'accepted'] },
   });
 
+const acceptedBookingAtTimeQuery = (staffId, startTime, bookingId) => ({
+  staffId,
+  startTime: new Date(startTime),
+  id: { $ne: bookingId },
+  status: 'accepted',
+});
+
+const findAcceptedBookingAtTimeExcluding = (staffId, startTime, bookingId) =>
+  Booking.findOne(acceptedBookingAtTimeQuery(staffId, startTime, bookingId));
+
 const normalizeBooking = (booking) => ({
   ...(typeof booking.toObject === 'function' ? booking.toObject() : booking),
   statusLabel: {
@@ -724,12 +718,23 @@ const buildSalonImageList = (salon) => {
     .slice(0, 20);
 };
 
+const salonCoverImage = (salon) =>
+  publicImageUrl([salon?.image, ...buildSalonImageList(salon)].find(image => typeof image === 'string' && image.trim() && imageExists(image)) || '');
+
 const buildSalonDetail = async (salonDocument) => {
   const salon = normalizeDocument(salonDocument);
   const staffMap = await getStaffMapByIds(salon.staffIds);
+  const staffList = salon.staffIds.map(id => staffMap[id]).filter(Boolean);
   return {
     ...salon,
-    staff: salon.staffIds.map(id => staffMap[id]).filter(Boolean).map(buildStaffPayload),
+    image: salonCoverImage(salon),
+    images: buildSalonImageList(salon).filter(imageExists).map(publicImageUrl),
+    promoImages: buildSalonImageList(salon).filter(imageExists).map(publicImageUrl),
+    staff: staffList.map(buildStaffPayload),
+    reviews: staffList.flatMap(staff => (staff.reviews || []).map(review => ({
+      ...review,
+      staffName: staff.name,
+    }))),
   };
 };
 
@@ -1100,7 +1105,32 @@ app.get('/api/salons', async (req, res) => {
     const { fullDescription, openingHours, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = s;
     return {
       ...basic,
-      images: buildSalonImageList(s),
+      image: salonCoverImage(s),
+      images: buildSalonImageList(s).filter(imageExists).map(publicImageUrl),
+    };
+  }));
+});
+
+app.get('/api/salons/suggestions', async (req, res) => {
+  const keyword = String(req.query.keyword || '').trim();
+  if (!keyword) return res.json([]);
+  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const salons = await Salon
+    .find({ publishStatus: 'online', name: { $regex: escaped, $options: 'i' } })
+    .limit(8)
+    .lean();
+  const userLocation = getCoordinates(req.query);
+  res.json(salons.map((salon) => {
+    const coordinates = getCoordinates(salon.location || salon.geoLocation);
+    const distanceKm = userLocation && coordinates
+      ? Number(calculateDistanceKm(userLocation, coordinates).toFixed(2))
+      : undefined;
+    const { fullDescription, openingHours, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = salon;
+    return {
+      ...basic,
+      image: salonCoverImage(salon),
+      images: buildSalonImageList(salon).filter(imageExists).map(publicImageUrl),
+      ...(distanceKm === undefined ? {} : { distanceKm }),
     };
   }));
 });
@@ -1150,11 +1180,12 @@ app.post('/api/auth/sms/request', async (req, res) => {
     expiresAt: new Date(Date.now() + 5 * 60 * 1000),
   });
 
-  res.json({
+  const payload = {
     message: '验证码已发送',
     expiresInSeconds: 300,
-    debugCode: code,
-  });
+  };
+  if (process.env.NODE_ENV !== 'production') payload.debugCode = code;
+  res.json(payload);
 });
 
 app.post('/api/auth/sms/verify', async (req, res) => {
@@ -1178,29 +1209,29 @@ app.post('/api/auth/sms/verify', async (req, res) => {
   verification.consumedAt = new Date();
   await verification.save();
 
-  let user = await ClientUser.findOne({ $or: [{ account: phone }, { phone }] });
-  if (!user) {
-    const password = crypto.randomBytes(16).toString('hex');
-    const { salt, hash } = hashPassword(password);
-    user = await ClientUser.create({
-      id: newClientUserId(),
-      account: phone,
-      displayName: maskPhone(phone),
-      gender: '保密',
-      phone,
-      passwordSalt: salt,
-      passwordHash: hash,
-    });
+  res.json(await loginClientByPhone(phone));
+});
+
+app.post('/api/auth/wechat/phone', async (req, res) => {
+  const code = String(req.body.code || '').trim();
+  const encryptedData = String(req.body.encryptedData || '').trim();
+  const iv = String(req.body.iv || '').trim();
+  const loginCode = String(req.body.loginCode || '').trim();
+  if (!code && (!encryptedData || !iv || !loginCode)) {
+    return res.status(400).json({ message: '微信手机号授权参数不完整' });
+  }
+  if (!wechatAppId || !wechatAppSecret) {
+    return res.status(503).json({ message: 'WECHAT_APP_ID and WECHAT_APP_SECRET are missing' });
   }
 
-  user.sessionToken = crypto.randomBytes(32).toString('hex');
-  user.lastLoginAt = new Date();
-  await user.save();
-
-  res.json({
-    token: user.sessionToken,
-    user: buildClientUserPayload(user),
-  });
+  try {
+    const phone = code
+      ? await getWechatPhoneNumber(code)
+      : await decryptWechatPhoneNumber({ encryptedData, iv, loginCode });
+    res.json(await loginClientByPhone(phone));
+  } catch (err) {
+    res.status(401).json({ message: err.message || '微信手机号授权失败' });
+  }
 });
 
 app.post('/api/auth/register', async (req, res) => {
@@ -1250,8 +1281,7 @@ app.post('/api/auth/login', async (req, res) => {
     : await ClientUser.findOne({ account });
   if (!user) return res.status(401).json({ message: '账号或密码错误' });
 
-  const { hash } = hashPassword(password, user.passwordSalt);
-  if (hash !== user.passwordHash) {
+  if (!verifyPassword(password, user)) {
     return res.status(401).json({ message: '账号或密码错误' });
   }
 
@@ -1320,8 +1350,7 @@ app.post('/api/merchant/auth/login', async (req, res) => {
   const user = await MerchantUser.findOne({ username });
   if (!user) return res.status(401).json({ message: '账号或密码错误' });
 
-  const { hash } = hashPassword(password, user.passwordSalt);
-  if (hash !== user.passwordHash) {
+  if (!verifyPassword(password, user)) {
     return res.status(401).json({ message: '账号或密码错误' });
   }
 
@@ -1350,8 +1379,7 @@ app.post('/api/admin/auth/login', async (req, res) => {
   const user = await AdminUser.findOne({ username });
   if (!user) return res.status(401).json({ message: '账号或密码错误' });
 
-  const { hash } = hashPassword(password, user.passwordSalt);
-  if (hash !== user.passwordHash) {
+  if (!verifyPassword(password, user)) {
     return res.status(401).json({ message: '账号或密码错误' });
   }
 
@@ -1565,10 +1593,11 @@ app.get('/api/admin/bookings', requireAdminAuth, async (req, res) => {
 app.use('/api/merchant', requireMerchantAuth);
 
 app.post('/api/merchant/geocode', async (req, res) => {
+  if (!amapWebServiceKey) return res.status(503).json({ message: 'AMAP_WEB_SERVICE_KEY is missing' });
   const address = String(req.body.address || '').trim();
   if (!address) return res.status(400).json({ message: 'address is required' });
   const url = new URL('https://restapi.amap.com/v3/geocode/geo');
-  url.searchParams.set('key', AMAP_WEB_SERVICE_KEY);
+  url.searchParams.set('key', amapWebServiceKey);
   url.searchParams.set('address', address);
   url.searchParams.set('output', 'json');
   const data = await fetchJson(url);
@@ -1582,13 +1611,14 @@ app.post('/api/merchant/geocode', async (req, res) => {
 });
 
 app.post('/api/merchant/reverse-geocode', async (req, res) => {
+  if (!amapWebServiceKey) return res.status(503).json({ message: 'AMAP_WEB_SERVICE_KEY is missing' });
   const latitude = Number(req.body.latitude);
   const longitude = Number(req.body.longitude);
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
     return res.status(400).json({ message: 'latitude and longitude are required' });
   }
   const url = new URL('https://restapi.amap.com/v3/geocode/regeo');
-  url.searchParams.set('key', AMAP_WEB_SERVICE_KEY);
+  url.searchParams.set('key', amapWebServiceKey);
   url.searchParams.set('location', `${longitude},${latitude}`);
   url.searchParams.set('extensions', 'base');
   url.searchParams.set('output', 'json');
@@ -1612,8 +1642,7 @@ app.patch('/api/merchant/account', async (req, res) => {
 
   if (newPassword) {
     if (newPassword.length < 6) return res.status(400).json({ message: '新密码至少 6 位' });
-    const { hash } = hashPassword(currentPassword, user.passwordSalt);
-    if (hash !== user.passwordHash) {
+    if (!verifyPassword(currentPassword, user)) {
       return res.status(401).json({ message: '当前密码错误' });
     }
     const nextPassword = hashPassword(newPassword);
@@ -1697,20 +1726,9 @@ app.patch('/api/merchant/salon', async (req, res) => {
 
 app.post('/api/merchant/uploads', (req, res) => {
   const { data, fileName = 'avatar.png' } = req.body;
-  if (typeof data !== 'string' || data.length === 0) {
-    return res.status(400).json({ message: 'Image data is required' });
-  }
-
-  const extension = path.extname(fileName).toLowerCase() || '.png';
-  const safeExtension = ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(extension)
-    ? extension
-    : '.png';
-  const uploadName = `staff-${Date.now()}-${Math.random().toString(36).slice(2)}${safeExtension}`;
-  const base64 = data.includes(',') ? data.split(',').pop() : data;
-  const buffer = Buffer.from(base64, 'base64');
-
-  fs.writeFileSync(path.join(uploadDir, uploadName), buffer);
-  res.status(201).json({ url: `http://localhost:${PORT}/uploads/${uploadName}` });
+  const url = saveBase64Image('staff', fileName, data);
+  if (!url) return res.status(400).json({ message: 'Valid image data under 5MB is required' });
+  res.status(201).json({ url });
 });
 
 app.get('/api/staff/:id', async (req, res) => {
@@ -1786,6 +1804,10 @@ app.patch('/api/bookings/:id/cancel', async (req, res) => {
 app.post('/api/bookings/:id/review', async (req, res) => {
   const booking = await Booking.findOne({ id: req.params.id });
   if (!booking) return res.status(404).json({ message: 'Booking not found' });
+  const { userId } = await resolveRequestUser(req);
+  if (!userIdAliases(userId).includes(normalizeUserId(booking.userId))) {
+    return res.status(403).json({ message: 'Cannot review another user booking' });
+  }
   if (booking.status !== 'completed') {
     return res.status(409).json({ message: 'Only completed bookings can be reviewed' });
   }
@@ -1805,17 +1827,7 @@ app.post('/api/bookings/:id/review', async (req, res) => {
   }
 
   const imageUrls = images
-    .map((image, index) => {
-      if (!image || typeof image.data !== 'string') return null;
-      const extension = path.extname(image.fileName || '').toLowerCase() || '.png';
-      const safeExtension = ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(extension)
-        ? extension
-        : '.png';
-      const imageName = `review-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}${safeExtension}`;
-      const base64 = image.data.includes(',') ? image.data.split(',').pop() : image.data;
-      fs.writeFileSync(path.join(uploadDir, imageName), Buffer.from(base64, 'base64'));
-      return `http://localhost:${PORT}/uploads/${imageName}`;
-    })
+    .map((image, index) => saveBase64Image('review', image?.fileName, image?.data, index))
     .filter(Boolean);
 
   const review = {
@@ -1848,6 +1860,10 @@ app.post('/api/bookings/:id/review', async (req, res) => {
 app.post('/api/bookings/:id/complaint', async (req, res) => {
   const booking = await Booking.findOne({ id: req.params.id });
   if (!booking) return res.status(404).json({ message: 'Booking not found' });
+  const { userId } = await resolveRequestUser(req);
+  if (!userIdAliases(userId).includes(normalizeUserId(booking.userId))) {
+    return res.status(403).json({ message: 'Cannot complain another user booking' });
+  }
   if (booking.status !== 'completed') {
     return res.status(409).json({ message: 'Only completed bookings can be complained' });
   }
@@ -1863,17 +1879,7 @@ app.post('/api/bookings/:id/complaint', async (req, res) => {
   }
 
   const imageUrls = images
-    .map((image, index) => {
-      if (!image || typeof image.data !== 'string') return null;
-      const extension = path.extname(image.fileName || '').toLowerCase() || '.png';
-      const safeExtension = ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(extension)
-        ? extension
-        : '.png';
-      const imageName = `complaint-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}${safeExtension}`;
-      const base64 = image.data.includes(',') ? image.data.split(',').pop() : image.data;
-      fs.writeFileSync(path.join(uploadDir, imageName), Buffer.from(base64, 'base64'));
-      return `http://localhost:${PORT}/uploads/${imageName}`;
-    })
+    .map((image, index) => saveBase64Image('complaint', image?.fileName, image?.data, index))
     .filter(Boolean);
 
   const complaint = {
@@ -1991,6 +1997,7 @@ app.post('/api/bookings', async (req, res) => {
     salonName: salon.name,
     staffId: assignedStaffId,
     staffName: isNoPreference ? '无需指定' : staffMember.name,
+    isNoPreference,
     serviceId,
     serviceName: service.name,
     servicePrice: service.price,
@@ -2016,7 +2023,7 @@ app.post('/api/bookings', async (req, res) => {
 
 app.patch('/api/merchant/bookings/:id', async (req, res) => {
   const { action, reason = '', assignedStaffId = '' } = req.body;
-  const booking = await Booking.findOne({ id: req.params.id });
+  const booking = await Booking.findOne({ id: req.params.id, salonId: req.merchantUser.salonId });
   if (!booking) return res.status(404).json({ message: 'Booking not found' });
   if (!['accept', 'cancel', 'complete', 'no_show', 'reject'].includes(action)) {
     return res.status(400).json({ message: 'action must be accept, cancel, complete, no_show or reject' });
@@ -2028,19 +2035,29 @@ app.patch('/api/merchant/bookings/:id', async (req, res) => {
     return res.status(409).json({ message: 'Only accepted bookings can be canceled, completed or marked no-show' });
   }
 
-  if (action === 'accept' && booking.staffName === '无需指定') {
-    const selectedStaffId = String(assignedStaffId || '').trim();
-    if (!selectedStaffId) {
-      return res.status(400).json({ message: '无需指定理发师的订单接单前必须指定一位理发师' });
+  if (action === 'accept') {
+    let selectedStaffId = booking.staffId;
+    if (booking.isNoPreference || booking.staffName === '无需指定') {
+      booking.isNoPreference = true;
+      selectedStaffId = String(assignedStaffId || '').trim();
+      if (!selectedStaffId) {
+        return res.status(400).json({ message: '无需指定理发师的订单接单前必须指定一位理发师' });
+      }
+
+      const selectedStaff = await getStaffById(selectedStaffId).lean();
+      const selectedSalon = selectedStaff ? await getSalonByStaffId(selectedStaffId).lean() : null;
+      if (!selectedStaff || !selectedSalon || selectedSalon.id !== booking.salonId) {
+        return res.status(404).json({ message: '指定的理发师不属于该店铺' });
+      }
+      if (await isStaffUnavailable(selectedStaffId, booking.startTime.toISOString())) {
+        return res.status(409).json({ message: '指定理发师在该时间段不可预约' });
+      }
+
+      booking.staffId = selectedStaffId;
+      booking.staffName = selectedStaff.name;
     }
 
-    const selectedStaff = await getStaffById(selectedStaffId).lean();
-    const selectedSalon = selectedStaff ? await getSalonByStaffId(selectedStaffId).lean() : null;
-    if (!selectedStaff || !selectedSalon || selectedSalon.id !== booking.salonId) {
-      return res.status(404).json({ message: '指定的理发师不属于该店铺' });
-    }
-
-    const hasConflict = await findActiveBookingAtTimeExcluding(
+    const hasConflict = await findAcceptedBookingAtTimeExcluding(
       selectedStaffId,
       booking.startTime,
       booking.id,
@@ -2048,12 +2065,6 @@ app.patch('/api/merchant/bookings/:id', async (req, res) => {
     if (hasConflict) {
       return res.status(409).json({ message: '指定理发师在该时间段已有预约' });
     }
-    if (await isStaffUnavailable(selectedStaffId, booking.startTime.toISOString())) {
-      return res.status(409).json({ message: '指定理发师在该时间段不可预约' });
-    }
-
-    booking.staffId = selectedStaffId;
-    booking.staffName = selectedStaff.name;
   }
 
   booking.status = {
@@ -2131,7 +2142,8 @@ app.patch('/api/merchant/bookings/:id/review-reply', async (req, res) => {
 
 app.get('/api/merchant/bookings', async (req, res) => {
   const { status } = req.query;
-  const query = status ? { status } : {};
+  const query = { salonId: req.merchantUser.salonId };
+  if (status) query.status = status;
   const result = await Booking.find(query).sort({ createdAt: -1 });
   res.json(result.map(normalizeBooking));
 });
@@ -2162,6 +2174,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  acceptedBookingAtTimeQuery,
   buildGeoLocation,
   buildSearchRadii,
   calculateDistanceKm,
