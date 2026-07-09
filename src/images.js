@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { PORT, imageCacheDir, picturesDir, uploadDir } = require('./config');
+const { imageCacheDir, picturesDir, publicBaseUrl, uploadDir } = require('./config');
 
 function compressedImageMiddleware(rootDir) {
   return (req, res, next) => {
@@ -33,9 +33,13 @@ function compressedImagePath(sourcePath) {
 
   if (!fs.existsSync(cachePath)) {
     // ponytail: macOS dev backend, switch to sharp when this runs off Mac.
-    execFileSync('sips', ['-Z', '900', '-s', 'format', 'jpeg', '-s', 'formatOptions', '72', sourcePath, '--out', cachePath], {
-      stdio: 'ignore',
-    });
+    try {
+      execFileSync('sips', ['-Z', '900', '-s', 'format', 'jpeg', '-s', 'formatOptions', '72', sourcePath, '--out', cachePath], {
+        stdio: 'ignore',
+      });
+    } catch (_) {
+      return '';
+    }
   }
 
   return cachePath;
@@ -60,7 +64,7 @@ const publicImageUrl = (url) => {
   const filePath = localImagePath(url);
   if (!filePath) return url;
   const cachePath = compressedImagePath(filePath);
-  return cachePath ? `http://localhost:${PORT}/cached-images/${path.basename(cachePath)}` : url;
+  return cachePath ? `${publicBaseUrl}/cached-images/${path.basename(cachePath)}` : url;
 };
 
 const saveBase64Image = (prefix, fileName, data, index = 0) => {
@@ -84,7 +88,7 @@ const saveBase64Image = (prefix, fileName, data, index = 0) => {
 
   const imageName = `${prefix}-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}${safeExtension}`;
   fs.writeFileSync(path.join(uploadDir, imageName), buffer);
-  return `http://localhost:${PORT}/uploads/${imageName}`;
+  return `${publicBaseUrl}/uploads/${imageName}`;
 };
 
 module.exports = {

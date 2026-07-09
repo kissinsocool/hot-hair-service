@@ -15,9 +15,10 @@ const {
   favoritesFile,
   picturesDir,
   amapWebServiceKey,
+  publicBaseUrl,
   wechatAppId,
   wechatAppSecret,
-  allowedOrigins,
+  isAllowedOrigin,
 } = require('./src/config');
 const {
   Booking,
@@ -43,7 +44,7 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    if (isAllowedOrigin(origin)) return callback(null, true);
     return callback(new Error('Not allowed by CORS'));
   },
 }));
@@ -319,7 +320,7 @@ wss.on('connection', (socket) => {
 });
 
 // --- Initial merchant template data ---
-const imageUrl = 'http://localhost:3000/images/云南/1/IMG_1310.JPG';
+const imageUrl = `${publicBaseUrl}/images/云南/1/IMG_1310.JPG`;
 
 const salons = [
   {

@@ -1,6 +1,7 @@
 const path = require('path');
 
 const PORT = Number(process.env.PORT || 3000);
+const publicBaseUrl = (process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
 const DEMO_USER_ID = 'demo';
 const uploadDir = path.join(__dirname, '..', 'uploads');
 const imageCacheDir = path.join(__dirname, '..', 'image-cache');
@@ -14,9 +15,19 @@ const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000,http:/
   .split(',')
   .map(origin => origin.trim())
   .filter(Boolean);
+const isAllowedOrigin = (origin) => {
+  if (!origin || allowedOrigins.includes(origin)) return true;
+  try {
+    const { hostname } = new URL(origin);
+    return hostname === 'localhost' || hostname === '127.0.0.1';
+  } catch {
+    return false;
+  }
+};
 
 module.exports = {
   PORT,
+  publicBaseUrl,
   DEMO_USER_ID,
   uploadDir,
   imageCacheDir,
@@ -27,4 +38,5 @@ module.exports = {
   wechatAppId,
   wechatAppSecret,
   allowedOrigins,
+  isAllowedOrigin,
 };

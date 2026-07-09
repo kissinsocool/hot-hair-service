@@ -7,6 +7,7 @@ const {
   filterNearbySalons,
   getCoordinates,
 } = require('./index');
+const { isAllowedOrigin } = require('./src/config');
 
 test('getCoordinates accepts common location shapes', () => {
   assert.deepEqual(getCoordinates('121.4737,31.2304'), { latitude: 31.2304, longitude: 121.4737 });
@@ -47,4 +48,10 @@ test('acceptedBookingAtTimeQuery only blocks already accepted bookings', () => {
   assert.equal(query.startTime.getTime(), Date.parse('2026-06-21T03:30:00.000Z'));
   assert.deepEqual(query.id, { $ne: 'BK1' });
   assert.equal(query.status, 'accepted');
+});
+
+test('isAllowedOrigin allows local Flutter web ports', () => {
+  assert.equal(isAllowedOrigin('http://localhost:61234'), true);
+  assert.equal(isAllowedOrigin('http://127.0.0.1:61234'), true);
+  assert.equal(isAllowedOrigin('http://example.com'), false);
 });
