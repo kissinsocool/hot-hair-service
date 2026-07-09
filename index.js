@@ -321,12 +321,14 @@ wss.on('connection', (socket) => {
 
 // --- Initial merchant template data ---
 const imageUrl = `${publicBaseUrl}/images/云南/1/IMG_1310.JPG`;
+const defaultSalonLocation = { latitude: 31.2304, longitude: 121.4737 };
 
 const salons = [
   {
     id: '1',
     name: 'Modern Cut Studio',
-    address: 'Tokyo, Shibuya',
+    address: '上海市黄浦区',
+    location: defaultSalonLocation,
     rating: 4.8,
     image: imageUrl,
     images: [],
@@ -988,6 +990,17 @@ const migrateSeedDataToMongo = async () => {
       licenseRejectReason: '',
     }).catch(() => {});
   }
+
+  await Salon.updateOne(
+    { id: '1', $or: [{ location: null }, { location: { $exists: false } }] },
+    {
+      $set: {
+        location: defaultSalonLocation,
+        geoLocation: buildGeoLocation(defaultSalonLocation),
+        publishStatus: 'online',
+      },
+    },
+  );
 
   const merchantUsers = await MerchantUser.find({}).lean();
   await Promise.all(merchantUsers.map(user =>
