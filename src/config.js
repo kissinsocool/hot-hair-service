@@ -8,6 +8,11 @@ const imageCacheDir = path.join(__dirname, '..', 'image-cache');
 const dataDir = path.join(__dirname, '..', 'data');
 const favoritesFile = path.join(dataDir, 'favorites.json');
 const picturesDir = process.env.PICTURES_DIR || path.join(process.env.HOME || '', 'Pictures');
+const ossRegion = process.env.OSS_REGION || 'oss-cn-beijing';
+const ossBucket = process.env.OSS_BUCKET || 'hothairapp';
+const ossEndpoint = process.env.OSS_ENDPOINT || 'https://oss-cn-beijing.aliyuncs.com';
+const ossPublicBaseUrl = (process.env.OSS_PUBLIC_BASE_URL || `https://${ossBucket}.${ossRegion}.aliyuncs.com`).replace(/\/+$/, '');
+const ossEnabled = Boolean(process.env.OSS_ACCESS_KEY_ID && process.env.OSS_ACCESS_KEY_SECRET);
 const amapWebServiceKey = process.env.AMAP_WEB_SERVICE_KEY || process.env.AMAP_WEB_KEY || '';
 const wechatAppId = process.env.WECHAT_APP_ID || process.env.WX_APP_ID || '';
 const wechatAppSecret = process.env.WECHAT_APP_SECRET || process.env.WX_APP_SECRET || '';
@@ -34,6 +39,11 @@ module.exports = {
   dataDir,
   favoritesFile,
   picturesDir,
+  ossRegion,
+  ossBucket,
+  ossEndpoint,
+  ossPublicBaseUrl,
+  ossEnabled,
   amapWebServiceKey,
   wechatAppId,
   wechatAppSecret,

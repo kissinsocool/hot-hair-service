@@ -1,8 +1,29 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const OSS = require('ali-oss');
 const { execFileSync } = require('child_process');
-const { imageCacheDir, picturesDir, publicBaseUrl, uploadDir } = require('./config');
+const {
+  imageCacheDir,
+  picturesDir,
+  publicBaseUrl,
+  uploadDir,
+  ossRegion,
+  ossBucket,
+  ossEndpoint,
+  ossPublicBaseUrl,
+  ossEnabled,
+} = require('./config');
+
+const ossClient = ossEnabled
+  ? new OSS({
+      region: ossRegion,
+      bucket: ossBucket,
+      endpoint: ossEndpoint,
+      accessKeyId: process.env.OSS_ACCESS_KEY_ID,
+      accessKeySecret: process.env.OSS_ACCESS_KEY_SECRET,
+    })
+  : null;
 
 function compressedImageMiddleware(rootDir) {
   return (req, res, next) => {
@@ -67,7 +88,7 @@ const publicImageUrl = (url) => {
   return cachePath ? `${publicBaseUrl}/cached-images/${path.basename(cachePath)}` : url;
 };
 
-const saveBase64Image = (prefix, fileName, data, index = 0) => {
+const saveBase64Image = async (prefix, fileName, data, index = 0) => {
   if (typeof data !== 'string' || data.length === 0) return '';
 
   const extension = path.extname(fileName || '').toLowerCase() || '.png';
@@ -87,6 +108,11 @@ const saveBase64Image = (prefix, fileName, data, index = 0) => {
   if (!isImage) return '';
 
   const imageName = `${prefix}-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}${safeExtension}`;
+  if (ossClient) {
+    await ossClient.put(`uploads/${imageName}`, buffer);
+    return `${ossPublicBaseUrl}/uploads/${imageName}`;
+  }
+
   fs.writeFileSync(path.join(uploadDir, imageName), buffer);
   return `${publicBaseUrl}/uploads/${imageName}`;
 };

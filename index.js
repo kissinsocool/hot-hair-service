@@ -1738,9 +1738,9 @@ app.patch('/api/merchant/salon', async (req, res) => {
   res.json(await buildMerchantSalonPayload(req.merchantUser.salonId || '1'));
 });
 
-app.post('/api/merchant/uploads', (req, res) => {
+app.post('/api/merchant/uploads', async (req, res) => {
   const { data, fileName = 'avatar.png' } = req.body;
-  const url = saveBase64Image('staff', fileName, data);
+  const url = await saveBase64Image('staff', fileName, data);
   if (!url) return res.status(400).json({ message: 'Valid image data under 5MB is required' });
   res.status(201).json({ url });
 });
@@ -1840,8 +1840,9 @@ app.post('/api/bookings/:id/review', async (req, res) => {
     return res.status(400).json({ message: 'comment is required' });
   }
 
-  const imageUrls = images
-    .map((image, index) => saveBase64Image('review', image?.fileName, image?.data, index))
+  const imageUrls = (await Promise.all(
+    images.map((image, index) => saveBase64Image('review', image?.fileName, image?.data, index)),
+  ))
     .filter(Boolean);
 
   const review = {
@@ -1892,8 +1893,9 @@ app.post('/api/bookings/:id/complaint', async (req, res) => {
     return res.status(400).json({ message: 'description is required' });
   }
 
-  const imageUrls = images
-    .map((image, index) => saveBase64Image('complaint', image?.fileName, image?.data, index))
+  const imageUrls = (await Promise.all(
+    images.map((image, index) => saveBase64Image('complaint', image?.fileName, image?.data, index)),
+  ))
     .filter(Boolean);
 
   const complaint = {
