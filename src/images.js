@@ -69,6 +69,8 @@ function compressedImagePath(sourcePath) {
 const localImagePath = (url) => {
   try {
     const parsed = new URL(url);
+    const publicOrigin = new URL(publicBaseUrl).origin;
+    if (parsed.origin !== publicOrigin) return '';
     const pathname = decodeURIComponent(parsed.pathname);
     if (pathname.startsWith('/uploads/')) return path.join(uploadDir, pathname.slice('/uploads/'.length));
     if (pathname.startsWith('/images/')) return path.join(picturesDir, pathname.slice('/images/'.length));

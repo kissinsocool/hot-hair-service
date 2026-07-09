@@ -1733,6 +1733,7 @@ app.patch('/api/merchant/salon', async (req, res) => {
   }
 
   salon.pendingContent = draft;
+  salon.markModified('pendingContent');
   salon.contentReviewStatus = 'pending';
   salon.contentRejectReason = '';
   salon.contentReviewedAt = null;
