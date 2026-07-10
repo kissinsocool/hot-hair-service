@@ -6,6 +6,7 @@ const {
   buildSearchRadii,
   filterNearbySalons,
   getCoordinates,
+  stripSensitiveSalonFields,
 } = require('./index');
 const { isAllowedOrigin } = require('./src/config');
 
@@ -54,4 +55,18 @@ test('isAllowedOrigin allows local Flutter web ports', () => {
   assert.equal(isAllowedOrigin('http://localhost:61234'), true);
   assert.equal(isAllowedOrigin('http://127.0.0.1:61234'), true);
   assert.equal(isAllowedOrigin('http://example.com'), false);
+});
+
+test('stripSensitiveSalonFields removes license fields from public salon payloads', () => {
+  const payload = stripSensitiveSalonFields({
+    id: '1',
+    name: 'Hot Hair',
+    licenseUrl: 'licenses/license.png',
+    licenseStatus: 'pending',
+    licenseRejectReason: 'bad image',
+    licenseSubmittedAt: new Date(),
+    licenseReviewedAt: new Date(),
+  });
+
+  assert.deepEqual(payload, { id: '1', name: 'Hot Hair' });
 });

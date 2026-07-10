@@ -10,6 +10,7 @@ const {
   uploadDir,
   ossRegion,
   ossBucket,
+  ossPrivateBucket,
   ossEndpoint,
   ossPublicBaseUrl,
   ossEnabled,
@@ -19,6 +20,16 @@ const ossClient = ossEnabled
   ? new OSS({
       region: ossRegion,
       bucket: ossBucket,
+      endpoint: ossEndpoint,
+      accessKeyId: process.env.OSS_ACCESS_KEY_ID,
+      accessKeySecret: process.env.OSS_ACCESS_KEY_SECRET,
+    })
+  : null;
+
+const privateOssClient = ossEnabled
+  ? new OSS({
+      region: ossRegion,
+      bucket: ossPrivateBucket,
       endpoint: ossEndpoint,
       accessKeyId: process.env.OSS_ACCESS_KEY_ID,
       accessKeySecret: process.env.OSS_ACCESS_KEY_SECRET,
@@ -91,25 +102,9 @@ const publicImageUrl = (url) => {
 };
 
 const saveBase64Image = async (prefix, fileName, data, index = 0) => {
-  if (typeof data !== 'string' || data.length === 0) return '';
+  const { buffer, imageName } = decodeBase64Image(prefix, fileName, data, index);
+  if (!buffer) return '';
 
-  const extension = path.extname(fileName || '').toLowerCase() || '.png';
-  const safeExtension = ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(extension) ? extension : '.png';
-  const base64 = data.includes(',') ? data.split(',').pop() : data;
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) return '';
-
-  const buffer = Buffer.from(base64, 'base64');
-  if (buffer.length === 0 || buffer.length > 5 * 1024 * 1024) return '';
-
-  const isImage =
-    buffer.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])) ||
-    buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ||
-    buffer.subarray(0, 6).toString('ascii') === 'GIF87a' ||
-    buffer.subarray(0, 6).toString('ascii') === 'GIF89a' ||
-    (buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP');
-  if (!isImage) return '';
-
-  const imageName = `${prefix}-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}${safeExtension}`;
   if (ossClient) {
     await ossClient.put(`uploads/${imageName}`, buffer);
     return `${ossPublicBaseUrl}/uploads/${imageName}`;
@@ -119,9 +114,50 @@ const saveBase64Image = async (prefix, fileName, data, index = 0) => {
   return `${publicBaseUrl}/uploads/${imageName}`;
 };
 
+const decodeBase64Image = (prefix, fileName, data, index = 0) => {
+  if (typeof data !== 'string' || data.length === 0) return {};
+
+  const extension = path.extname(fileName || '').toLowerCase() || '.png';
+  const safeExtension = ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(extension) ? extension : '.png';
+  const base64 = data.includes(',') ? data.split(',').pop() : data;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) return {};
+
+  const buffer = Buffer.from(base64, 'base64');
+  if (buffer.length === 0 || buffer.length > 5 * 1024 * 1024) return {};
+
+  const isImage =
+    buffer.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])) ||
+    buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ||
+    buffer.subarray(0, 6).toString('ascii') === 'GIF87a' ||
+    buffer.subarray(0, 6).toString('ascii') === 'GIF89a' ||
+    (buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP');
+  if (!isImage) return {};
+
+  return {
+    buffer,
+    imageName: `${prefix}-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}${safeExtension}`,
+  };
+};
+
+const savePrivateBase64Image = async (prefix, fileName, data, index = 0) => {
+  const { buffer, imageName } = decodeBase64Image(prefix, fileName, data, index);
+  if (!buffer || !privateOssClient) return '';
+  const objectName = `licenses/${imageName}`;
+  await privateOssClient.put(objectName, buffer, { headers: { 'x-oss-object-acl': 'private' } });
+  return objectName;
+};
+
+const privateImageUrl = (objectName, expires = 600) => {
+  if (!objectName || /^https?:\/\//i.test(objectName)) return objectName || '';
+  if (!privateOssClient) return '';
+  return privateOssClient.signatureUrl(objectName, { expires });
+};
+
 module.exports = {
   compressedImageMiddleware,
   imageExists,
   publicImageUrl,
   saveBase64Image,
+  savePrivateBase64Image,
+  privateImageUrl,
 };
