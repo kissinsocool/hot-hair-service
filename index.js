@@ -714,18 +714,25 @@ const incrementNoShowCount = async (userId) => {
 };
 
 const calculateStaffRating = (person) => {
-  if (!person || !Array.isArray(person.reviews) || person.reviews.length === 0) {
+  const reviews = publicReviews(person);
+  if (!reviews.length) {
     return 5;
   }
 
-  const total = person.reviews.reduce((sum, review) => sum + Number(review.rating || 0), 0);
-  return Number((total / person.reviews.length).toFixed(1));
+  const total = reviews.reduce((sum, review) => sum + Number(review.rating || 0), 0);
+  return Number((total / reviews.length).toFixed(1));
 };
 
 const buildStaffPayload = (person) => ({
   ...person,
+  reviews: publicReviews(person),
   rating: calculateStaffRating(person),
 });
+
+const publicReviews = (person) =>
+  ((person && Array.isArray(person.reviews)) ? person.reviews : [])
+    .filter(review => !review.reviewStatus || review.reviewStatus === 'approved')
+    .map(({ pendingImageUrls, ...review }) => review);
 
 const buildSalonImageList = (salon) => {
   const images = [

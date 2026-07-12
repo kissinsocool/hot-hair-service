@@ -18,6 +18,8 @@ module.exports = (app, ctx) => {
     applyPendingContent,
     refreshFavoriteSalonSnapshots,
     normalizeBooking,
+    getStaffById,
+    calculateStaffRating,
   } = ctx;
 
   app.post('/api/admin/auth/login', async (req, res) => {
@@ -241,4 +243,86 @@ module.exports = (app, ctx) => {
     const bookings = await Booking.find({}).sort({ createdAt: -1 }).limit(100);
     res.json(bookings.map(normalizeBooking));
   });
+
+  app.get('/api/admin/user-images', requireAdminAuth, async (_req, res) => {
+    const bookings = await Booking.find({
+      $or: [
+        { 'review.reviewStatus': 'pending' },
+        { 'complaint.reviewStatus': 'pending' },
+      ],
+    }).sort({ updatedAt: -1 }).lean();
+
+    res.json(bookings.flatMap(userImageReviewItems));
+  });
+
+  app.patch('/api/admin/user-images', requireAdminAuth, async (req, res) => {
+    const bookingId = String(req.body.bookingId || '').trim();
+    const type = String(req.body.type || '').trim();
+    const action = String(req.body.action || '').trim();
+    if (!bookingId || !['review', 'complaint'].includes(type) || !['approve', 'reject'].includes(action)) {
+      return res.status(400).json({ message: 'bookingId, type and action are required' });
+    }
+
+    const booking = await Booking.findOne({ id: bookingId });
+    if (!booking || !booking[type]) return res.status(404).json({ message: 'Image review item not found' });
+
+    const payload = booking[type] || {};
+    if (payload.reviewStatus !== 'pending') return res.status(409).json({ message: 'Image review item is not pending' });
+
+    payload.reviewStatus = action === 'approve' ? 'approved' : 'rejected';
+
+    booking[type] = payload;
+    booking.markModified(type);
+    if (action === 'reject') {
+      if (type === 'review') booking.reviewed = false;
+      if (type === 'complaint') booking.complained = false;
+    }
+    booking.updatedAt = new Date().toISOString();
+    await booking.save();
+
+    if (type === 'review' && action === 'approve') {
+      await publishStaffReview(booking, payload, getStaffById, calculateStaffRating);
+    }
+
+    res.json({ ok: true });
+  });
 };
+
+function userImageReviewItems(booking) {
+  return ['review', 'complaint'].flatMap(type => {
+    const payload = booking[type] || {};
+    if (payload.reviewStatus !== 'pending') return [];
+    const imageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls : [];
+    return [{
+      id: `${booking.id}:${type}`,
+      bookingId: booking.id,
+      type,
+      url: imageUrls[0] || '',
+      imageUrls,
+      userName: booking.userName || '',
+      salonName: booking.salonName || '',
+      staffName: booking.staffName || '',
+      serviceName: booking.serviceName || '',
+      content: type === 'review' ? payload.comment || '' : payload.description || '',
+      rating: payload.rating || null,
+      createdAt: payload.createdAt || payload.date || booking.updatedAt || booking.createdAt || '',
+    }];
+  });
+}
+
+async function publishStaffReview(booking, review, getStaffById, calculateStaffRating) {
+  const staffMember = await getStaffById(booking.staffId);
+  if (!staffMember) return;
+
+  const publicReview = {
+    ...review,
+    reviewStatus: 'approved',
+  };
+  staffMember.reviews = [
+    publicReview,
+    ...(staffMember.reviews || []).filter(item => item?.bookingId !== booking.id && item?.id !== review.id),
+  ];
+  staffMember.rating = calculateStaffRating(staffMember);
+  staffMember.markModified('reviews');
+  await staffMember.save();
+}

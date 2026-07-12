@@ -323,14 +323,12 @@ module.exports = (app, ctx) => {
       date: new Date().toISOString().slice(0, 10),
       serviceName: booking.serviceName,
       imageUrls,
+      reviewStatus: 'pending',
     };
   
     const staffMember = await getStaffById(booking.staffId);
     if (!staffMember) return res.status(404).json({ message: 'Staff not found' });
   
-    staffMember.reviews = [review, ...(staffMember.reviews || [])];
-    staffMember.rating = calculateStaffRating(staffMember);
-    await staffMember.save();
     booking.reviewed = true;
     booking.review = review;
     booking.updatedAt = new Date().toISOString();
@@ -378,6 +376,7 @@ module.exports = (app, ctx) => {
       serviceName: booking.serviceName,
       description,
       imageUrls,
+      reviewStatus: 'pending',
       date: new Date().toISOString().slice(0, 10),
       createdAt: new Date().toISOString(),
       status: 'submitted',
