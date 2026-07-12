@@ -1170,6 +1170,7 @@ const routeContext = {
   getWechatPhoneNumber,
   hashPassword,
   hashSmsCode,
+  ensureSalonForMerchant,
   incrementNoShowCount,
   isStaffUnavailable,
   isValidPhone,
@@ -1247,5 +1248,6 @@ module.exports = {
   calculateDistanceKm,
   filterNearbySalons,
   getCoordinates,
+  ensureSalonForMerchant,
   stripSensitiveSalonFields,
 };

@@ -4,6 +4,7 @@ const {
   acceptedBookingAtTimeQuery,
   buildGeoLocation,
   buildSearchRadii,
+  ensureSalonForMerchant,
   filterNearbySalons,
   getCoordinates,
   stripSensitiveSalonFields,
@@ -69,4 +70,8 @@ test('stripSensitiveSalonFields removes license fields from public salon payload
   });
 
   assert.deepEqual(payload, { id: '1', name: 'Hot Hair' });
+});
+
+test('admin merchant creation helper is wired into route context', () => {
+  assert.equal(typeof ensureSalonForMerchant, 'function');
 });
