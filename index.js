@@ -783,7 +783,7 @@ const contentFields = [
 
 const normalizeServiceTags = (tags) => {
   const values = Array.isArray(tags) ? tags : typeof tags === 'string' ? tags.split(/[,，、]/) : [];
-  return [...new Set(values.map(tag => tag?.toString().trim()).filter(Boolean))].slice(0, 3);
+  return [...new Set(values.map(tag => tag?.toString().trim()).filter(Boolean))].slice(0, 6);
 };
 
 const buildContentDraft = async (salon, payload) => {

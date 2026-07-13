@@ -26,12 +26,15 @@ test('buildGeoLocation stores MongoDB GeoJSON coordinates', () => {
 });
 
 test('normalizeServiceTags trims, deduplicates and limits service tags', () => {
-  assert.deepEqual(normalizeServiceTags([' 剪发 ', '染发', '剪发', '', '护理', '造型']), [
-    '剪发',
+  assert.deepEqual(normalizeServiceTags([' 洗剪吹 ', '染发', '洗剪吹', '', '烫发', '护理', '发型设计', '头皮护理', '造型']), [
+    '洗剪吹',
     '染发',
+    '烫发',
     '护理',
+    '发型设计',
+    '头皮护理',
   ]);
-  assert.deepEqual(normalizeServiceTags('剪发，染发、护理'), ['剪发', '染发', '护理']);
+  assert.deepEqual(normalizeServiceTags('洗剪吹，染发、头皮护理'), ['洗剪吹', '染发', '头皮护理']);
 });
 
 test('buildSearchRadii expands until the max radius', () => {
