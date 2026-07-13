@@ -781,6 +781,11 @@ const contentFields = [
   'staff',
 ];
 
+const normalizeServiceTags = (tags) => {
+  const values = Array.isArray(tags) ? tags : typeof tags === 'string' ? tags.split(/[,，、]/) : [];
+  return [...new Set(values.map(tag => tag?.toString().trim()).filter(Boolean))].slice(0, 3);
+};
+
 const buildContentDraft = async (salon, payload) => {
   const draft = salon.pendingContent || await buildSalonDetail(salon);
   const set = (key, value) => {
@@ -812,6 +817,7 @@ const buildContentDraft = async (salon, payload) => {
       .map((service, index) => ({
         id: service.id || `s1-${Date.now()}-${index}`,
         name: service.name,
+        tags: normalizeServiceTags(service.tags),
         price: service.price || '',
         duration: service.duration || '',
         note: service.note || '',
@@ -1248,6 +1254,7 @@ module.exports = {
   calculateDistanceKm,
   filterNearbySalons,
   getCoordinates,
+  normalizeServiceTags,
   ensureSalonForMerchant,
   stripSensitiveSalonFields,
 };
