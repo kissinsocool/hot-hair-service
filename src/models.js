@@ -139,6 +139,13 @@ const smsVerificationSchema = new mongoose.Schema({
   consumedAt: Date,
 }, { timestamps: true });
 
+const adConfigSchema = new mongoose.Schema({
+  key: { type: String, required: true, unique: true, default: 'main' },
+  imageUrl: { type: String, default: '' },
+  link: { type: String, default: '/pages/ad/ad' },
+  enabled: { type: Boolean, default: true },
+}, { timestamps: true });
+
 module.exports = {
   Booking: mongoose.model('Booking', bookingSchema),
   UserPolicy: mongoose.model('UserPolicy', userPolicySchema),
@@ -149,4 +156,5 @@ module.exports = {
   AdminUser: mongoose.model('AdminUser', adminUserSchema),
   ClientUser: mongoose.model('ClientUser', clientUserSchema),
   SmsVerification: mongoose.model('SmsVerification', smsVerificationSchema),
+  AdConfig: mongoose.model('AdConfig', adConfigSchema),
 };

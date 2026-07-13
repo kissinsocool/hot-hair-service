@@ -8,6 +8,7 @@ const {
   filterNearbySalons,
   getCoordinates,
   normalizeServiceTags,
+  normalizeAdLink,
   stripSensitiveSalonFields,
 } = require('./index');
 const { isAllowedOrigin } = require('./src/config');
@@ -35,6 +36,13 @@ test('normalizeServiceTags trims, deduplicates and limits service tags', () => {
     '头皮护理',
   ]);
   assert.deepEqual(normalizeServiceTags('洗剪吹，染发、头皮护理'), ['洗剪吹', '染发', '头皮护理']);
+});
+
+test('normalizeAdLink only accepts mini program page paths', () => {
+  assert.equal(normalizeAdLink('/pages/ad/ad'), '/pages/ad/ad');
+  assert.equal(normalizeAdLink('/pages/detail/detail?id=1'), '/pages/detail/detail?id=1');
+  assert.equal(normalizeAdLink('https://example.com'), '');
+  assert.equal(normalizeAdLink('/pages/../admin'), '');
 });
 
 test('buildSearchRadii expands until the max radius', () => {

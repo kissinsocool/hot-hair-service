@@ -17,7 +17,13 @@ module.exports = (app, ctx) => {
     calculateDistanceKm,
     userIdAliases,
     stripSensitiveSalonFields,
+    AdConfig,
+    buildAdPayload,
   } = ctx;
+
+  app.get('/api/ad', async (_req, res) => {
+    res.json(buildAdPayload(await AdConfig.findOne({ key: 'main' }).lean()));
+  });
 
   app.get('/api/salons', async (req, res) => {
     const userLocation = getCoordinates(req.query);

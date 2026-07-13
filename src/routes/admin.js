@@ -1,6 +1,7 @@
 module.exports = (app, ctx) => {
   const {
     AdminUser,
+    AdConfig,
     verifyPassword,
     crypto,
     buildAdminUserPayload,
@@ -20,6 +21,9 @@ module.exports = (app, ctx) => {
     normalizeBooking,
     getStaffById,
     calculateStaffRating,
+    buildAdPayload,
+    normalizeAdLink,
+    saveBase64Image,
   } = ctx;
 
   app.post('/api/admin/auth/login', async (req, res) => {
@@ -69,6 +73,30 @@ module.exports = (app, ctx) => {
       pendingCount,
       acceptedCount,
     });
+  });
+
+  app.get('/api/admin/ad', requireAdminAuth, async (_req, res) => {
+    res.json(buildAdPayload(await AdConfig.findOne({ key: 'main' }).lean()));
+  });
+
+  app.patch('/api/admin/ad', requireAdminAuth, async (req, res) => {
+    const link = normalizeAdLink(req.body.link);
+    if (!link) return res.status(400).json({ message: '跳转链接必须是 /pages/... 小程序页面路径' });
+    if (typeof req.body.enabled !== 'boolean') return res.status(400).json({ message: '是否显示必须是布尔值' });
+
+    let imageUrl = String(req.body.imageUrl || '').trim();
+    if (req.body.data) {
+      imageUrl = await saveBase64Image('ad', req.body.fileName || 'ad.jpeg', req.body.data);
+      if (!imageUrl) return res.status(400).json({ message: '图片无效或超过 5MB' });
+    }
+    if (req.body.enabled && !imageUrl) return res.status(400).json({ message: '请上传广告图片' });
+
+    const config = await AdConfig.findOneAndUpdate(
+      { key: 'main' },
+      { imageUrl, link, enabled: req.body.enabled },
+      { upsert: true, new: true },
+    ).lean();
+    res.json(buildAdPayload(config));
   });
   
   app.get('/api/admin/merchants', requireAdminAuth, async (req, res) => {

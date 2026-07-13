@@ -32,6 +32,7 @@ const {
   AdminUser,
   ClientUser,
   SmsVerification,
+  AdConfig,
 } = require('./src/models');
 const {
   compressedImageMiddleware,
@@ -82,6 +83,17 @@ const verifyPassword = (password, user) => {
 };
 
 const normalizePhone = (phone) => String(phone || '').replace(/\D/g, '');
+
+const normalizeAdLink = (value) => {
+  const link = String(value || '').trim();
+  return /^\/pages\/[A-Za-z0-9_/-]+(?:\?[^#\s]*)?$/.test(link) && !link.includes('..') ? link : '';
+};
+
+const buildAdPayload = (config) => ({
+  imageUrl: publicImageUrl(config?.imageUrl || ''),
+  link: normalizeAdLink(config?.link) || '/pages/ad/ad',
+  enabled: config?.enabled !== false,
+});
 
 const isValidPhone = (phone) => /^1\d{10}$/.test(phone);
 
@@ -1140,12 +1152,14 @@ const generateSlotsForNoPreferenceAndDate = async (candidateStaffIds, date) => {
 const routeContext = {
   acceptedBookingAtTimeQuery,
   AdminUser,
+  AdConfig,
   amapWebServiceKey,
   applyPendingContent,
   Booking,
   broadcastBookingEvent,
   buildAdminMerchantPayload,
   buildAdminUserPayload,
+  buildAdPayload,
   buildClientUserPayload,
   buildContentDraft,
   buildMerchantSalonPayload,
@@ -1186,6 +1200,7 @@ const routeContext = {
   MerchantUser,
   newClientUserId,
   normalizeBooking,
+  normalizeAdLink,
   normalizeClientAccount,
   normalizeDeposit,
   normalizeLimit,
@@ -1256,5 +1271,6 @@ module.exports = {
   getCoordinates,
   normalizeServiceTags,
   ensureSalonForMerchant,
+  normalizeAdLink,
   stripSensitiveSalonFields,
 };
