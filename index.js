@@ -530,6 +530,14 @@ const normalizePagination = (query = {}, fallback = 50, max = 100) => {
   return { page, limit, skip: (page - 1) * limit };
 };
 
+const buildMerchantBookingScope = (salonId, staffIds = []) => ({
+  $or: [
+    { staffId: { $in: staffIds }, status: { $in: ['pending', 'accepted'] } },
+    { salonId, staffId: '' },
+    { salonId, status: { $nin: ['pending', 'accepted'] } },
+  ],
+});
+
 const setPaginationHeaders = (res, pagination, total) => {
   res.set({
     'X-Total-Count': String(total),
@@ -1237,6 +1245,7 @@ const routeContext = {
   buildClientUserPayload,
   buildContentDraft,
   buildMerchantSalonPayload,
+  buildMerchantBookingScope,
   buildMerchantUserPayload,
   buildSalonDetail,
   buildStaffPayload,
@@ -1349,6 +1358,7 @@ module.exports = {
   acceptedBookingAtTimeQuery,
   buildGeoLocation,
   buildSearchRadii,
+  buildMerchantBookingScope,
   calculateDistanceKm,
   filterNearbySalons,
   getCoordinates,

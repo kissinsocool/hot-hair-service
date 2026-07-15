@@ -3,6 +3,7 @@ const test = require('node:test');
 const {
   acceptedBookingAtTimeQuery,
   buildGeoLocation,
+  buildMerchantBookingScope,
   buildSearchRadii,
   ensureSalonForMerchant,
   filterNearbySalons,
@@ -93,6 +94,16 @@ test('slot occupancies enforce one booking per staff and start time', () => {
   );
 
   assert.equal(uniqueSlotIndex?.[1]?.unique, true);
+});
+
+test('merchant active booking scope follows current salon staff ownership', () => {
+  assert.deepEqual(buildMerchantBookingScope('1', ['tina']), {
+    $or: [
+      { staffId: { $in: ['tina'] }, status: { $in: ['pending', 'accepted'] } },
+      { salonId: '1', staffId: '' },
+      { salonId: '1', status: { $nin: ['pending', 'accepted'] } },
+    ],
+  });
 });
 
 test('buildSearchRadii expands until the max radius', () => {

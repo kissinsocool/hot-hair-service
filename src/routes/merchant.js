@@ -12,6 +12,7 @@ module.exports = (app, ctx) => {
     Salon,
     SlotOccupancy,
     buildMerchantSalonPayload,
+    buildMerchantBookingScope,
     buildContentDraft,
     saveBase64Image,
     savePrivateBase64Image,
@@ -555,7 +556,11 @@ module.exports = (app, ctx) => {
   
   app.patch('/api/merchant/bookings/:id', async (req, res) => {
     const { action, reason = '', assignedStaffId = '' } = req.body;
-    const booking = await Booking.findOne({ id: req.params.id, salonId: req.merchantUser.salonId });
+    const merchantSalon = await Salon.findOne({ id: req.merchantUser.salonId }).select('staffIds').lean();
+    const booking = await Booking.findOne({
+      id: req.params.id,
+      ...buildMerchantBookingScope(req.merchantUser.salonId, merchantSalon?.staffIds || []),
+    });
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
     if (!['accept', 'cancel', 'complete', 'no_show', 'reject'].includes(action)) {
       return res.status(400).json({ message: 'action must be accept, cancel, complete, no_show or reject' });
@@ -700,8 +705,9 @@ module.exports = (app, ctx) => {
   
   app.get('/api/merchant/bookings', async (req, res) => {
     const { status } = req.query;
-    const query = { salonId: req.merchantUser.salonId };
-    if (status) query.status = status;
+    const merchantSalon = await Salon.findOne({ id: req.merchantUser.salonId }).select('staffIds').lean();
+    const scope = buildMerchantBookingScope(req.merchantUser.salonId, merchantSalon?.staffIds || []);
+    const query = status ? { $and: [scope, { status }] } : scope;
     const pagination = normalizePagination(req.query);
     const [result, total] = await Promise.all([
       Booking.find(query).select('-_id -__v').sort({ createdAt: -1 }).skip(pagination.skip).limit(pagination.limit).lean(),
