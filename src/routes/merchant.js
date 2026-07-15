@@ -10,6 +10,7 @@ module.exports = (app, ctx) => {
     parseAmapReverseAddress,
     hashPassword,
     Salon,
+    SlotOccupancy,
     buildMerchantSalonPayload,
     buildContentDraft,
     saveBase64Image,
@@ -42,6 +43,18 @@ module.exports = (app, ctx) => {
     setPaginationHeaders,
     INPUT_LIMITS,
   } = ctx;
+
+  const reserveBookingSlot = async (bookingId, staffId, startTime) => {
+    const normalizedStartTime = new Date(startTime);
+    const result = await SlotOccupancy.updateOne(
+      { bookingId, staffId, startTime: normalizedStartTime },
+      { $setOnInsert: { bookingId, staffId, startTime: normalizedStartTime } },
+      { upsert: true },
+    );
+    return result.upsertedCount > 0;
+  };
+
+  const isDuplicateSlotError = error => error?.code === 11000;
 
   app.post('/api/merchant/auth/login', async (req, res) => {
     const username = String(req.body.username || '').trim();
@@ -243,6 +256,9 @@ module.exports = (app, ctx) => {
   app.get('/api/staff/:id/slots', async (req, res) => {
     const staffId = req.params.id;
     const date = req.query.date || '2026-06-01';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ message: 'date must use YYYY-MM-DD format' });
+    }
     if (staffId === '__no_preference__') {
       const salon = await Salon.findOne({ id: String(req.query.salonId || '').trim() }).lean();
       if (!salon) return res.status(404).json({ message: 'Salon not found' });
@@ -293,6 +309,7 @@ module.exports = (app, ctx) => {
     booking.userMessage = '您已取消本次预约。';
     booking.rejectReason = '';
     await booking.save();
+    await SlotOccupancy.deleteOne({ bookingId: booking.id });
     broadcastBookingEvent('booking.updated', booking);
   
     res.json({
@@ -483,30 +500,51 @@ module.exports = (app, ctx) => {
     const serviceBasePrice = parsePriceValue(service.price);
     const staffExtraServiceFee = isNoPreference ? 0 : Number(staffMember.extraServiceFee || 0);
     const totalPrice = serviceBasePrice + staffExtraServiceFee;
-    const booking = await Booking.create({
-      id: 'BK' + Date.now(),
-      userId,
-      userName,
-      salonId: salon.id,
-      salonName: salon.name,
-      staffId: bookingStaffId,
-      staffName: isNoPreference ? '无需指定' : staffMember.name,
-      isNoPreference,
-      serviceId,
-      serviceName: service.name,
-      servicePrice: service.price,
-      serviceDuration: service.duration,
-      serviceBasePrice,
-      staffExtraServiceFee,
-      totalPrice,
-      startTime,
-      note,
-      status: 'pending',
-      merchantMessage: '您有一条新的预约申请，请及时处理。',
-      userMessage: '预约申请已提交，正在等待商家确认。',
-      createdAt: now,
-      updatedAt: now,
-    });
+    const bookingId = 'BK' + Date.now();
+    let createdSlotOccupancy = false;
+    if (!isNoPreference) {
+      try {
+        createdSlotOccupancy = await reserveBookingSlot(bookingId, bookingStaffId, startTime);
+      } catch (error) {
+        if (isDuplicateSlotError(error)) {
+          return res.status(409).json({ message: 'This time slot was just booked by another user' });
+        }
+        throw error;
+      }
+    }
+
+    let booking;
+    try {
+      booking = await Booking.create({
+        id: bookingId,
+        userId,
+        userName,
+        salonId: salon.id,
+        salonName: salon.name,
+        staffId: bookingStaffId,
+        staffName: isNoPreference ? '无需指定' : staffMember.name,
+        isNoPreference,
+        serviceId,
+        serviceName: service.name,
+        servicePrice: service.price,
+        serviceDuration: service.duration,
+        serviceBasePrice,
+        staffExtraServiceFee,
+        totalPrice,
+        startTime,
+        note,
+        status: 'pending',
+        merchantMessage: '您有一条新的预约申请，请及时处理。',
+        userMessage: '预约申请已提交，正在等待商家确认。',
+        createdAt: now,
+        updatedAt: now,
+      });
+    } catch (error) {
+      if (createdSlotOccupancy) {
+        await SlotOccupancy.deleteOne({ bookingId });
+      }
+      throw error;
+    }
   
     broadcastBookingEvent('booking.created', booking);
     res.status(201).json({
@@ -529,6 +567,7 @@ module.exports = (app, ctx) => {
       return res.status(409).json({ message: 'Only accepted bookings can be canceled, completed or marked no-show' });
     }
   
+    let createdSlotOccupancy = false;
     if (action === 'accept') {
       let selectedStaffId = booking.staffId;
       if (booking.isNoPreference || booking.staffName === '无需指定') {
@@ -559,6 +598,18 @@ module.exports = (app, ctx) => {
       if (hasConflict) {
         return res.status(409).json({ message: '指定理发师在该时间段已有预约' });
       }
+      try {
+        createdSlotOccupancy = await reserveBookingSlot(
+          booking.id,
+          selectedStaffId,
+          booking.startTime,
+        );
+      } catch (error) {
+        if (isDuplicateSlotError(error)) {
+          return res.status(409).json({ message: '指定理发师在该时间段刚刚被其他订单占用' });
+        }
+        throw error;
+      }
     }
   
     booking.status = {
@@ -585,7 +636,17 @@ module.exports = (app, ctx) => {
     }[action];
     booking.rejectReason = ['cancel', 'no_show', 'reject'].includes(action) ? reason : '';
     const userPolicy = action === 'no_show' ? await incrementNoShowCount(booking.userId) : null;
-    await booking.save();
+    try {
+      await booking.save();
+    } catch (error) {
+      if (createdSlotOccupancy) {
+        await SlotOccupancy.deleteOne({ bookingId: booking.id });
+      }
+      throw error;
+    }
+    if (action !== 'accept') {
+      await SlotOccupancy.deleteOne({ bookingId: booking.id });
+    }
     broadcastBookingEvent('booking.updated', booking);
   
     res.json({

@@ -39,6 +39,14 @@ bookingSchema.index({ createdAt: -1 });
 bookingSchema.index({ 'review.reviewStatus': 1, updatedAt: -1 });
 bookingSchema.index({ 'complaint.reviewStatus': 1, updatedAt: -1 });
 
+const slotOccupancySchema = new mongoose.Schema({
+  staffId: { type: String, required: true },
+  startTime: { type: Date, required: true },
+  bookingId: { type: String, required: true, unique: true },
+}, { timestamps: true });
+
+slotOccupancySchema.index({ staffId: 1, startTime: 1 }, { unique: true });
+
 const userPolicySchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true, index: true },
   noShowCount: { type: Number, default: 0 },
@@ -163,6 +171,7 @@ const adConfigSchema = new mongoose.Schema({
 
 module.exports = {
   Booking: mongoose.model('Booking', bookingSchema),
+  SlotOccupancy: mongoose.model('SlotOccupancy', slotOccupancySchema),
   UserPolicy: mongoose.model('UserPolicy', userPolicySchema),
   FavoriteSalon: mongoose.model('FavoriteSalon', favoriteSalonSchema),
   Salon: mongoose.model('Salon', salonSchema),

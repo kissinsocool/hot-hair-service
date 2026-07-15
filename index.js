@@ -25,6 +25,7 @@ const {
 } = require('./src/config');
 const {
   Booking,
+  SlotOccupancy,
   UserPolicy,
   FavoriteSalon,
   Salon,
@@ -1181,21 +1182,43 @@ const generateSlotsForStaffAndDate = async (staffId, date) => {
 
 const generateSlotsForNoPreferenceAndDate = async (salon, date) => {
   const staffIds = salon.staffIds || [];
-  const slots = await Promise.all(generateHalfHourSlots(salon?.openingHours).map(async (time) => {
+  const dayStart = new Date(`${date}T00:00:00`);
+  const dayEnd = new Date(`${date}T23:59:59.999`);
+  const [bookings, staffProfiles] = await Promise.all([
+    Booking.find({
+      staffId: { $in: staffIds },
+      startTime: { $gte: dayStart, $lte: dayEnd },
+      status: { $in: ['pending', 'accepted'] },
+    }).select({ staffId: 1, startTime: 1, _id: 0 }).lean(),
+    StaffProfile.find({ id: { $in: staffIds } })
+      .select({ id: 1, unavailableSlots: 1, _id: 0 })
+      .lean(),
+  ]);
+  const bookedSlots = new Set(bookings.map(booking => {
+    const startTime = new Date(booking.startTime);
+    const time = `${String(startTime.getHours()).padStart(2, '0')}:${String(startTime.getMinutes()).padStart(2, '0')}`;
+    return `${booking.staffId}:${time}`;
+  }));
+  const unavailableSlots = new Set(staffProfiles.flatMap(profile =>
+    normalizeUnavailableSlots(profile.unavailableSlots)
+      .filter(slot => slot.startsWith(`${date} `))
+      .map(slot => `${profile.id}:${slot.slice(11)}`)
+  ));
+  const activeStaffIds = staffProfiles.map(profile => profile.id);
+
+  return generateHalfHourSlots(salon?.openingHours).map(time => {
     const startTime = `${date}T${time}:00`;
-    const availability = await Promise.all(staffIds.map(async (staffId) => {
-      const hasBooking = await findActiveBookingAtTime(staffId, startTime);
-      const unavailable = await isStaffUnavailable(staffId, startTime);
-      return !hasBooking && !unavailable;
-    }));
+    const isAvailable = activeStaffIds.some(staffId =>
+      !bookedSlots.has(`${staffId}:${time}`) &&
+      !unavailableSlots.has(`${staffId}:${time}`)
+    );
     return {
       time,
       startTime,
-      isAvailable: availability.some(Boolean),
-      reason: availability.some(Boolean) ? undefined : '已有订单',
+      isAvailable,
+      reason: isAvailable ? undefined : '暂无可用理发师',
     };
-  }));
-  return slots;
+  });
 };
 
 
@@ -1206,6 +1229,7 @@ const routeContext = {
   amapWebServiceKey,
   applyPendingContent,
   Booking,
+  SlotOccupancy,
   broadcastBookingEvent,
   buildAdminMerchantPayload,
   buildAdminUserPayload,
@@ -1298,6 +1322,7 @@ const startServer = async () => {
   await mongoose.connect(mongoUri);
   await Promise.all([
     Booking.createIndexes(),
+    SlotOccupancy.createIndexes(),
     ClientUser.createIndexes(),
     MerchantUser.createIndexes(),
     Salon.createIndexes(),

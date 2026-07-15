@@ -16,7 +16,7 @@ const {
   verifyPassword,
 } = require('./index');
 const { isAllowedOrigin } = require('./src/config');
-const { Booking } = require('./src/models');
+const { Booking, SlotOccupancy } = require('./src/models');
 
 test('getCoordinates accepts common location shapes', () => {
   assert.deepEqual(getCoordinates('121.4737,31.2304'), { latitude: 31.2304, longitude: 121.4737 });
@@ -85,6 +85,14 @@ test('no-preference booking can remain unassigned until merchant acceptance', as
 
   await booking.validate();
   assert.equal(booking.staffId, '');
+});
+
+test('slot occupancies enforce one booking per staff and start time', () => {
+  const uniqueSlotIndex = SlotOccupancy.schema.indexes().find(
+    ([fields]) => fields.staffId === 1 && fields.startTime === 1,
+  );
+
+  assert.equal(uniqueSlotIndex?.[1]?.unique, true);
 });
 
 test('buildSearchRadii expands until the max radius', () => {
