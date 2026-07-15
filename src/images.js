@@ -2,7 +2,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const OSS = require('ali-oss');
-const { execFileSync } = require('child_process');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
 const {
   imageCacheDir,
   picturesDir,
@@ -15,6 +16,10 @@ const {
   ossPublicBaseUrl,
   ossEnabled,
 } = require('./config');
+
+const execFileAsync = promisify(execFile);
+const compressionJobs = new Map();
+let compressionQueue = Promise.resolve();
 
 const ossClient = ossEnabled
   ? new OSS({
@@ -37,14 +42,14 @@ const privateOssClient = ossEnabled
   : null;
 
 function compressedImageMiddleware(rootDir) {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     try {
       const relativePath = decodeURIComponent((req.params[0] || '').replace(/^\/+/, ''));
       if (!/\.(jpe?g|png)$/i.test(relativePath)) return next();
 
       const sourcePath = path.resolve(rootDir, relativePath);
       if (!sourcePath.startsWith(path.resolve(rootDir) + path.sep)) return res.status(403).end();
-      const cachePath = compressedImagePath(sourcePath);
+      const cachePath = await compressedImagePath(sourcePath);
       if (!cachePath) return next();
       res.type('jpg').sendFile(cachePath);
     } catch (_) {
@@ -53,25 +58,37 @@ function compressedImageMiddleware(rootDir) {
   };
 }
 
-function compressedImagePath(sourcePath) {
-  if (!/\.(jpe?g|png)$/i.test(sourcePath) || !fs.existsSync(sourcePath)) return '';
+async function compressedImagePath(sourcePath) {
+  if (!/\.(jpe?g|png)$/i.test(sourcePath)) return '';
 
-  const stat = fs.statSync(sourcePath);
+  let stat;
+  try {
+    stat = await fs.promises.stat(sourcePath);
+  } catch {
+    return '';
+  }
   const cacheName = crypto
     .createHash('sha1')
     .update(`${sourcePath}:${stat.mtimeMs}:${stat.size}`)
     .digest('hex') + '.jpg';
   const cachePath = path.join(imageCacheDir, cacheName);
 
-  if (!fs.existsSync(cachePath)) {
-    // ponytail: macOS dev backend, switch to sharp when this runs off Mac.
-    try {
-      execFileSync('sips', ['-Z', '900', '-s', 'format', 'jpeg', '-s', 'formatOptions', '72', sourcePath, '--out', cachePath], {
-        stdio: 'ignore',
-      });
-    } catch (_) {
-      return '';
+  try {
+    await fs.promises.access(cachePath);
+  } catch {
+    if (!compressionJobs.has(cachePath)) {
+      // ponytail: serialize local compression; move this queue to workers when upload throughput requires it.
+      const compression = compressionQueue.then(() =>
+        execFileAsync('sips', ['-Z', '900', '-s', 'format', 'jpeg', '-s', 'formatOptions', '72', sourcePath, '--out', cachePath])
+      );
+      compressionQueue = compression.catch(() => {});
+      const job = compression
+        .then(() => cachePath)
+        .catch(() => '')
+        .finally(() => compressionJobs.delete(cachePath));
+      compressionJobs.set(cachePath, job);
     }
+    return compressionJobs.get(cachePath);
   }
 
   return cachePath;
@@ -89,17 +106,18 @@ const localImagePath = (url) => {
   return '';
 };
 
-const imageExists = (url) => {
+const imageExists = async (url) => {
   const filePath = localImagePath(url);
-  return !filePath || fs.existsSync(filePath);
+  if (!filePath) return true;
+  try {
+    await fs.promises.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 };
 
-const publicImageUrl = (url) => {
-  const filePath = localImagePath(url);
-  if (!filePath) return url;
-  const cachePath = compressedImagePath(filePath);
-  return cachePath ? `${publicBaseUrl}/cached-images/${path.basename(cachePath)}` : url;
-};
+const publicImageUrl = url => url;
 
 const saveBase64Image = async (prefix, fileName, data, index = 0) => {
   const { buffer, imageName } = decodeBase64Image(prefix, fileName, data, index);
@@ -110,8 +128,12 @@ const saveBase64Image = async (prefix, fileName, data, index = 0) => {
     return `${ossPublicBaseUrl}/uploads/${imageName}`;
   }
 
-  fs.writeFileSync(path.join(uploadDir, imageName), buffer);
-  return `${publicBaseUrl}/uploads/${imageName}`;
+  const imagePath = path.join(uploadDir, imageName);
+  await fs.promises.writeFile(imagePath, buffer);
+  const cachePath = await compressedImagePath(imagePath);
+  return cachePath
+    ? `${publicBaseUrl}/cached-images/${path.basename(cachePath)}`
+    : `${publicBaseUrl}/uploads/${imageName}`;
 };
 
 const decodeBase64Image = (prefix, fileName, data, index = 0) => {

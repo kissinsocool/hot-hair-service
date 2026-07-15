@@ -95,6 +95,9 @@ module.exports = (app, ctx) => {
     if (!account || !password || !displayName) {
       return res.status(400).json({ message: 'account, password and displayName are required' });
     }
+    if (account.length > 100 || password.length > 128 || displayName.length > 50) {
+      return res.status(400).json({ message: '账号、密码或昵称过长' });
+    }
     if (password.length < 6) {
       return res.status(400).json({ message: '密码至少 6 位' });
     }
@@ -104,7 +107,7 @@ module.exports = (app, ctx) => {
       : await ClientUser.findOne({ account });
     if (existingUser) return res.status(409).json({ message: '该账号已注册' });
   
-    const { salt, hash } = hashPassword(password);
+    const { salt, hash } = await hashPassword(password);
     const user = await ClientUser.create({
       id: newClientUserId(),
       account,
@@ -128,13 +131,16 @@ module.exports = (app, ctx) => {
     if (!account || !password) {
       return res.status(400).json({ message: 'account and password are required' });
     }
+    if (account.length > 100 || password.length > 128) {
+      return res.status(400).json({ message: '账号或密码过长' });
+    }
   
     const user = isValidPhone(account)
       ? await ClientUser.findOne({ $or: [{ account }, { phone: account }] })
       : await ClientUser.findOne({ account });
     if (!user) return res.status(401).json({ message: '账号或密码错误' });
   
-    if (!verifyPassword(password, user)) {
+    if (!await verifyPassword(password, user)) {
       return res.status(401).json({ message: '账号或密码错误' });
     }
   
@@ -161,6 +167,9 @@ module.exports = (app, ctx) => {
   
     if (!displayName) {
       return res.status(400).json({ message: '请输入昵称' });
+    }
+    if (displayName.length > 50 || avatarUrl.length > 2048) {
+      return res.status(400).json({ message: '昵称或头像地址过长' });
     }
     if (!isValidPhone(phone)) {
       return res.status(400).json({ message: '请输入有效的手机号' });

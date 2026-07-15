@@ -7,11 +7,16 @@ const {
   ensureSalonForMerchant,
   filterNearbySalons,
   getCoordinates,
+  hashPassword,
+  INPUT_LIMITS,
   normalizeServiceTags,
   normalizeAdLink,
+  normalizePagination,
   stripSensitiveSalonFields,
+  verifyPassword,
 } = require('./index');
 const { isAllowedOrigin } = require('./src/config');
+const { Booking } = require('./src/models');
 
 test('getCoordinates accepts common location shapes', () => {
   assert.deepEqual(getCoordinates('121.4737,31.2304'), { latitude: 31.2304, longitude: 121.4737 });
@@ -43,6 +48,43 @@ test('normalizeAdLink only accepts mini program page paths', () => {
   assert.equal(normalizeAdLink('/pages/detail/detail?id=1'), '/pages/detail/detail?id=1');
   assert.equal(normalizeAdLink('https://example.com'), '');
   assert.equal(normalizeAdLink('/pages/../admin'), '');
+});
+
+test('normalizePagination applies defaults and caps page size', () => {
+  assert.deepEqual(normalizePagination({}), { page: 1, limit: 50, skip: 0 });
+  assert.deepEqual(normalizePagination({ page: '3', limit: '500' }), { page: 3, limit: 100, skip: 200 });
+  assert.deepEqual(normalizePagination({ page: 'Infinity' }), { page: 1, limit: 50, skip: 0 });
+});
+
+test('async password hashing remains verifiable', async () => {
+  const password = await hashPassword('correct horse battery staple');
+  assert.equal(await verifyPassword('correct horse battery staple', {
+    passwordSalt: password.salt,
+    passwordHash: password.hash,
+  }), true);
+  assert.equal(await verifyPassword('wrong', {
+    passwordSalt: password.salt,
+    passwordHash: password.hash,
+  }), false);
+});
+
+test('input limits cap query amplification and user content', () => {
+  assert.equal('candidateStaff' in INPUT_LIMITS, false);
+  assert.equal(INPUT_LIMITS.note, 500);
+  assert.equal(INPUT_LIMITS.services, 50);
+});
+
+test('no-preference booking can remain unassigned until merchant acceptance', async () => {
+  const booking = new Booking({
+    id: 'BK-unassigned',
+    serviceId: 'service-1',
+    startTime: new Date('2030-01-01T10:00:00.000Z'),
+    isNoPreference: true,
+    staffName: '无需指定',
+  });
+
+  await booking.validate();
+  assert.equal(booking.staffId, '');
 });
 
 test('buildSearchRadii expands until the max radius', () => {
@@ -88,6 +130,8 @@ test('stripSensitiveSalonFields removes license fields from public salon payload
     licenseRejectReason: 'bad image',
     licenseSubmittedAt: new Date(),
     licenseReviewedAt: new Date(),
+    pendingContent: { name: 'unreviewed' },
+    contentRejectReason: 'internal reason',
   });
 
   assert.deepEqual(payload, { id: '1', name: 'Hot Hair' });

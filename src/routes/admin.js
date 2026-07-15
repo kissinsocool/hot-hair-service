@@ -24,6 +24,8 @@ module.exports = (app, ctx) => {
     buildAdPayload,
     normalizeAdLink,
     saveBase64Image,
+    normalizePagination,
+    setPaginationHeaders,
   } = ctx;
 
   app.post('/api/admin/auth/login', async (req, res) => {
@@ -33,11 +35,14 @@ module.exports = (app, ctx) => {
     if (!username || !password) {
       return res.status(400).json({ message: 'username and password are required' });
     }
+    if (username.length > 100 || password.length > 128) {
+      return res.status(400).json({ message: 'username or password is too long' });
+    }
   
     const user = await AdminUser.findOne({ username });
     if (!user) return res.status(401).json({ message: '账号或密码错误' });
   
-    if (!verifyPassword(password, user)) {
+    if (!await verifyPassword(password, user)) {
       return res.status(401).json({ message: '账号或密码错误' });
     }
   
@@ -100,10 +105,17 @@ module.exports = (app, ctx) => {
   });
   
   app.get('/api/admin/merchants', requireAdminAuth, async (req, res) => {
-    const merchants = await MerchantUser
-      .find({})
-      .sort({ createdAt: -1 })
-      .lean();
+    const pagination = normalizePagination(req.query);
+    const [merchants, total] = await Promise.all([
+      MerchantUser.find({})
+        .select('id username displayName salonId deposit role createdAt updatedAt lastLoginAt')
+        .sort({ createdAt: -1 })
+        .skip(pagination.skip)
+        .limit(pagination.limit)
+        .lean(),
+      MerchantUser.countDocuments(),
+    ]);
+    setPaginationHeaders(res, pagination, total);
     const salonsById = Object.fromEntries(
       (await Salon.find({ id: { $in: merchants.map(user => user.salonId) } }).lean())
         .map(salon => [salon.id, salon]),
@@ -124,6 +136,9 @@ module.exports = (app, ctx) => {
     if (!username || !password || !displayName) {
       return res.status(400).json({ message: 'username, password and displayName are required' });
     }
+    if (username.length > 100 || password.length > 128 || displayName.length > 100 || salonId.length > 100) {
+      return res.status(400).json({ message: 'Merchant field is too long' });
+    }
     if (deposit === null) return res.status(400).json({ message: '保证金必须是非负数字' });
     if (password.length < 6) return res.status(400).json({ message: '密码至少 6 位' });
     if (await MerchantUser.findOne({ username })) {
@@ -131,7 +146,7 @@ module.exports = (app, ctx) => {
     }
   
     const salon = await ensureSalonForMerchant({ salonId, displayName });
-    const { salt, hash } = hashPassword(password);
+    const { salt, hash } = await hashPassword(password);
     const user = await MerchantUser.create({
       id: `merchant-${Date.now()}`,
       username,
@@ -155,6 +170,10 @@ module.exports = (app, ctx) => {
     const salonId = String(req.body.salonId || '').trim();
     const password = String(req.body.password || '');
     const deposit = req.body.deposit === undefined ? undefined : normalizeDeposit(req.body.deposit);
+
+    if (username.length > 100 || displayName.length > 100 || salonId.length > 100 || password.length > 128) {
+      return res.status(400).json({ message: 'Merchant field is too long' });
+    }
   
     if (deposit === null) return res.status(400).json({ message: '保证金必须是非负数字' });
   
@@ -174,7 +193,7 @@ module.exports = (app, ctx) => {
     }
     if (password) {
       if (password.length < 6) return res.status(400).json({ message: '密码至少 6 位' });
-      const { salt, hash } = hashPassword(password);
+      const { salt, hash } = await hashPassword(password);
       user.passwordSalt = salt;
       user.passwordHash = hash;
       user.sessionToken = '';
@@ -254,10 +273,17 @@ module.exports = (app, ctx) => {
   });
   
   app.get('/api/admin/users', requireAdminAuth, async (req, res) => {
-    const users = await ClientUser
-      .find({})
-      .sort({ createdAt: -1 })
-      .lean();
+    const pagination = normalizePagination(req.query);
+    const [users, total] = await Promise.all([
+      ClientUser.find({})
+        .select('id account displayName gender avatarUrl phone createdAt updatedAt lastLoginAt')
+        .sort({ createdAt: -1 })
+        .skip(pagination.skip)
+        .limit(pagination.limit)
+        .lean(),
+      ClientUser.countDocuments(),
+    ]);
+    setPaginationHeaders(res, pagination, total);
   
     res.json(users.map(user => ({
       ...buildClientUserPayload(user),
@@ -268,17 +294,29 @@ module.exports = (app, ctx) => {
   });
   
   app.get('/api/admin/bookings', requireAdminAuth, async (req, res) => {
-    const bookings = await Booking.find({}).sort({ createdAt: -1 }).limit(100);
+    const pagination = normalizePagination(req.query);
+    const [bookings, total] = await Promise.all([
+      Booking.find({}).select('-_id -__v').sort({ createdAt: -1 }).skip(pagination.skip).limit(pagination.limit).lean(),
+      Booking.countDocuments(),
+    ]);
+    setPaginationHeaders(res, pagination, total);
     res.json(bookings.map(normalizeBooking));
   });
 
   app.get('/api/admin/user-images', requireAdminAuth, async (_req, res) => {
-    const bookings = await Booking.find({
+    const query = {
       $or: [
         { 'review.reviewStatus': 'pending' },
         { 'complaint.reviewStatus': 'pending' },
       ],
-    }).sort({ updatedAt: -1 }).lean();
+    };
+    const pagination = normalizePagination(_req.query);
+    const [bookings, total] = await Promise.all([
+      Booking.find(query).select('id userName salonName staffName serviceName review complaint updatedAt createdAt')
+        .sort({ updatedAt: -1 }).skip(pagination.skip).limit(pagination.limit).lean(),
+      Booking.countDocuments(query),
+    ]);
+    setPaginationHeaders(res, pagination, total);
 
     res.json(bookings.flatMap(userImageReviewItems));
   });

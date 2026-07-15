@@ -10,9 +10,7 @@ module.exports = (app, ctx) => {
     getCoordinates,
     toFiniteNumber,
     salonCoverImage,
-    buildSalonImageList,
-    imageExists,
-    publicImageUrl,
+    existingSalonImages,
     Salon,
     calculateDistanceKm,
     userIdAliases,
@@ -33,14 +31,14 @@ module.exports = (app, ctx) => {
     const minResults = normalizeLimit(req.query.minResults, 10, limit);
     const maxRadiusKm = toFiniteNumber(req.query.maxRadiusKm) ?? 5000;
     const salonList = await getNearbySalons(userLocation, radiusKm, limit, minResults, maxRadiusKm);
-    res.json(salonList.map(s => {
+    res.json(await Promise.all(salonList.map(async (s) => {
       const { fullDescription, openingHours, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(s);
       return {
         ...basic,
-        image: salonCoverImage(s),
-        images: buildSalonImageList(s).filter(imageExists).map(publicImageUrl),
+        image: await salonCoverImage(s),
+        images: await existingSalonImages(s),
       };
-    }));
+    })));
   });
   
   app.get('/api/salons/suggestions', async (req, res) => {
@@ -49,10 +47,11 @@ module.exports = (app, ctx) => {
     const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const salons = await Salon
       .find({ publishStatus: 'online', name: { $regex: escaped, $options: 'i' } })
+      .select('id name address location geoLocation rating image images promoImages description publishStatus')
       .limit(8)
       .lean();
     const userLocation = getCoordinates(req.query);
-    res.json(salons.map((salon) => {
+    res.json(await Promise.all(salons.map(async (salon) => {
       const coordinates = getCoordinates(salon.location || salon.geoLocation);
       const distanceKm = userLocation && coordinates
         ? Number(calculateDistanceKm(userLocation, coordinates).toFixed(2))
@@ -60,15 +59,16 @@ module.exports = (app, ctx) => {
       const { fullDescription, openingHours, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(salon);
       return {
         ...basic,
-        image: salonCoverImage(salon),
-        images: buildSalonImageList(salon).filter(imageExists).map(publicImageUrl),
+        image: await salonCoverImage(salon),
+        images: await existingSalonImages(salon),
         ...(distanceKm === undefined ? {} : { distanceKm }),
       };
-    }));
+    })));
   });
   
   app.get('/api/salons/:id', async (req, res) => {
-    const salon = await Salon.findOne({ id: req.params.id, publishStatus: 'online' });
+    const salon = await Salon.findOne({ id: req.params.id, publishStatus: 'online' })
+      .select('-licenseUrl -licenseStatus -licenseRejectReason -licenseSubmittedAt -licenseReviewedAt -pendingContent -contentReviewStatus -contentRejectReason -contentReviewedAt');
     if (!salon) return res.status(404).json({ message: 'Salon not found' });
   
     res.json(await buildSalonDetail(salon));

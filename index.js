@@ -6,6 +6,7 @@ const cors = require('cors');
 const fs = require('fs');
 const http = require('http');
 const crypto = require('crypto');
+const { promisify } = require('util');
 const mongoose = require('mongoose');
 const { WebSocketServer } = require('ws');
 const {
@@ -52,6 +53,7 @@ app.use(cors({
     if (isAllowedOrigin(origin)) return callback(null, true);
     return callback(new Error('Not allowed by CORS'));
   },
+  exposedHeaders: ['X-Total-Count', 'X-Page', 'X-Page-Size'],
 }));
 app.use(express.json({ limit: process.env.JSON_LIMIT || '10mb' }));
 
@@ -65,9 +67,11 @@ app.get(/^\/uploads\/(.+)/, compressedImageMiddleware(uploadDir));
 app.use('/uploads', express.static(uploadDir));
 fs.mkdirSync(dataDir, { recursive: true });
 
-const hashPassword = (password, salt = crypto.randomBytes(16).toString('hex')) => ({
+const pbkdf2 = promisify(crypto.pbkdf2);
+
+const hashPassword = async (password, salt = crypto.randomBytes(16).toString('hex')) => ({
   salt,
-  hash: crypto.pbkdf2Sync(String(password), salt, 120000, 32, 'sha256').toString('hex'),
+  hash: (await pbkdf2(String(password), salt, 120000, 32, 'sha256')).toString('hex'),
 });
 
 const timingSafeEqualHex = (left, right) => {
@@ -76,8 +80,8 @@ const timingSafeEqualHex = (left, right) => {
   return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
 };
 
-const verifyPassword = (password, user) => {
-  const currentHash = hashPassword(password, user.passwordSalt).hash;
+const verifyPassword = async (password, user) => {
+  const currentHash = (await hashPassword(password, user.passwordSalt)).hash;
   const legacyHash = crypto.createHash('sha256').update(`${user.passwordSalt}:${password}`).digest('hex');
   return timingSafeEqualHex(currentHash, user.passwordHash) || timingSafeEqualHex(legacyHash, user.passwordHash);
 };
@@ -137,6 +141,10 @@ const stripSensitiveSalonFields = (salon = {}) => {
     licenseRejectReason,
     licenseSubmittedAt,
     licenseReviewedAt,
+    pendingContent,
+    contentReviewStatus,
+    contentRejectReason,
+    contentReviewedAt,
     ...publicSalon
   } = salon || {};
   return publicSalon;
@@ -252,7 +260,7 @@ const loginClientByPhone = async (phone) => {
   let user = await ClientUser.findOne({ $or: [{ account: phone }, { phone }] });
   if (!user) {
     const password = crypto.randomBytes(16).toString('hex');
-    const { salt, hash } = hashPassword(password);
+    const { salt, hash } = await hashPassword(password);
     user = await ClientUser.create({
       id: newClientUserId(),
       account: phone,
@@ -450,9 +458,13 @@ const normalizeDocument = (document) =>
 
 const getAllSalons = async (limit) => {
   if (limit) {
-    return Salon.find({ publishStatus: 'online' }).sort({ id: 1 }).limit(limit).lean();
+    return Salon.find({ publishStatus: 'online' })
+      .select('-licenseUrl -licenseStatus -licenseRejectReason -licenseSubmittedAt -licenseReviewedAt -pendingContent -contentReviewStatus -contentRejectReason -contentReviewedAt')
+      .sort({ id: 1 }).limit(limit).lean();
   }
-  const salonList = await Salon.find({ publishStatus: 'online' }).lean();
+  const salonList = await Salon.find({ publishStatus: 'online' })
+    .select('-licenseUrl -licenseStatus -licenseRejectReason -licenseSubmittedAt -licenseReviewedAt -pendingContent -contentReviewStatus -contentRejectReason -contentReviewedAt')
+    .lean();
   return salonList.sort((a, b) => Number(a.id) - Number(b.id));
 };
 
@@ -510,6 +522,31 @@ const normalizeLimit = (value, fallback = 50, max = 100) => {
   return Number.isFinite(limit) && limit > 0 ? Math.min(limit, max) : fallback;
 };
 
+const normalizePagination = (query = {}, fallback = 50, max = 100) => {
+  const requestedPage = Math.floor(Number(query.page));
+  const page = Number.isFinite(requestedPage) && requestedPage > 0 ? Math.min(requestedPage, 10000) : 1;
+  const limit = normalizeLimit(query.limit, fallback, max);
+  return { page, limit, skip: (page - 1) * limit };
+};
+
+const setPaginationHeaders = (res, pagination, total) => {
+  res.set({
+    'X-Total-Count': String(total),
+    'X-Page': String(pagination.page),
+    'X-Page-Size': String(pagination.limit),
+  });
+};
+
+const INPUT_LIMITS = Object.freeze({
+  complaint: 2000,
+  contentStaff: 50,
+  note: 500,
+  review: 1000,
+  reviewReply: 1000,
+  services: 50,
+  unavailableSlots: 500,
+});
+
 const buildSearchRadii = (radiusKm, maxRadiusKm) => {
   const radii = [];
   let currentRadiusKm = Math.max(radiusKm, 0.1);
@@ -535,7 +572,9 @@ const findNearbySalons = async (userLocation, radiusKm, limit) => {
       },
     },
   };
-  const salonList = await Salon.find(query).limit(limit).lean();
+  const salonList = await Salon.find(query)
+    .select('-licenseUrl -licenseStatus -licenseRejectReason -licenseSubmittedAt -licenseReviewedAt -pendingContent -contentReviewStatus -contentRejectReason -contentReviewedAt')
+    .limit(limit).lean();
   return salonList
     .map((salon) => {
       const salonLocation = getCoordinates(salon.location || salon.geoLocation);
@@ -560,7 +599,7 @@ const getNearbySalons = async (userLocation, radiusKm, limit, minResults = 10, m
 };
 
 const getServiceById = async (serviceId) => {
-  const salon = await Salon.findOne({ 'services.id': serviceId }).lean();
+  const salon = await Salon.findOne({ 'services.id': serviceId }).select('services').lean();
   return salon?.services?.find(item => item.id === serviceId) || null;
 };
 
@@ -656,7 +695,7 @@ const normalizeUnavailableSlots = (slots) => {
       .filter(slot => typeof slot === 'string')
       .map(slot => slot.trim())
       .filter(slot => /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(slot))
-  )].sort();
+  )].sort().slice(0, INPUT_LIMITS.unavailableSlots);
 };
 
 const isStaffUnavailable = async (staffId, startTime) => {
@@ -756,18 +795,29 @@ const buildSalonImageList = (salon) => {
     .slice(0, 20);
 };
 
-const salonCoverImage = (salon) =>
-  publicImageUrl([salon?.image, ...buildSalonImageList(salon)].find(image => typeof image === 'string' && image.trim() && imageExists(image)) || '');
+const existingSalonImages = async (salon) => {
+  const images = buildSalonImageList(salon);
+  const exists = await Promise.all(images.map(imageExists));
+  return images.filter((_, index) => exists[index]).map(publicImageUrl);
+};
+
+const salonCoverImage = async (salon) => {
+  const images = [salon?.image, ...buildSalonImageList(salon)]
+    .filter(image => typeof image === 'string' && image.trim());
+  const exists = await Promise.all(images.map(imageExists));
+  return publicImageUrl(images.find((_, index) => exists[index]) || '');
+};
 
 const buildSalonDetail = async (salonDocument) => {
   const salon = normalizeDocument(salonDocument);
   const staffMap = await getStaffMapByIds(salon.staffIds);
   const staffList = salon.staffIds.map(id => staffMap[id]).filter(Boolean);
+  const images = await existingSalonImages(salon);
   return {
     ...stripSensitiveSalonFields(salon),
-    image: salonCoverImage(salon),
-    images: buildSalonImageList(salon).filter(imageExists).map(publicImageUrl),
-    promoImages: buildSalonImageList(salon).filter(imageExists).map(publicImageUrl),
+    image: await salonCoverImage(salon),
+    images,
+    promoImages: images,
     staff: staffList.map(buildStaffPayload),
     reviews: staffList.flatMap(staff => (staff.reviews || []).map(review => ({
       ...review,
@@ -1010,7 +1060,7 @@ const migrateSeedDataToMongo = async () => {
   }
 
   if (merchantCount === 0) {
-    const { salt, hash } = hashPassword('123456');
+    const { salt, hash } = await hashPassword('123456');
     await MerchantUser.create({
       id: 'merchant-1',
       username: 'merchant',
@@ -1090,7 +1140,7 @@ const migrateSeedDataToMongo = async () => {
   );
 
   if (adminCount === 0) {
-    const { salt, hash } = hashPassword('admin123456');
+    const { salt, hash } = await hashPassword('admin123456');
     await AdminUser.create({
       id: 'admin-1',
       username: 'admin',
@@ -1102,7 +1152,7 @@ const migrateSeedDataToMongo = async () => {
   }
 
   if (clientCount === 0) {
-    const { salt, hash } = hashPassword('123456');
+    const { salt, hash } = await hashPassword('123456');
     await ClientUser.create({
       id: DEMO_USER_ID,
       account: 'demo',
@@ -1129,11 +1179,11 @@ const generateSlotsForStaffAndDate = async (staffId, date) => {
   return slots;
 };
 
-const generateSlotsForNoPreferenceAndDate = async (candidateStaffIds, date) => {
-  const salon = await getSalonByStaffId(candidateStaffIds[0]).lean();
+const generateSlotsForNoPreferenceAndDate = async (salon, date) => {
+  const staffIds = salon.staffIds || [];
   const slots = await Promise.all(generateHalfHourSlots(salon?.openingHours).map(async (time) => {
     const startTime = `${date}T${time}:00`;
-    const availability = await Promise.all(candidateStaffIds.map(async (staffId) => {
+    const availability = await Promise.all(staffIds.map(async (staffId) => {
       const hasBooking = await findActiveBookingAtTime(staffId, startTime);
       const unavailable = await isStaffUnavailable(staffId, startTime);
       return !hasBooking && !unavailable;
@@ -1166,7 +1216,6 @@ const routeContext = {
   buildMerchantUserPayload,
   buildSalonDetail,
   buildStaffPayload,
-  buildSalonImageList,
   calculateDistanceKm,
   calculateStaffRating,
   ClientUser,
@@ -1191,10 +1240,10 @@ const routeContext = {
   hashPassword,
   hashSmsCode,
   ensureSalonForMerchant,
+  existingSalonImages,
   incrementNoShowCount,
   isStaffUnavailable,
   isValidPhone,
-  imageExists,
   loginClientByPhone,
   maskPhone,
   MerchantUser,
@@ -1204,6 +1253,7 @@ const routeContext = {
   normalizeClientAccount,
   normalizeDeposit,
   normalizeLimit,
+  normalizePagination,
   normalizePhone,
   normalizeUserId,
   parseAmapReverseAddress,
@@ -1219,6 +1269,7 @@ const routeContext = {
   salonCoverImage,
   saveBase64Image,
   savePrivateBase64Image,
+  setPaginationHeaders,
   privateImageUrl,
   SmsVerification,
   publicImageUrl,
@@ -1227,6 +1278,7 @@ const routeContext = {
   USER_CANCEL_WINDOW_MS,
   userIdAliases,
   verifyPassword,
+  INPUT_LIMITS,
   wechatAppId,
   wechatAppSecret,
 };
@@ -1244,7 +1296,13 @@ const startServer = async () => {
   }
 
   await mongoose.connect(mongoUri);
-  await Salon.createIndexes();
+  await Promise.all([
+    Booking.createIndexes(),
+    ClientUser.createIndexes(),
+    MerchantUser.createIndexes(),
+    Salon.createIndexes(),
+    SmsVerification.createIndexes(),
+  ]);
   await migrateSeedDataToMongo();
   await syncSalonGeoLocations();
   await migrateFavoriteSalonsFromFile();
@@ -1269,8 +1327,12 @@ module.exports = {
   calculateDistanceKm,
   filterNearbySalons,
   getCoordinates,
+  hashPassword,
+  INPUT_LIMITS,
   normalizeServiceTags,
   ensureSalonForMerchant,
   normalizeAdLink,
+  normalizePagination,
   stripSensitiveSalonFields,
+  verifyPassword,
 };

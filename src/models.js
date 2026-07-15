@@ -7,7 +7,8 @@ const bookingSchema = new mongoose.Schema({
   userName: { type: String, default: 'Demo 用户' },
   salonId: String,
   salonName: String,
-  staffId: { type: String, required: true, index: true },
+  // No-preference bookings stay unassigned until the merchant accepts them.
+  staffId: { type: String, default: '', index: true },
   staffName: String,
   isNoPreference: { type: Boolean, default: false },
   serviceId: { type: String, required: true },
@@ -30,6 +31,13 @@ const bookingSchema = new mongoose.Schema({
   createdAt: Date,
   updatedAt: Date,
 }, { id: false });
+
+bookingSchema.index({ staffId: 1, startTime: 1, status: 1 });
+bookingSchema.index({ salonId: 1, createdAt: -1, status: 1 });
+bookingSchema.index({ userId: 1, createdAt: -1, status: 1 });
+bookingSchema.index({ createdAt: -1 });
+bookingSchema.index({ 'review.reviewStatus': 1, updatedAt: -1 });
+bookingSchema.index({ 'complaint.reviewStatus': 1, updatedAt: -1 });
 
 const userPolicySchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true, index: true },
@@ -80,7 +88,8 @@ const salonSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 salonSchema.index({ geoLocation: '2dsphere' });
-salonSchema.index({ publishStatus: 1 });
+salonSchema.index({ staffIds: 1 });
+salonSchema.index({ 'services.id': 1 });
 
 const staffProfileSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
@@ -104,9 +113,11 @@ const merchantUserSchema = new mongoose.Schema({
   role: { type: String, default: 'merchant' },
   passwordHash: { type: String, required: true },
   passwordSalt: { type: String, required: true },
-  sessionToken: { type: String, default: '' },
+  sessionToken: { type: String, default: '', index: true },
   lastLoginAt: Date,
 }, { timestamps: true });
+
+merchantUserSchema.index({ createdAt: -1 });
 
 const adminUserSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
@@ -132,12 +143,16 @@ const clientUserSchema = new mongoose.Schema({
   lastLoginAt: Date,
 }, { timestamps: true });
 
+clientUserSchema.index({ createdAt: -1 });
+
 const smsVerificationSchema = new mongoose.Schema({
   phone: { type: String, required: true, index: true },
   codeHash: { type: String, required: true },
   expiresAt: { type: Date, required: true, index: true },
   consumedAt: Date,
 }, { timestamps: true });
+
+smsVerificationSchema.index({ phone: 1, codeHash: 1, expiresAt: -1 });
 
 const adConfigSchema = new mongoose.Schema({
   key: { type: String, required: true, unique: true, default: 'main' },

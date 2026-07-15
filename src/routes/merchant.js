@@ -38,6 +38,9 @@ module.exports = (app, ctx) => {
     findAcceptedBookingAtTimeExcluding,
     incrementNoShowCount,
     normalizeUserId,
+    normalizePagination,
+    setPaginationHeaders,
+    INPUT_LIMITS,
   } = ctx;
 
   app.post('/api/merchant/auth/login', async (req, res) => {
@@ -47,11 +50,14 @@ module.exports = (app, ctx) => {
     if (!username || !password) {
       return res.status(400).json({ message: 'username and password are required' });
     }
+    if (username.length > 100 || password.length > 128) {
+      return res.status(400).json({ message: 'username or password is too long' });
+    }
   
     const user = await MerchantUser.findOne({ username });
     if (!user) return res.status(401).json({ message: '账号或密码错误' });
   
-    if (!verifyPassword(password, user)) {
+    if (!await verifyPassword(password, user)) {
       return res.status(401).json({ message: '账号或密码错误' });
     }
   
@@ -116,15 +122,19 @@ module.exports = (app, ctx) => {
     const displayName = String(req.body.displayName || '').trim();
     const currentPassword = String(req.body.currentPassword || '');
     const newPassword = String(req.body.newPassword || '');
+
+    if (displayName.length > 100 || currentPassword.length > 128 || newPassword.length > 128) {
+      return res.status(400).json({ message: 'Account field is too long' });
+    }
   
     if (displayName) user.displayName = displayName;
   
     if (newPassword) {
       if (newPassword.length < 6) return res.status(400).json({ message: '新密码至少 6 位' });
-      if (!verifyPassword(currentPassword, user)) {
+      if (!await verifyPassword(currentPassword, user)) {
         return res.status(401).json({ message: '当前密码错误' });
       }
-      const nextPassword = hashPassword(newPassword);
+      const nextPassword = await hashPassword(newPassword);
       user.passwordSalt = nextPassword.salt;
       user.passwordHash = nextPassword.hash;
       user.sessionToken = crypto.randomBytes(32).toString('hex');
@@ -188,7 +198,11 @@ module.exports = (app, ctx) => {
     const salon = await Salon.findOne({ id: req.merchantUser.salonId || '1' });
     if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
   
-    const draft = await buildContentDraft(salon, req.body);
+    const payload = req.body || {};
+    const validationError = validateSalonContent(payload, INPUT_LIMITS);
+    if (validationError) return res.status(400).json({ message: validationError });
+
+    const draft = await buildContentDraft(salon, payload);
     if (typeof draft.name === 'string' && draft.name) {
       const existingSalon = await Salon.findOne({
         id: { $ne: salon.id },
@@ -220,6 +234,7 @@ module.exports = (app, ctx) => {
     const staffMap = salon ? await getStaffMapByIds(salon.staffIds) : {};
     res.json({
       ...buildStaffPayload(person),
+      salonId: salon?.id || '',
       salonServices: salon?.services || [],
       salonStaff: salon ? salon.staffIds.map(id => staffMap[id]).filter(Boolean).map(buildStaffPayload) : [],
     });
@@ -228,14 +243,12 @@ module.exports = (app, ctx) => {
   app.get('/api/staff/:id/slots', async (req, res) => {
     const staffId = req.params.id;
     const date = req.query.date || '2026-06-01';
-    const candidateStaffIds = String(req.query.candidateStaffIds || '')
-      .split(',')
-      .map(id => id.trim())
-      .filter(Boolean);
-    const slots = staffId === '__no_preference__' && candidateStaffIds.length > 0
-      ? await generateSlotsForNoPreferenceAndDate(candidateStaffIds, date)
-      : await generateSlotsForStaffAndDate(staffId, date);
-    res.json(slots);
+    if (staffId === '__no_preference__') {
+      const salon = await Salon.findOne({ id: String(req.query.salonId || '').trim() }).lean();
+      if (!salon) return res.status(404).json({ message: 'Salon not found' });
+      return res.json(await generateSlotsForNoPreferenceAndDate(salon, date));
+    }
+    res.json(await generateSlotsForStaffAndDate(staffId, date));
   });
   
   app.get('/api/bookings', async (req, res) => {
@@ -249,7 +262,12 @@ module.exports = (app, ctx) => {
     }
     if (staffId) query.staffId = staffId;
     if (status) query.status = status;
-    const result = await Booking.find(query).sort({ createdAt: -1 });
+    const pagination = normalizePagination(req.query);
+    const [result, total] = await Promise.all([
+      Booking.find(query).select('-_id -__v').sort({ createdAt: -1 }).skip(pagination.skip).limit(pagination.limit).lean(),
+      Booking.countDocuments(query),
+    ]);
+    setPaginationHeaders(res, pagination, total);
     res.json(result.map(normalizeBooking));
   });
   
@@ -307,6 +325,9 @@ module.exports = (app, ctx) => {
     if (!comment) {
       return res.status(400).json({ message: 'comment is required' });
     }
+    if (comment.length > INPUT_LIMITS.review) {
+      return res.status(400).json({ message: `comment cannot exceed ${INPUT_LIMITS.review} characters` });
+    }
   
     const imageUrls = (await Promise.all(
       images.map((image, index) => saveBase64Image('review', image?.fileName, image?.data, index)),
@@ -358,6 +379,9 @@ module.exports = (app, ctx) => {
     if (!description) {
       return res.status(400).json({ message: 'description is required' });
     }
+    if (description.length > INPUT_LIMITS.complaint) {
+      return res.status(400).json({ message: `description cannot exceed ${INPUT_LIMITS.complaint} characters` });
+    }
   
     const imageUrls = (await Promise.all(
       images.map((image, index) => saveBase64Image('complaint', image?.fileName, image?.data, index)),
@@ -394,15 +418,18 @@ module.exports = (app, ctx) => {
   app.post('/api/bookings', async (req, res) => {
     const {
       staffId,
+      salonId = '',
       serviceId,
       startTime,
-      candidateStaffIds = [],
       note = '',
     } = req.body;
     const { userId, userName } = await resolveRequestUser(req);
   
     if (!staffId || !serviceId || !startTime) {
       return res.status(400).json({ message: 'staffId, serviceId and startTime are required' });
+    }
+    if (typeof note !== 'string' || note.length > INPUT_LIMITS.note) {
+      return res.status(400).json({ message: `note cannot exceed ${INPUT_LIMITS.note} characters` });
     }
   
     const requestedStartTime = new Date(startTime);
@@ -419,53 +446,37 @@ module.exports = (app, ctx) => {
     }
   
     const isNoPreference = staffId === '__no_preference__';
-    const requestedCandidateStaffIds = Array.isArray(candidateStaffIds)
-      ? candidateStaffIds.map(id => String(id || '').trim()).filter(Boolean)
-      : [];
-    const bookingStaffId = isNoPreference ? requestedCandidateStaffIds[0] : staffId;
-    if (!bookingStaffId) {
-      return res.status(400).json({ message: 'candidateStaffIds are required when staff is not specified' });
+    const bookingStaffId = isNoPreference ? '' : String(staffId).trim();
+    if (isNoPreference && !String(salonId).trim()) {
+      return res.status(400).json({ message: 'salonId is required when staff is not specified' });
     }
   
-    let staffMember = await getStaffById(bookingStaffId).lean();
-    const service = await getServiceById(serviceId);
-    const salon = await getSalonByStaffId(bookingStaffId).lean();
+    const staffMember = isNoPreference ? null : await getStaffById(bookingStaffId).lean();
+    const salon = isNoPreference
+      ? await Salon.findOne({ id: String(salonId).trim() }).lean()
+      : await getSalonByStaffId(bookingStaffId).lean();
+    const service = salon?.services?.find(item => item.id === serviceId);
   
-    if (!staffMember || !service || !salon) {
+    if ((!isNoPreference && !staffMember) || !service || !salon) {
       return res.status(404).json({ message: 'Staff, service or salon not found' });
     }
-  
+    if (isNoPreference && !(salon.staffIds || []).length) {
+      return res.status(409).json({ message: 'This salon has no staff available for assignment' });
+    }
     const { start: openingStart, end: openingEnd } = parseOpeningHours(salon.openingHours);
     const requestedMinutes = requestedStartTime.getHours() * 60 + requestedStartTime.getMinutes();
     if (requestedMinutes < openingStart || requestedMinutes > openingEnd) {
       return res.status(409).json({ message: 'This time is outside salon opening hours' });
     }
   
-    let assignedStaffId = bookingStaffId;
-    if (isNoPreference) {
-      assignedStaffId = null;
-      for (const candidateStaffId of requestedCandidateStaffIds) {
-        const hasCandidateConflict = await findActiveBookingAtTime(candidateStaffId, startTime);
-        const isCandidateUnavailable = await isStaffUnavailable(candidateStaffId, startTime);
-        if (!hasCandidateConflict && !isCandidateUnavailable) {
-          assignedStaffId = candidateStaffId;
-          staffMember = await getStaffById(candidateStaffId).lean();
-          break;
-        }
+    if (!isNoPreference) {
+      const hasConflict = await findActiveBookingAtTime(bookingStaffId, startTime);
+      if (hasConflict) {
+        return res.status(409).json({ message: 'This slot already has a pending or accepted booking' });
       }
-      if (!assignedStaffId || !staffMember) {
-        return res.status(409).json({ message: 'No staff member is available at the selected time' });
+      if (await isStaffUnavailable(bookingStaffId, startTime)) {
+        return res.status(409).json({ message: 'This staff member is unavailable at the selected time' });
       }
-    }
-  
-    const hasConflict = await findActiveBookingAtTime(assignedStaffId, startTime);
-  
-    if (hasConflict) {
-      return res.status(409).json({ message: 'This slot already has a pending or accepted booking' });
-    }
-  
-    if (await isStaffUnavailable(assignedStaffId, startTime)) {
-      return res.status(409).json({ message: 'This staff member is unavailable at the selected time' });
     }
   
     const now = new Date().toISOString();
@@ -478,7 +489,7 @@ module.exports = (app, ctx) => {
       userName,
       salonId: salon.id,
       salonName: salon.name,
-      staffId: assignedStaffId,
+      staffId: bookingStaffId,
       staffName: isNoPreference ? '无需指定' : staffMember.name,
       isNoPreference,
       serviceId,
@@ -587,6 +598,9 @@ module.exports = (app, ctx) => {
   app.patch('/api/merchant/bookings/:id/review-reply', async (req, res) => {
     const reply = String(req.body.reply || '').trim();
     if (!reply) return res.status(400).json({ message: 'reply is required' });
+    if (reply.length > INPUT_LIMITS.reviewReply) {
+      return res.status(400).json({ message: `reply cannot exceed ${INPUT_LIMITS.reviewReply} characters` });
+    }
   
     const booking = await Booking.findOne({ id: req.params.id });
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
@@ -627,7 +641,75 @@ module.exports = (app, ctx) => {
     const { status } = req.query;
     const query = { salonId: req.merchantUser.salonId };
     if (status) query.status = status;
-    const result = await Booking.find(query).sort({ createdAt: -1 });
+    const pagination = normalizePagination(req.query);
+    const [result, total] = await Promise.all([
+      Booking.find(query).select('-_id -__v').sort({ createdAt: -1 }).skip(pagination.skip).limit(pagination.limit).lean(),
+      Booking.countDocuments(query),
+    ]);
+    setPaginationHeaders(res, pagination, total);
     res.json(result.map(normalizeBooking));
   });
 };
+
+function validateSalonContent(payload = {}, limits) {
+  const arrays = [
+    ['services', limits.services],
+    ['staff', limits.contentStaff],
+    ['images', 20],
+    ['promoImages', 20],
+  ];
+  for (const [field, max] of arrays) {
+    if (Array.isArray(payload[field]) && payload[field].length > max) return `${field} cannot exceed ${max} items`;
+  }
+  const images = [
+    ...(Array.isArray(payload.images) ? payload.images : []),
+    ...(Array.isArray(payload.promoImages) ? payload.promoImages : []),
+  ];
+  for (const image of images) {
+    if (typeof image !== 'string' || image.length > 2048) return 'image URL is invalid or too long';
+  }
+
+  const strings = {
+    name: 100,
+    address: 200,
+    addressDetail: 200,
+    description: 500,
+    fullDescription: 5000,
+    openingHours: 50,
+    phone: 32,
+    image: 2048,
+  };
+  for (const [field, max] of Object.entries(strings)) {
+    if (typeof payload[field] === 'string' && payload[field].length > max) return `${field} cannot exceed ${max} characters`;
+  }
+
+  for (const service of Array.isArray(payload.services) ? payload.services : []) {
+    if (
+      String(service?.name || '').length > 100
+      || String(service?.note || '').length > 500
+      || String(service?.price || '').length > 50
+      || String(service?.duration || '').length > 50
+      || String(service?.imageUrl || '').length > 2048
+    ) {
+      return 'service field is too long';
+    }
+    if (Array.isArray(service?.tags) && service.tags.length > 6) return 'service tags cannot exceed 6 items';
+    if (typeof service?.tags === 'string' && service.tags.length > 200) return 'service tags are too long';
+  }
+  for (const profile of Array.isArray(payload.staff) ? payload.staff : []) {
+    if (
+      String(profile?.name || '').length > 100
+      || String(profile?.role || '').length > 100
+      || String(profile?.experience || '').length > 100
+      || String(profile?.imageUrl || '').length > 2048
+      || String(profile?.bio || '').length > 1000
+    ) {
+      return 'staff field is too long';
+    }
+    if (Array.isArray(profile?.unavailableSlots) && profile.unavailableSlots.length > limits.unavailableSlots) {
+      return `unavailableSlots cannot exceed ${limits.unavailableSlots} items`;
+    }
+    if (Array.isArray(profile?.reviews) && profile.reviews.length > 200) return 'staff reviews cannot exceed 200 items';
+  }
+  return '';
+}
