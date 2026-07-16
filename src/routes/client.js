@@ -18,9 +18,10 @@ module.exports = (app, ctx) => {
     buildClientUserPayload,
     requireClientAuth,
     crypto,
+    rateLimits,
   } = ctx;
 
-  app.post('/api/auth/sms/request', async (req, res) => {
+  app.post('/api/auth/sms/request', ...rateLimits.smsRequest, async (req, res) => {
     const phone = normalizePhone(req.body.phone);
     if (!isValidPhone(phone)) {
       return res.status(400).json({ message: '请输入有效的手机号' });
@@ -41,7 +42,7 @@ module.exports = (app, ctx) => {
     res.json(payload);
   });
   
-  app.post('/api/auth/sms/verify', async (req, res) => {
+  app.post('/api/auth/sms/verify', ...rateLimits.smsVerify, async (req, res) => {
     const phone = normalizePhone(req.body.phone);
     const code = String(req.body.code || '').trim();
     if (!isValidPhone(phone) || !/^\d{6}$/.test(code)) {
@@ -65,7 +66,7 @@ module.exports = (app, ctx) => {
     res.json(await loginClientByPhone(phone));
   });
   
-  app.post('/api/auth/wechat/phone', async (req, res) => {
+  app.post('/api/auth/wechat/phone', ...rateLimits.login, async (req, res) => {
     const code = String(req.body.code || '').trim();
     const encryptedData = String(req.body.encryptedData || '').trim();
     const iv = String(req.body.iv || '').trim();
@@ -87,7 +88,7 @@ module.exports = (app, ctx) => {
     }
   });
   
-  app.post('/api/auth/register', async (req, res) => {
+  app.post('/api/auth/register', ...rateLimits.login, async (req, res) => {
     const account = normalizeClientAccount(req.body.account);
     const password = String(req.body.password || '');
     const displayName = String(req.body.displayName || '').trim();
@@ -124,7 +125,7 @@ module.exports = (app, ctx) => {
     });
   });
   
-  app.post('/api/auth/login', async (req, res) => {
+  app.post('/api/auth/login', ...rateLimits.login, async (req, res) => {
     const account = normalizeClientAccount(req.body.account);
     const password = String(req.body.password || '');
   

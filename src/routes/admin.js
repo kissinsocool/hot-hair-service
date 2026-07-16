@@ -26,9 +26,10 @@ module.exports = (app, ctx) => {
     saveBase64Image,
     normalizePagination,
     setPaginationHeaders,
+    rateLimits,
   } = ctx;
 
-  app.post('/api/admin/auth/login', async (req, res) => {
+  app.post('/api/admin/auth/login', ...rateLimits.login, async (req, res) => {
     const username = String(req.body.username || '').trim();
     const password = String(req.body.password || '');
   
@@ -84,7 +85,7 @@ module.exports = (app, ctx) => {
     res.json(buildAdPayload(await AdConfig.findOne({ key: 'main' }).lean()));
   });
 
-  app.patch('/api/admin/ad', requireAdminAuth, async (req, res) => {
+  app.patch('/api/admin/ad', requireAdminAuth, ...rateLimits.upload, async (req, res) => {
     const link = normalizeAdLink(req.body.link);
     if (!link) return res.status(400).json({ message: '跳转链接必须是 /pages/... 小程序页面路径' });
     if (typeof req.body.enabled !== 'boolean') return res.status(400).json({ message: '是否显示必须是布尔值' });

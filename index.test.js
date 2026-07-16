@@ -16,11 +16,13 @@ const {
   normalizeAdLink,
   normalizePagination,
   parseMerchantRescheduleTime,
+  socketCanReceiveBooking,
   stripSensitiveSalonFields,
   verifyPassword,
 } = require('./index');
 const { isAllowedOrigin } = require('./src/config');
 const { Booking, SlotOccupancy } = require('./src/models');
+const registerMerchantRoutes = require('./src/routes/merchant');
 
 test('getCoordinates accepts common location shapes', () => {
   assert.deepEqual(getCoordinates('121.4737,31.2304'), { latitude: 31.2304, longitude: 121.4737 });
@@ -159,6 +161,17 @@ test('merchant rescheduling only accepts future times for active bookings', () =
   );
 });
 
+test('websocket booking subscriptions only receive their own user or salon events', () => {
+  const booking = { userId: 'user-7', salonId: 'salon-3' };
+
+  assert.equal(socketCanReceiveBooking({ role: 'client', userId: '7' }, booking), true);
+  assert.equal(socketCanReceiveBooking({ role: 'client', userId: '8' }, booking), false);
+  assert.equal(socketCanReceiveBooking({ role: 'merchant', salonId: 'salon-3' }, booking), true);
+  assert.equal(socketCanReceiveBooking({ role: 'merchant', salonId: 'salon-4' }, booking), false);
+  assert.equal(socketCanReceiveBooking({ role: 'admin' }, booking), true);
+  assert.equal(socketCanReceiveBooking(null, booking), false);
+});
+
 test('isAllowedOrigin allows local Flutter web ports', () => {
   assert.equal(isAllowedOrigin('http://localhost:61234'), true);
   assert.equal(isAllowedOrigin('http://127.0.0.1:61234'), true);
@@ -183,4 +196,103 @@ test('stripSensitiveSalonFields removes license fields from public salon payload
 
 test('admin merchant creation helper is wired into route context', () => {
   assert.equal(typeof ensureSalonForMerchant, 'function');
+});
+
+test('merchant review replies are scoped to the authenticated merchant salon', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    use() {},
+    patch(path, handler) { routes.set(path, handler); },
+  };
+  let query;
+  registerMerchantRoutes(app, {
+    Booking: {
+      findOne(value) {
+        query = value;
+        return null;
+      },
+    },
+    INPUT_LIMITS: { reviewReply: 1000 },
+    rateLimits: {
+      login: [],
+      booking: [],
+      merchantBooking: [],
+      upload: [],
+    },
+  });
+
+  let status;
+  await routes.get('/api/merchant/bookings/:id/review-reply')(
+    {
+      body: { reply: '谢谢您的评价' },
+      params: { id: 'BK-1' },
+      merchantUser: { salonId: 'salon-7' },
+    },
+    {
+      status(value) { status = value; return this; },
+      json() {},
+    },
+  );
+
+  assert.deepEqual(query, { id: 'BK-1', salonId: 'salon-7' });
+  assert.equal(status, 404);
+});
+
+test('booking cancellation atomically checks state and releases its slot in one transaction', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    use() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const session = { id: 'transaction-session' };
+  let updateCall;
+  let deleteCall;
+  let transactionOptions;
+  let ended = false;
+  const current = { id: 'BK-1', userId: 'user-1', status: 'pending', startTime: new Date('2030-01-01') };
+  const updated = { ...current, status: 'canceled' };
+
+  registerMerchantRoutes(app, {
+    Booking: {
+      findOne() { return { session: async () => current }; },
+      async findOneAndUpdate(...args) { updateCall = args; return updated; },
+    },
+    SlotOccupancy: {
+      async deleteOne(...args) { deleteCall = args; },
+    },
+    mongoose: {
+      async startSession() {
+        return Object.assign(session, {
+          async withTransaction(work, options) { transactionOptions = options; await work(); },
+          async endSession() { ended = true; },
+        });
+      },
+    },
+    resolveRequestUser: async () => ({ userId: 'user-1' }),
+    userIdAliases: id => [id],
+    normalizeBooking: value => value,
+    broadcastBookingEvent() {},
+    USER_CANCEL_WINDOW_MS: 3 * 60 * 60 * 1000,
+    rateLimits: { login: [], booking: [], merchantBooking: [], upload: [] },
+  });
+
+  let response;
+  await routes.get('/api/bookings/:id/cancel')(
+    { params: { id: 'BK-1' } },
+    { json(value) { response = value; } },
+  );
+
+  assert.equal(updateCall[0].status, 'pending');
+  assert.equal(updateCall[2].session, session);
+  assert.deepEqual(deleteCall, [{ bookingId: 'BK-1' }, { session }]);
+  assert.deepEqual(transactionOptions, {
+    readConcern: { level: 'snapshot' },
+    writeConcern: { w: 'majority' },
+  });
+  assert.equal(response.booking.status, 'canceled');
+  assert.equal(ended, true);
 });

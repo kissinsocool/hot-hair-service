@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "admin:create": "node scripts/create-admin.js",
     "test": "node --test"
   },
   "keywords": [],

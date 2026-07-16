@@ -1,6 +1,7 @@
 module.exports = (app, ctx) => {
   const {
     MerchantUser,
+    mongoose,
     verifyPassword,
     crypto,
     buildMerchantUserPayload,
@@ -46,21 +47,35 @@ module.exports = (app, ctx) => {
     parseMerchantRescheduleTime,
     setPaginationHeaders,
     INPUT_LIMITS,
+    rateLimits,
   } = ctx;
 
-  const reserveBookingSlot = async (bookingId, staffId, startTime) => {
+  const reserveBookingSlot = (bookingId, staffId, startTime, session) => {
     const normalizedStartTime = new Date(startTime);
-    const result = await SlotOccupancy.updateOne(
+    return SlotOccupancy.updateOne(
       { bookingId, staffId, startTime: normalizedStartTime },
       { $setOnInsert: { bookingId, staffId, startTime: normalizedStartTime } },
-      { upsert: true },
+      { upsert: true, session },
     );
-    return result.upsertedCount > 0;
   };
 
   const isDuplicateSlotError = error => error?.code === 11000;
+  const transactionError = (status, message) => Object.assign(new Error(message), { httpStatus: status });
+  const runBookingTransaction = async (work) => {
+    const session = await mongoose.startSession();
+    try {
+      let result;
+      await session.withTransaction(
+        async () => { result = await work(session); },
+        { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } },
+      );
+      return result;
+    } finally {
+      await session.endSession();
+    }
+  };
 
-  app.post('/api/merchant/auth/login', async (req, res) => {
+  app.post('/api/merchant/auth/login', ...rateLimits.login, async (req, res) => {
     const username = String(req.body.username || '').trim();
     const password = String(req.body.password || '');
   
@@ -237,7 +252,7 @@ module.exports = (app, ctx) => {
     res.json(await buildMerchantSalonPayload(req.merchantUser.salonId || '1'));
   });
   
-  app.post('/api/merchant/uploads', async (req, res) => {
+  app.post('/api/merchant/uploads', ...rateLimits.upload, async (req, res) => {
     const { data, fileName = 'avatar.png' } = req.body;
     const url = await saveBase64Image('staff', fileName, data);
     if (!url) return res.status(400).json({ message: 'Valid image data under 5MB is required' });
@@ -292,29 +307,43 @@ module.exports = (app, ctx) => {
     res.json(result.map(normalizeBooking));
   });
   
-  app.patch('/api/bookings/:id/cancel', async (req, res) => {
+  app.patch('/api/bookings/:id/cancel', ...rateLimits.booking, async (req, res) => {
     const { userId } = await resolveRequestUser(req);
-    const booking = await Booking.findOne({ id: req.params.id, userId: { $in: userIdAliases(userId) } });
-    if (!booking) return res.status(404).json({ message: 'Booking not found' });
-    if (!['pending', 'accepted'].includes(booking.status)) {
-      return res.status(409).json({ message: 'Only pending or accepted bookings can be canceled by user' });
-    }
-    if (
-      booking.status === 'accepted' &&
-      new Date(booking.startTime).getTime() - Date.now() < USER_CANCEL_WINDOW_MS
-    ) {
-      return res.status(409).json({
-        message: '预约开始前3小时内不能直接取消，请电话联系商家协商取消。直接爽约3次账号将被拉黑。',
+    let booking;
+    try {
+      booking = await runBookingTransaction(async (session) => {
+        const ownerFilter = { id: req.params.id, userId: { $in: userIdAliases(userId) } };
+        const current = await Booking.findOne(ownerFilter).session(session);
+        if (!current) throw transactionError(404, 'Booking not found');
+        if (!['pending', 'accepted'].includes(current.status)) {
+          throw transactionError(409, 'Only pending or accepted bookings can be canceled by user');
+        }
+        if (
+          current.status === 'accepted' &&
+          new Date(current.startTime).getTime() - Date.now() < USER_CANCEL_WINDOW_MS
+        ) {
+          throw transactionError(409, '预约开始前3小时内不能直接取消，请电话联系商家协商取消。直接爽约3次账号将被拉黑。');
+        }
+
+        const updated = await Booking.findOneAndUpdate(
+          { ...ownerFilter, status: current.status },
+          { $set: {
+            status: 'canceled',
+            updatedAt: new Date(),
+            merchantMessage: '用户已取消该预约。',
+            userMessage: '您已取消本次预约。',
+            rejectReason: '',
+          } },
+          { new: true, session },
+        );
+        if (!updated) throw transactionError(409, '订单状态已变更，请刷新后重试');
+        await SlotOccupancy.deleteOne({ bookingId: updated.id }, { session });
+        return updated;
       });
+    } catch (error) {
+      if (error.httpStatus) return res.status(error.httpStatus).json({ message: error.message });
+      throw error;
     }
-  
-    booking.status = 'canceled';
-    booking.updatedAt = new Date().toISOString();
-    booking.merchantMessage = '用户已取消该预约。';
-    booking.userMessage = '您已取消本次预约。';
-    booking.rejectReason = '';
-    await booking.save();
-    await SlotOccupancy.deleteOne({ bookingId: booking.id });
     broadcastBookingEvent('booking.updated', booking);
   
     res.json({
@@ -323,7 +352,7 @@ module.exports = (app, ctx) => {
     });
   });
   
-  app.post('/api/bookings/:id/review', async (req, res) => {
+  app.post('/api/bookings/:id/review', ...rateLimits.booking, async (req, res) => {
     const booking = await Booking.findOne({ id: req.params.id });
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
     const { userId } = await resolveRequestUser(req);
@@ -381,7 +410,7 @@ module.exports = (app, ctx) => {
     res.status(201).json({ review, booking: normalizeBooking(booking) });
   });
   
-  app.post('/api/bookings/:id/complaint', async (req, res) => {
+  app.post('/api/bookings/:id/complaint', ...rateLimits.booking, async (req, res) => {
     const booking = await Booking.findOne({ id: req.params.id });
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
     const { userId } = await resolveRequestUser(req);
@@ -437,7 +466,7 @@ module.exports = (app, ctx) => {
     res.status(201).json({ complaint, booking: normalizeBooking(booking) });
   });
   
-  app.post('/api/bookings', async (req, res) => {
+  app.post('/api/bookings', ...rateLimits.booking, async (req, res) => {
     const {
       staffId,
       salonId = '',
@@ -460,11 +489,6 @@ module.exports = (app, ctx) => {
     }
     if (requestedStartTime.getTime() <= Date.now()) {
       return res.status(409).json({ message: 'Only future time slots can be booked' });
-    }
-  
-    const userPolicy = await getUserPolicy(userId);
-    if (userPolicy.isBlacklisted) {
-      return res.status(403).json({ message: '该账号已因爽约次数过多被拉黑，无法继续预约。' });
     }
   
     const isNoPreference = staffId === '__no_preference__';
@@ -508,48 +532,47 @@ module.exports = (app, ctx) => {
     const serviceBasePrice = parsePriceValue(service.price);
     const staffExtraServiceFee = isNoPreference ? 0 : Number(staffMember.extraServiceFee || 0);
     const totalPrice = serviceBasePrice + staffExtraServiceFee;
-    const bookingId = 'BK' + Date.now();
-    let createdSlotOccupancy = false;
-    if (!isNoPreference) {
-      try {
-        createdSlotOccupancy = await reserveBookingSlot(bookingId, bookingStaffId, startTime);
-      } catch (error) {
-        if (isDuplicateSlotError(error)) {
-          return res.status(409).json({ message: 'This time slot was just booked by another user' });
-        }
-        throw error;
-      }
-    }
-
+    const bookingId = `BK-${crypto.randomUUID()}`;
     let booking;
     try {
-      booking = await Booking.create({
-        id: bookingId,
-        userId,
-        userName,
-        salonId: salon.id,
-        salonName: salon.name,
-        staffId: bookingStaffId,
-        staffName: isNoPreference ? '无需指定' : staffMember.name,
-        isNoPreference,
-        serviceId,
-        serviceName: service.name,
-        servicePrice: service.price,
-        serviceDuration: service.duration,
-        serviceBasePrice,
-        staffExtraServiceFee,
-        totalPrice,
-        startTime,
-        note,
-        status: 'pending',
-        merchantMessage: '您有一条新的预约申请，请及时处理。',
-        userMessage: '预约申请已提交，正在等待商家确认。',
-        createdAt: now,
-        updatedAt: now,
+      booking = await runBookingTransaction(async (session) => {
+        const userPolicy = await getUserPolicy(userId, session);
+        if (userPolicy.isBlacklisted) {
+          throw transactionError(403, '该账号已因爽约次数过多被拉黑，无法继续预约。');
+        }
+        if (!isNoPreference) {
+          await reserveBookingSlot(bookingId, bookingStaffId, startTime, session);
+        }
+        const [created] = await Booking.create([{
+          id: bookingId,
+          userId,
+          userName,
+          salonId: salon.id,
+          salonName: salon.name,
+          staffId: bookingStaffId,
+          staffName: isNoPreference ? '无需指定' : staffMember.name,
+          isNoPreference,
+          serviceId,
+          serviceName: service.name,
+          servicePrice: service.price,
+          serviceDuration: service.duration,
+          serviceBasePrice,
+          staffExtraServiceFee,
+          totalPrice,
+          startTime,
+          note,
+          status: 'pending',
+          merchantMessage: '您有一条新的预约申请，请及时处理。',
+          userMessage: '预约申请已提交，正在等待商家确认。',
+          createdAt: now,
+          updatedAt: now,
+        }], { session });
+        return created;
       });
     } catch (error) {
-      if (createdSlotOccupancy) {
-        await SlotOccupancy.deleteOne({ bookingId });
+      if (error.httpStatus) return res.status(error.httpStatus).json({ message: error.message });
+      if (isDuplicateSlotError(error)) {
+        return res.status(409).json({ message: 'This time slot was just booked by another user' });
       }
       throw error;
     }
@@ -561,14 +584,15 @@ module.exports = (app, ctx) => {
     });
   });
   
-  app.patch('/api/merchant/bookings/:id', async (req, res) => {
+  app.patch('/api/merchant/bookings/:id', ...rateLimits.merchantBooking, async (req, res) => {
     const { action, reason = '', assignedStaffId = '', startTime } = req.body;
     const merchantSalon = await Salon.findOne({ id: req.merchantUser.salonId })
       .select('staffIds openingHours closedDates')
       .lean();
-    const booking = await Booking.findOne({
+    const merchantScope = buildMerchantBookingScope(req.merchantUser.salonId, merchantSalon?.staffIds || []);
+    let booking = await Booking.findOne({
       id: req.params.id,
-      ...buildMerchantBookingScope(req.merchantUser.salonId, merchantSalon?.staffIds || []),
+      ...merchantScope,
     });
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
     if (!['accept', 'cancel', 'complete', 'no_show', 'reject', 'reschedule'].includes(action)) {
@@ -581,6 +605,8 @@ module.exports = (app, ctx) => {
       return res.status(409).json({ message: 'Only accepted bookings can be canceled, completed or marked no-show' });
     }
 
+    let update;
+    let changed = false;
     if (action === 'reschedule') {
       const parsed = parseMerchantRescheduleTime(booking.status, startTime);
       if (parsed.error) return res.status(parsed.status).json({ message: parsed.error });
@@ -602,48 +628,17 @@ module.exports = (app, ctx) => {
         }
       }
 
-      const previousStartTime = booking.startTime;
-      const changed = previousStartTime.getTime() !== parsed.value.getTime();
-      if (changed && booking.staffId) {
-        try {
-          await SlotOccupancy.updateOne(
-            { bookingId: booking.id },
-            { $set: { staffId: booking.staffId, startTime: parsed.value } },
-            { upsert: true },
-          );
-        } catch (error) {
-          if (isDuplicateSlotError(error)) {
-            return res.status(409).json({ message: '该理发师在新时间段刚刚被其他订单占用' });
-          }
-          throw error;
-        }
-      }
-
-      booking.startTime = parsed.value;
-      booking.updatedAt = new Date().toISOString();
-      booking.merchantMessage = '您已变更预约时间。';
-      booking.userMessage = `商家已将预约时间变更为 ${startTime}。`;
-      try {
-        await booking.save();
-      } catch (error) {
-        if (changed && booking.staffId) {
-          await SlotOccupancy.updateOne(
-            { bookingId: booking.id },
-            { $set: { staffId: booking.staffId, startTime: previousStartTime } },
-            { upsert: true },
-          );
-        }
-        throw error;
-      }
-      broadcastBookingEvent('booking.updated', booking);
-      return res.json({ message: 'Booking rescheduled.', booking: normalizeBooking(booking) });
-    }
-  
-    let createdSlotOccupancy = false;
-    if (action === 'accept') {
+      changed = booking.startTime.getTime() !== parsed.value.getTime();
+      update = {
+        startTime: parsed.value,
+        updatedAt: new Date(),
+        merchantMessage: '您已变更预约时间。',
+        userMessage: `商家已将预约时间变更为 ${startTime}。`,
+      };
+    } else {
       let selectedStaffId = booking.staffId;
-      if (booking.isNoPreference || booking.staffName === '无需指定') {
-        booking.isNoPreference = true;
+      let selectedStaffName = booking.staffName;
+      if (action === 'accept' && (booking.isNoPreference || booking.staffName === '无需指定')) {
         selectedStaffId = String(assignedStaffId || '').trim();
         if (!selectedStaffId) {
           return res.status(400).json({ message: '无需指定理发师的订单接单前必须指定一位理发师' });
@@ -658,84 +653,110 @@ module.exports = (app, ctx) => {
           return res.status(409).json({ message: '指定理发师在该时间段不可预约' });
         }
   
-        booking.staffId = selectedStaffId;
-        booking.staffName = selectedStaff.name;
+        selectedStaffName = selectedStaff.name;
       }
-  
-      const hasConflict = await findAcceptedBookingAtTimeExcluding(
-        selectedStaffId,
-        booking.startTime,
-        booking.id,
-      );
-      if (hasConflict) {
-        return res.status(409).json({ message: '指定理发师在该时间段已有预约' });
-      }
-      try {
-        createdSlotOccupancy = await reserveBookingSlot(
-          booking.id,
+
+      if (action === 'accept') {
+        const hasConflict = await findAcceptedBookingAtTimeExcluding(
           selectedStaffId,
           booking.startTime,
+          booking.id,
         );
-      } catch (error) {
-        if (isDuplicateSlotError(error)) {
-          return res.status(409).json({ message: '指定理发师在该时间段刚刚被其他订单占用' });
+        if (hasConflict) {
+          return res.status(409).json({ message: '指定理发师在该时间段已有预约' });
         }
-        throw error;
       }
+
+      update = {
+        status: {
+          accept: 'accepted',
+          cancel: 'canceled',
+          complete: 'completed',
+          no_show: 'no_show',
+          reject: 'rejected',
+        }[action],
+        updatedAt: new Date(),
+        merchantMessage: {
+          accept: '您已接单。',
+          cancel: '您已取消该预约。',
+          complete: '订单已完成。',
+          no_show: '您已将该预约标记为爽约。',
+          reject: '您已拒单。',
+        }[action],
+        userMessage: {
+          accept: '商家已确认，预约成功！',
+          cancel: `商家已取消本次预约${reason ? `：${reason}` : '。'}`,
+          complete: '本次预约已完成，感谢到店。',
+          no_show: '商家已将本次预约标记为爽约。直接爽约3次账号将被拉黑。',
+          reject: `商家已拒绝本次预约${reason ? `：${reason}` : '。'}`,
+        }[action],
+        rejectReason: ['cancel', 'no_show', 'reject'].includes(action) ? reason : '',
+        ...(action === 'accept' ? { staffId: selectedStaffId, staffName: selectedStaffName } : {}),
+      };
     }
-  
-    booking.status = {
-      accept: 'accepted',
-      cancel: 'canceled',
-      complete: 'completed',
-      no_show: 'no_show',
-      reject: 'rejected',
-    }[action];
-    booking.updatedAt = new Date().toISOString();
-    booking.merchantMessage = {
-      accept: '您已接单。',
-      cancel: '您已取消该预约。',
-      complete: '订单已完成。',
-      no_show: '您已将该预约标记为爽约。',
-      reject: '您已拒单。',
-    }[action];
-    booking.userMessage = {
-      accept: '商家已确认，预约成功！',
-      cancel: `商家已取消本次预约${reason ? `：${reason}` : '。'}`,
-      complete: '本次预约已完成，感谢到店。',
-      no_show: '商家已将本次预约标记为爽约。直接爽约3次账号将被拉黑。',
-      reject: `商家已拒绝本次预约${reason ? `：${reason}` : '。'}`,
-    }[action];
-    booking.rejectReason = ['cancel', 'no_show', 'reject'].includes(action) ? reason : '';
-    const userPolicy = action === 'no_show' ? await incrementNoShowCount(booking.userId) : null;
+
+    let userPolicy = null;
     try {
-      await booking.save();
+      const result = await runBookingTransaction(async (session) => {
+        if (action === 'reschedule' && changed && booking.staffId) {
+          await SlotOccupancy.updateOne(
+            { bookingId: booking.id },
+            { $set: { staffId: booking.staffId, startTime: update.startTime } },
+            { upsert: true, session },
+          );
+        }
+        if (action === 'accept') {
+          await reserveBookingSlot(booking.id, update.staffId, booking.startTime, session);
+        }
+
+        const updated = await Booking.findOneAndUpdate(
+          {
+            id: booking.id,
+            ...merchantScope,
+            status: booking.status,
+            ...(action === 'reschedule' ? { startTime: booking.startTime } : {}),
+          },
+          { $set: update },
+          { new: true, session },
+        );
+        if (!updated) throw transactionError(409, '订单状态已变更，请刷新后重试');
+        const nextPolicy = action === 'no_show'
+          ? await incrementNoShowCount(updated.userId, session)
+          : null;
+        if (!['accept', 'reschedule'].includes(action)) {
+          await SlotOccupancy.deleteOne({ bookingId: updated.id }, { session });
+        }
+        return { booking: updated, userPolicy: nextPolicy };
+      });
+      booking = result.booking;
+      userPolicy = result.userPolicy;
     } catch (error) {
-      if (createdSlotOccupancy) {
-        await SlotOccupancy.deleteOne({ bookingId: booking.id });
+      if (error.httpStatus) return res.status(error.httpStatus).json({ message: error.message });
+      if (isDuplicateSlotError(error)) {
+        return res.status(409).json({ message: '该理发师在该时间段刚刚被其他订单占用' });
       }
       throw error;
-    }
-    if (action !== 'accept') {
-      await SlotOccupancy.deleteOne({ bookingId: booking.id });
     }
     broadcastBookingEvent('booking.updated', booking);
   
     res.json({
-      message: `Booking ${booking.status}.`,
+      message: action === 'reschedule' ? 'Booking rescheduled.' : `Booking ${booking.status}.`,
       booking: normalizeBooking(booking),
       userPolicy,
     });
   });
   
-  app.patch('/api/merchant/bookings/:id/review-reply', async (req, res) => {
+  app.patch('/api/merchant/bookings/:id/review-reply', ...rateLimits.merchantBooking, async (req, res) => {
     const reply = String(req.body.reply || '').trim();
     if (!reply) return res.status(400).json({ message: 'reply is required' });
     if (reply.length > INPUT_LIMITS.reviewReply) {
       return res.status(400).json({ message: `reply cannot exceed ${INPUT_LIMITS.reviewReply} characters` });
     }
   
-    const booking = await Booking.findOne({ id: req.params.id });
+    const booking = await Booking.findOne({
+      id: req.params.id,
+      salonId: req.merchantUser.salonId,
+    });
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
     if (!booking.reviewed || !booking.review) {
       return res.status(409).json({ message: 'Booking has no review' });

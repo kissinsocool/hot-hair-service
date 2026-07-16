@@ -6,21 +6,21 @@ const cors = require('cors');
 const fs = require('fs');
 const http = require('http');
 const crypto = require('crypto');
-const { promisify } = require('util');
 const mongoose = require('mongoose');
-const { WebSocketServer } = require('ws');
+const { WebSocket, WebSocketServer } = require('ws');
 const {
   PORT,
   DEMO_USER_ID,
   uploadDir,
   imageCacheDir,
-  dataDir,
-  favoritesFile,
   picturesDir,
   amapWebServiceKey,
   publicBaseUrl,
   wechatAppId,
   wechatAppSecret,
+  trustProxyHops,
+  wsMaxConnections,
+  wsMaxConnectionsPerIp,
   isAllowedOrigin,
 } = require('./src/config');
 const {
@@ -44,10 +44,25 @@ const {
   savePrivateBase64Image,
   privateImageUrl,
 } = require('./src/images');
+const { rateLimits } = require('./src/rate-limit');
+const { hashPassword, verifyPassword } = require('./src/passwords');
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+const socketConnectionCounts = new Map();
+const wss = new WebSocketServer({
+  server,
+  path: '/ws',
+  maxPayload: 4 * 1024,
+  perMessageDeflate: false,
+  verifyClient: ({ origin }, done) => {
+    if (!isAllowedOrigin(origin)) return done(false, 403, 'Origin not allowed');
+    if (wss.clients.size >= wsMaxConnections) return done(false, 503, 'WebSocket capacity reached');
+    done(true);
+  },
+});
+
+if (trustProxyHops > 0) app.set('trust proxy', trustProxyHops);
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -66,27 +81,6 @@ app.get(/^\/images\/(.+)/, compressedImageMiddleware(picturesDir));
 app.use('/images', express.static(picturesDir));
 app.get(/^\/uploads\/(.+)/, compressedImageMiddleware(uploadDir));
 app.use('/uploads', express.static(uploadDir));
-fs.mkdirSync(dataDir, { recursive: true });
-
-const pbkdf2 = promisify(crypto.pbkdf2);
-
-const hashPassword = async (password, salt = crypto.randomBytes(16).toString('hex')) => ({
-  salt,
-  hash: (await pbkdf2(String(password), salt, 120000, 32, 'sha256')).toString('hex'),
-});
-
-const timingSafeEqualHex = (left, right) => {
-  const leftBuffer = Buffer.from(String(left || ''), 'hex');
-  const rightBuffer = Buffer.from(String(right || ''), 'hex');
-  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
-};
-
-const verifyPassword = async (password, user) => {
-  const currentHash = (await hashPassword(password, user.passwordSalt)).hash;
-  const legacyHash = crypto.createHash('sha256').update(`${user.passwordSalt}:${password}`).digest('hex');
-  return timingSafeEqualHex(currentHash, user.passwordHash) || timingSafeEqualHex(legacyHash, user.passwordHash);
-};
-
 const normalizePhone = (phone) => String(phone || '').replace(/\D/g, '');
 
 const normalizeAdLink = (value) => {
@@ -333,126 +327,132 @@ const resolveRequestUser = async (req) => {
   };
 };
 
+const socketSubscriptions = new WeakMap();
+
 const sendSocketMessage = (socket, payload) => {
-  if (socket.readyState !== socket.OPEN) return;
+  if (socket.readyState !== WebSocket.OPEN) return;
+  if (socket.bufferedAmount > 1024 * 1024) {
+    socket.close(1013, 'Client is too slow');
+    return;
+  }
   socket.send(JSON.stringify(payload));
 };
 
+const socketCanReceiveBooking = (subscription, booking) => {
+  if (!subscription || !booking) return false;
+  if (subscription.role === 'admin') return true;
+  if (subscription.role === 'merchant') return String(subscription.salonId) === String(booking.salonId);
+  return subscription.role === 'client'
+    && normalizeUserId(subscription.userId) === normalizeUserId(booking.userId);
+};
+
 const broadcastBookingEvent = (event, booking) => {
+  const normalized = normalizeBooking(booking);
   const payload = {
     event,
-    booking: normalizeBooking(booking),
+    booking: normalized,
   };
 
   wss.clients.forEach((client) => {
-    sendSocketMessage(client, payload);
+    if (socketCanReceiveBooking(socketSubscriptions.get(client), normalized)) {
+      sendSocketMessage(client, payload);
+    }
   });
 };
 
-wss.on('connection', (socket) => {
+const authenticateSocket = async (role, token) => {
+  if (role === 'client') {
+    const user = await ClientUser.findOne({ sessionToken: token }).select('id').lean();
+    return user ? { role, userId: normalizeUserId(user.id) } : null;
+  }
+  if (role === 'merchant') {
+    const user = await MerchantUser.findOne({ sessionToken: token }).select('salonId').lean();
+    return user ? { role, salonId: user.salonId } : null;
+  }
+  if (role === 'admin') {
+    const user = await AdminUser.findOne({ sessionToken: token }).select('id').lean();
+    return user ? { role } : null;
+  }
+  return null;
+};
+
+const socketIpAddress = (request) => {
+  const forwarded = String(request.headers['x-forwarded-for'] || '')
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean);
+  return trustProxyHops > 0 && forwarded.length >= trustProxyHops
+    ? forwarded[forwarded.length - trustProxyHops]
+    : request.socket.remoteAddress || 'unknown';
+};
+
+wss.on('connection', (socket, request) => {
+  const ipAddress = socketIpAddress(request);
+  const connectionCount = socketConnectionCounts.get(ipAddress) || 0;
+  if (connectionCount >= wsMaxConnectionsPerIp) {
+    socket.close(1013, 'Too many connections');
+    return;
+  }
+  socketConnectionCounts.set(ipAddress, connectionCount + 1);
+  socket.on('close', () => {
+    const remaining = (socketConnectionCounts.get(ipAddress) || 1) - 1;
+    if (remaining > 0) socketConnectionCounts.set(ipAddress, remaining);
+    else socketConnectionCounts.delete(ipAddress);
+  });
+
+  socket.isAlive = true;
+  socket.on('pong', () => { socket.isAlive = true; });
+  socket.on('error', () => {});
+
+  const authTimeout = setTimeout(() => socket.close(1008, 'Authentication timeout'), 5000);
+  authTimeout.unref();
+  socket.on('close', () => clearTimeout(authTimeout));
+
   sendSocketMessage(socket, {
-    event: 'connected',
-    message: 'Booking updates connected.',
+    event: 'auth.required',
+    message: 'Send {"event":"authenticate","role":"client|merchant|admin","token":"..."}.',
+  });
+
+  socket.on('message', async (raw, isBinary) => {
+    if (socketSubscriptions.has(socket) || socket.authenticating) return;
+    if (isBinary) return socket.close(1003, 'Text messages only');
+
+    let message;
+    try {
+      message = JSON.parse(raw.toString());
+    } catch {
+      return socket.close(1008, 'Invalid authentication message');
+    }
+    const role = String(message?.role || '').trim();
+    const token = String(message?.token || '').trim();
+    if (message?.event !== 'authenticate' || !['client', 'merchant', 'admin'].includes(role) || !token || token.length > 256) {
+      return socket.close(1008, 'Invalid authentication message');
+    }
+
+    socket.authenticating = true;
+    try {
+      const subscription = await authenticateSocket(role, token);
+      if (!subscription) return socket.close(1008, 'Authentication failed');
+      socketSubscriptions.set(socket, subscription);
+      clearTimeout(authTimeout);
+      sendSocketMessage(socket, { event: 'authenticated', role: subscription.role });
+    } catch {
+      socket.close(1011, 'Authentication unavailable');
+    } finally {
+      socket.authenticating = false;
+    }
   });
 });
 
-// --- Initial merchant template data ---
-const imageUrl = `${publicBaseUrl}/images/云南/1/IMG_1310.JPG`;
-const defaultSalonLocation = { latitude: 31.2304, longitude: 121.4737 };
-
-const salons = [
-  {
-    id: '1',
-    name: 'Modern Cut Studio',
-    address: '上海市黄浦区',
-    location: defaultSalonLocation,
-    rating: 4.8,
-    image: imageUrl,
-    images: [],
-    promoImages: [imageUrl],
-    description: '专业极简主义剪发，打造你的个性之美。',
-    fullDescription: 'Modern Cut Studio 致力于将现代极简主义与经典剪裁相结合。',
-    openingHours: '10:00 - 20:00',
-    phone: '03-1234-5678',
-    staffIds: ['1', '2'],
-    services: [
-      { id: 's1', name: '极简修剪', price: '¥5,000', duration: '60min', note: '适合日常维护和快速修整。', imageUrl },
-      { id: 's2', name: '质感染发', price: '¥12,000', duration: '120min', note: '染前会进行发质咨询。', imageUrl },
-      { id: 's3', name: '头皮深层护理', price: '¥8,000', duration: '90min', note: '敏感头皮请提前告知。', imageUrl },
-    ]
-  }
-];
-
-const legacyMockSalonNames = new Set([
-  'Elite Glow Salon',
-]);
-
-const staff = {
-  '1': {
-    id: '1',
-    name: 'Sato 先生',
-    role: '首席发型师',
-    experience: '8年专业经验',
-    extraServiceFee: 0,
-    imageUrl: 'https://images.unsplash.com/photo-1500648767791-ced8051cb34c?q=80&w=200',
-    bio: '你好！我是 Sato。我致力于通过精准的剪裁和自然的色彩，挖掘每个人潜藏的独特气质。',
-    rating: 4.8,
-    reviews: [
-      { id: 'r1', user: '田中', rating: 5, comment: '剪发非常精准，完全是我想要的样子！', date: '2026-05-10' },
-      { id: 'r2', user: '佐藤', rating: 4, comment: '技术很好，就是预约稍微有点难。', date: '2026-05-15' },
-      { id: 'r10', user: '小林', rating: 5, comment: '非常专业的首席发型师，细节把控极强。', date: '2026-06-01' },
-      { id: 'r11', user: '美奈', rating: 5, comment: '帮我设计的新发型太适合我了，谢谢Sato先生！', date: '2026-06-05' }
-    ]
-  },
-  '2': {
-    id: '2',
-    name: 'Yumi 小姐',
-    role: '创意总监',
-    experience: '10年经验',
-    extraServiceFee: 0,
-    imageUrl: 'https://images.unsplash.com/photo-1438761681033-724816758d4b?q=80&w=200',
-    bio: '追求自然与流畅的线条感，让发型成为你穿搭的一部分。',
-    rating: 4.9,
-    reviews: [
-      { id: 'r3', user: '小林', rating: 5, comment: '非常有艺术感的剪发，强烈推荐！', date: '2026-05-12' },
-      { id: 'r4', user: '加藤', rating: 5, comment: '细节处理得非常完美。', date: '2026-05-20' },
-      { id: 'r5', user: '铃木', rating: 4, comment: '服务态度非常好，很舒适。', date: '2026-05-22' },
-      { id: 'r12', user: '爱丽', rating: 5, comment: 'Yumi小姐的审美真的绝了，剪完感觉整个人气质提升。', date: '2026-06-02' }
-    ]
-  },
-  '3': {
-    id: '3',
-    name: 'Ken 先生',
-    role: '色彩专家',
-    experience: '6年经验',
-    extraServiceFee: 0,
-    imageUrl: 'https://images.unsplash.com/photo-1472099642232-ed44ee252772?q=80&w=200',
-    bio: '色彩是改变心情最快的方式，我将为你寻找最适合你的那个色调。',
-    rating: 4.7,
-    reviews: [
-      { id: 'r6', user: '山本', rating: 5, comment: '染出的颜色非常高级，不掉色。', date: '2026-05-05' },
-      { id: 'r7', user: '中村', rating: 4, comment: '色彩方案很专业，沟通顺畅。', date: '2026-05-18' },
-      { id: 'r13', user: '宏太', rating: 5, comment: '颜色调得非常自然，非常满意。', date: '2026-06-03' },
-      { id: 'r14', user: '由美', rating: 4, comment: '专业度很高，染发过程非常舒适。', date: '2026-06-07' }
-    ]
-  },
-  '4': {
-    id: '4',
-    name: 'Miki 小姐',
-    role: '资深发型师',
-    experience: '5年经验',
-    extraServiceFee: 0,
-    imageUrl: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=200',
-    bio: '健康的发质是美感的基础，我专注于为您提供最温和的修复方案。',
-    rating: 4.6,
-    reviews: [
-      { id: 'r8', user: '高桥', rating: 4, comment: '护理之后头发顺滑了很多。', date: '2026-05-01' },
-      { id: 'r9', user: '伊藤', rating: 5, comment: '非常温柔的发型师，体验很棒。', date: '2026-05-11' },
-      { id: 'r15', user: '直树', rating: 5, comment: '头皮护理非常舒服，感觉压力都释放了。', date: '2026-06-04' },
-      { id: 'r16', user: '结衣', rating: 4, comment: '发质修复效果很明显，头发亮了很多。', date: '2026-06-08' }
-    ]
-  }
-};
+const socketHeartbeat = setInterval(() => {
+  wss.clients.forEach((socket) => {
+    if (!socket.isAlive) return socket.terminate();
+    socket.isAlive = false;
+    socket.ping();
+  });
+}, 30000);
+socketHeartbeat.unref();
+server.on('close', () => clearInterval(socketHeartbeat));
 
 const normalizeDocument = (document) =>
   typeof document?.toObject === 'function' ? document.toObject() : document;
@@ -790,20 +790,27 @@ const normalizeBooking = (booking) => ({
 const USER_CANCEL_WINDOW_MS = 3 * 60 * 60 * 1000;
 const BLACKLIST_NO_SHOW_LIMIT = 3;
 
-const getUserPolicy = async (userId) =>
+const getUserPolicy = async (userId, session) =>
   UserPolicy.findOneAndUpdate(
     { userId },
     { $setOnInsert: { userId, noShowCount: 0, isBlacklisted: false } },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, new: true, setDefaultsOnInsert: true, session },
   );
 
-const incrementNoShowCount = async (userId) => {
-  const policy = await getUserPolicy(userId);
-  policy.noShowCount = Number(policy.noShowCount || 0) + 1;
-  policy.isBlacklisted = policy.noShowCount >= BLACKLIST_NO_SHOW_LIMIT;
-  policy.updatedAt = new Date();
-  await policy.save();
-  return policy;
+const incrementNoShowCount = (userId, session) => {
+  const nextCount = { $add: [{ $ifNull: ['$noShowCount', 0] }, 1] };
+  return UserPolicy.findOneAndUpdate(
+    { userId },
+    [{
+      $set: {
+        userId,
+        noShowCount: nextCount,
+        isBlacklisted: { $gte: [nextCount, BLACKLIST_NO_SHOW_LIMIT] },
+        updatedAt: new Date(),
+      },
+    }],
+    { upsert: true, new: true, session },
+  );
 };
 
 const calculateStaffRating = (person) => {
@@ -1026,186 +1033,12 @@ const ensureSalonForMerchant = async ({ salonId, displayName }) => {
   });
 };
 
-const readFavoriteSalonsFromFile = () => {
-  if (!fs.existsSync(favoritesFile)) return [];
-
-  try {
-    const parsed = JSON.parse(fs.readFileSync(favoritesFile, 'utf8'));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (_) {
-    return [];
-  }
-};
-
 const readFavoriteSalons = async (userId = DEMO_USER_ID) => {
   const favorites = await FavoriteSalon
     .find({ userId: { $in: userIdAliases(userId) } })
     .sort({ createdAt: -1 })
     .lean();
   return favorites.map(favorite => stripSensitiveSalonFields(favorite.salon));
-};
-
-const migrateFavoriteSalonsFromFile = async () => {
-  const existingCount = await FavoriteSalon.countDocuments({ userId: { $in: userIdAliases(DEMO_USER_ID) } });
-  if (existingCount > 0) return;
-
-  const favorites = readFavoriteSalonsFromFile();
-  if (favorites.length === 0) return;
-
-  await FavoriteSalon.insertMany(
-    favorites
-      .filter(salon => salon?.id)
-      .map(salon => ({
-        userId: DEMO_USER_ID,
-        salonId: salon.id.toString(),
-        salon,
-      })),
-    { ordered: false },
-  ).catch(() => {});
-};
-
-const syncSalonGeoLocations = async () => {
-  const salonList = await Salon.find({ location: { $ne: null } }, { id: 1, location: 1, geoLocation: 1 }).lean();
-  const updates = salonList
-    .map((salon) => ({ salon, geoLocation: buildGeoLocation(salon.location) }))
-    .filter(({ geoLocation }) => geoLocation)
-    .filter(({ salon, geoLocation }) => {
-      const existing = getCoordinates(salon.geoLocation);
-      return !existing
-        || existing.latitude !== geoLocation.coordinates[1]
-        || existing.longitude !== geoLocation.coordinates[0];
-    })
-    .map(({ salon, geoLocation }) => ({
-      updateOne: {
-        filter: { _id: salon._id },
-        update: { $set: { geoLocation } },
-      },
-    }));
-
-  if (updates.length > 0) await Salon.bulkWrite(updates, { ordered: false });
-};
-
-const migrateSeedDataToMongo = async () => {
-  const [salonCount, staffCount, merchantCount, adminCount, clientCount] = await Promise.all([
-    Salon.countDocuments(),
-    StaffProfile.countDocuments(),
-    MerchantUser.countDocuments(),
-    AdminUser.countDocuments(),
-    ClientUser.countDocuments(),
-  ]);
-
-  if (staffCount === 0) {
-    await StaffProfile.insertMany(
-      Object.values(staff).map(profile => ({
-        ...profile,
-        unavailableSlots: normalizeUnavailableSlots(profile.unavailableSlots),
-      })),
-      { ordered: false },
-    ).catch(() => {});
-  }
-
-  if (merchantCount === 0) {
-    const { salt, hash } = await hashPassword('123456');
-    await MerchantUser.create({
-      id: 'merchant-1',
-      username: 'merchant',
-      displayName: 'Modern Cut Studio 商家',
-      salonId: '1',
-      role: 'merchant',
-      passwordSalt: salt,
-      passwordHash: hash,
-    });
-  }
-
-  if (salonCount === 0) {
-    await Salon.create({
-      ...salons[0],
-      publishStatus: 'online',
-      licenseStatus: 'unsubmitted',
-      licenseUrl: '',
-      licenseRejectReason: '',
-    }).catch(() => {});
-  }
-
-  await Salon.updateOne(
-    { id: '1', $or: [{ location: null }, { location: { $exists: false } }] },
-    {
-      $set: {
-        location: defaultSalonLocation,
-        geoLocation: buildGeoLocation(defaultSalonLocation),
-        publishStatus: 'online',
-      },
-    },
-  );
-
-  const merchantUsers = await MerchantUser.find({}).lean();
-  await Promise.all(merchantUsers.map(user =>
-    ensureSalonForMerchant({ salonId: user.salonId, displayName: user.displayName })
-  ));
-  await Promise.all(merchantUsers.map(async (user) => {
-    if (user.username === 'merchant') return;
-    const salon = await Salon.findOne({ id: user.salonId });
-    if (!salon || !legacyMockSalonNames.has(salon.name)) return;
-
-    salon.name = '';
-    salon.address = '';
-    salon.addressRegion = {};
-    salon.addressDetail = '';
-    salon.location = null;
-    salon.image = '';
-    salon.images = [];
-    salon.promoImages = [];
-    salon.description = '';
-    salon.fullDescription = '';
-    salon.openingHours = '10:00 - 20:00';
-    salon.phone = '';
-    salon.staffIds = [];
-    salon.services = [];
-    salon.publishStatus = 'offline';
-    salon.licenseUrl = '';
-    salon.licenseStatus = 'unsubmitted';
-    salon.licenseRejectReason = '';
-    await salon.save();
-  }));
-
-  const merchantSalonIds = [
-    ...new Set(
-      merchantUsers
-        .map(user => String(user.salonId || '').trim())
-        .filter(Boolean)
-    ),
-  ];
-  if (merchantSalonIds.length > 0) {
-    await Salon.deleteMany({ id: { $nin: merchantSalonIds } });
-    await FavoriteSalon.deleteMany({ salonId: { $nin: merchantSalonIds } });
-  }
-  await Salon.updateMany(
-    { publishStatus: { $exists: false } },
-    { $set: { publishStatus: 'online', licenseStatus: 'unsubmitted', licenseUrl: '' } },
-  );
-
-  if (adminCount === 0) {
-    const { salt, hash } = await hashPassword('admin123456');
-    await AdminUser.create({
-      id: 'admin-1',
-      username: 'admin',
-      displayName: '平台管理员',
-      role: 'admin',
-      passwordSalt: salt,
-      passwordHash: hash,
-    });
-  }
-
-  if (clientCount === 0) {
-    const { salt, hash } = await hashPassword('123456');
-    await ClientUser.create({
-      id: DEMO_USER_ID,
-      account: 'demo',
-      displayName: 'Demo 用户',
-      passwordSalt: salt,
-      passwordHash: hash,
-    });
-  }
 };
 
 const generateSlotsForStaffAndDate = async (staffId, date) => {
@@ -1335,6 +1168,7 @@ const routeContext = {
   loginClientByPhone,
   maskPhone,
   MerchantUser,
+  mongoose,
   newClientUserId,
   normalizeBooking,
   normalizeAdLink,
@@ -1350,6 +1184,7 @@ const routeContext = {
   parseOpeningHours,
   parsePriceValue,
   readFavoriteSalons,
+  rateLimits,
   refreshFavoriteSalonSnapshots,
   requireAdminAuth,
   requireClientAuth,
@@ -1394,13 +1229,10 @@ const startServer = async () => {
     Salon.createIndexes(),
     SmsVerification.createIndexes(),
   ]);
-  await migrateSeedDataToMongo();
-  await syncSalonGeoLocations();
-  await migrateFavoriteSalonsFromFile();
   console.log('MongoDB connected');
 
   server.listen(PORT, "0.0.0.0", () => {
-    console.log(`Mock Backend running at http://localhost:${PORT}`);
+    console.log(`Backend running at http://localhost:${PORT}`);
   });
 };
 
@@ -1427,6 +1259,7 @@ module.exports = {
   normalizeAdLink,
   normalizePagination,
   parseMerchantRescheduleTime,
+  socketCanReceiveBooking,
   isSalonClosedOnDate,
   stripSensitiveSalonFields,
   verifyPassword,
