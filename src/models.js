@@ -80,6 +80,7 @@ const salonSchema = new mongoose.Schema({
   description: String,
   fullDescription: String,
   openingHours: String,
+  closedDates: [String],
   phone: String,
   staffIds: [String],
   services: [mongoose.Schema.Types.Mixed],

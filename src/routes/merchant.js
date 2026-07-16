@@ -37,6 +37,7 @@ module.exports = (app, ctx) => {
     parsePriceValue,
     findActiveBookingAtTime,
     findActiveBookingAtTimeExcluding,
+    isSalonClosedOnDate,
     isStaffUnavailable,
     findAcceptedBookingAtTimeExcluding,
     incrementNoShowCount,
@@ -253,6 +254,7 @@ module.exports = (app, ctx) => {
       salonId: salon?.id || '',
       salonServices: salon?.services || [],
       salonStaff: salon ? salon.staffIds.map(id => staffMap[id]).filter(Boolean).map(buildStaffPayload) : [],
+      salonClosedDates: salon?.closedDates || [],
     });
   });
   
@@ -480,6 +482,9 @@ module.exports = (app, ctx) => {
     if ((!isNoPreference && !staffMember) || !service || !salon) {
       return res.status(404).json({ message: 'Staff, service or salon not found' });
     }
+    if (isSalonClosedOnDate(salon, startTime)) {
+      return res.status(409).json({ message: '该日期为店铺休息日' });
+    }
     if (isNoPreference && !(salon.staffIds || []).length) {
       return res.status(409).json({ message: 'This salon has no staff available for assignment' });
     }
@@ -559,7 +564,7 @@ module.exports = (app, ctx) => {
   app.patch('/api/merchant/bookings/:id', async (req, res) => {
     const { action, reason = '', assignedStaffId = '', startTime } = req.body;
     const merchantSalon = await Salon.findOne({ id: req.merchantUser.salonId })
-      .select('staffIds openingHours')
+      .select('staffIds openingHours closedDates')
       .lean();
     const booking = await Booking.findOne({
       id: req.params.id,
@@ -579,6 +584,9 @@ module.exports = (app, ctx) => {
     if (action === 'reschedule') {
       const parsed = parseMerchantRescheduleTime(booking.status, startTime);
       if (parsed.error) return res.status(parsed.status).json({ message: parsed.error });
+      if (isSalonClosedOnDate(merchantSalon, startTime)) {
+        return res.status(409).json({ message: '该日期为店铺休息日' });
+      }
 
       const { start: openingStart, end: openingEnd } = parseOpeningHours(merchantSalon?.openingHours);
       const requestedMinutes = parsed.value.getHours() * 60 + parsed.value.getMinutes();
@@ -783,6 +791,7 @@ function validateSalonContent(payload = {}, limits) {
     ['staff', limits.contentStaff],
     ['images', 20],
     ['promoImages', 20],
+    ['closedDates', limits.closedDates],
   ];
   for (const [field, max] of arrays) {
     if (Array.isArray(payload[field]) && payload[field].length > max) return `${field} cannot exceed ${max} items`;
@@ -793,6 +802,11 @@ function validateSalonContent(payload = {}, limits) {
   ];
   for (const image of images) {
     if (typeof image !== 'string' || image.length > 2048) return 'image URL is invalid or too long';
+  }
+  if (Array.isArray(payload.closedDates) && payload.closedDates.some(
+    date => typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date),
+  )) {
+    return 'closedDates must use YYYY-MM-DD format';
   }
 
   const strings = {

@@ -553,6 +553,7 @@ const INPUT_LIMITS = Object.freeze({
   review: 1000,
   reviewReply: 1000,
   services: 50,
+  closedDates: 500,
   unavailableSlots: 500,
 });
 
@@ -705,6 +706,21 @@ const normalizeUnavailableSlots = (slots) => {
       .map(slot => slot.trim())
       .filter(slot => /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(slot))
   )].sort().slice(0, INPUT_LIMITS.unavailableSlots);
+};
+
+const normalizeClosedDates = (dates) => {
+  if (!Array.isArray(dates)) return [];
+  return [...new Set(
+    dates
+      .filter(date => typeof date === 'string')
+      .map(date => date.trim())
+      .filter(date => /^\d{4}-\d{2}-\d{2}$/.test(date))
+  )].sort().slice(0, INPUT_LIMITS.closedDates);
+};
+
+const isSalonClosedOnDate = (salon, date) => {
+  const dateKey = String(date || '').match(/^(\d{4}-\d{2}-\d{2})/)?.[1];
+  return Boolean(dateKey && normalizeClosedDates(salon?.closedDates).includes(dateKey));
 };
 
 const isStaffUnavailable = async (staffId, startTime) => {
@@ -864,6 +880,7 @@ const contentFields = [
   'images',
   'promoImages',
   'openingHours',
+  'closedDates',
   'phone',
   'services',
   'staff',
@@ -889,6 +906,7 @@ const buildContentDraft = async (salon, payload) => {
   set('fullDescription', typeof payload.fullDescription === 'string' ? payload.fullDescription : undefined);
   set('image', typeof payload.image === 'string' ? payload.image : undefined);
   set('openingHours', typeof payload.openingHours === 'string' ? payload.openingHours : undefined);
+  set('closedDates', Array.isArray(payload.closedDates) ? normalizeClosedDates(payload.closedDates) : undefined);
   set('phone', typeof payload.phone === 'string' ? payload.phone : undefined);
 
   if (Array.isArray(payload.promoImages) || Array.isArray(payload.images)) {
@@ -997,6 +1015,7 @@ const ensureSalonForMerchant = async ({ salonId, displayName }) => {
     description: '',
     fullDescription: '',
     openingHours: '10:00 - 20:00',
+    closedDates: [],
     phone: '',
     staffIds: [],
     services: [],
@@ -1191,7 +1210,16 @@ const migrateSeedDataToMongo = async () => {
 
 const generateSlotsForStaffAndDate = async (staffId, date) => {
   const salon = await getSalonByStaffId(staffId).lean();
-  const slots = await Promise.all(generateHalfHourSlots(salon?.openingHours).map(async (time) => {
+  const times = generateHalfHourSlots(salon?.openingHours);
+  if (isSalonClosedOnDate(salon, date)) {
+    return times.map(time => ({
+      time,
+      startTime: `${date}T${time}:00`,
+      isAvailable: false,
+      reason: '店铺休息日',
+    }));
+  }
+  const slots = await Promise.all(times.map(async (time) => {
     const startTime = `${date}T${time}:00`;
     const hasBooking = await findActiveBookingAtTime(staffId, startTime);
     const unavailable = await isStaffUnavailable(staffId, startTime);
@@ -1206,6 +1234,14 @@ const generateSlotsForStaffAndDate = async (staffId, date) => {
 };
 
 const generateSlotsForNoPreferenceAndDate = async (salon, date) => {
+  if (isSalonClosedOnDate(salon, date)) {
+    return generateHalfHourSlots(salon?.openingHours).map(time => ({
+      time,
+      startTime: `${date}T${time}:00`,
+      isAvailable: false,
+      reason: '店铺休息日',
+    }));
+  }
   const staffIds = salon.staffIds || [];
   const dayStart = new Date(`${date}T00:00:00`);
   const dayEnd = new Date(`${date}T23:59:59.999`);
@@ -1293,6 +1329,7 @@ const routeContext = {
   ensureSalonForMerchant,
   existingSalonImages,
   incrementNoShowCount,
+  isSalonClosedOnDate,
   isStaffUnavailable,
   isValidPhone,
   loginClientByPhone,
@@ -1302,6 +1339,7 @@ const routeContext = {
   normalizeBooking,
   normalizeAdLink,
   normalizeClientAccount,
+  normalizeClosedDates,
   normalizeDeposit,
   normalizeLimit,
   normalizePagination,
@@ -1384,10 +1422,12 @@ module.exports = {
   hashPassword,
   INPUT_LIMITS,
   normalizeServiceTags,
+  normalizeClosedDates,
   ensureSalonForMerchant,
   normalizeAdLink,
   normalizePagination,
   parseMerchantRescheduleTime,
+  isSalonClosedOnDate,
   stripSensitiveSalonFields,
   verifyPassword,
 };

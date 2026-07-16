@@ -10,6 +10,8 @@ const {
   getCoordinates,
   hashPassword,
   INPUT_LIMITS,
+  isSalonClosedOnDate,
+  normalizeClosedDates,
   normalizeServiceTags,
   normalizeAdLink,
   normalizePagination,
@@ -43,6 +45,15 @@ test('normalizeServiceTags trims, deduplicates and limits service tags', () => {
     '头皮护理',
   ]);
   assert.deepEqual(normalizeServiceTags('洗剪吹，染发、头皮护理'), ['洗剪吹', '染发', '头皮护理']);
+});
+
+test('closed dates are normalized and matched by calendar date', () => {
+  assert.deepEqual(
+    normalizeClosedDates(['2026-07-18', ' 2026-07-17 ', '2026-07-18', 'invalid']),
+    ['2026-07-17', '2026-07-18'],
+  );
+  assert.equal(isSalonClosedOnDate({ closedDates: ['2026-07-18'] }, '2026-07-18T10:00:00'), true);
+  assert.equal(isSalonClosedOnDate({ closedDates: ['2026-07-18'] }, '2026-07-19T10:00:00'), false);
 });
 
 test('normalizeAdLink only accepts mini program page paths', () => {
