@@ -732,6 +732,23 @@ const findActiveBookingAtTimeExcluding = (staffId, startTime, bookingId) =>
     status: { $in: ['pending', 'accepted'] },
   });
 
+const parseMerchantRescheduleTime = (status, startTime, now = Date.now()) => {
+  if (!['pending', 'accepted'].includes(status)) {
+    return { error: 'Only pending or accepted bookings can be rescheduled', status: 409 };
+  }
+  const value = new Date(startTime);
+  if (Number.isNaN(value.getTime())) {
+    return { error: 'startTime must be a valid date time', status: 400 };
+  }
+  if (value.getMinutes() % 30 !== 0) {
+    return { error: 'startTime must use a 30-minute interval', status: 400 };
+  }
+  if (value.getTime() <= now) {
+    return { error: 'Only future time slots can be booked', status: 409 };
+  }
+  return { value };
+};
+
 const acceptedBookingAtTimeQuery = (staffId, startTime, bookingId) => ({
   staffId,
   startTime: new Date(startTime),
@@ -1260,6 +1277,7 @@ const routeContext = {
   filterNearbySalons,
   findAcceptedBookingAtTimeExcluding,
   findActiveBookingAtTime,
+  findActiveBookingAtTimeExcluding,
   generateSlotsForNoPreferenceAndDate,
   generateSlotsForStaffAndDate,
   getNearbySalons,
@@ -1290,6 +1308,7 @@ const routeContext = {
   normalizePhone,
   normalizeUserId,
   parseAmapReverseAddress,
+  parseMerchantRescheduleTime,
   parseOpeningHours,
   parsePriceValue,
   readFavoriteSalons,
@@ -1368,6 +1387,7 @@ module.exports = {
   ensureSalonForMerchant,
   normalizeAdLink,
   normalizePagination,
+  parseMerchantRescheduleTime,
   stripSensitiveSalonFields,
   verifyPassword,
 };

@@ -13,6 +13,7 @@ const {
   normalizeServiceTags,
   normalizeAdLink,
   normalizePagination,
+  parseMerchantRescheduleTime,
   stripSensitiveSalonFields,
   verifyPassword,
 } = require('./index');
@@ -132,6 +133,19 @@ test('acceptedBookingAtTimeQuery only blocks already accepted bookings', () => {
   assert.equal(query.startTime.getTime(), Date.parse('2026-06-21T03:30:00.000Z'));
   assert.deepEqual(query.id, { $ne: 'BK1' });
   assert.equal(query.status, 'accepted');
+});
+
+test('merchant rescheduling only accepts future times for active bookings', () => {
+  const now = Date.parse('2026-06-21T03:00:00.000Z');
+
+  assert.equal(parseMerchantRescheduleTime('completed', '2030-01-01', now).status, 409);
+  assert.equal(parseMerchantRescheduleTime('pending', 'invalid', now).status, 400);
+  assert.equal(parseMerchantRescheduleTime('pending', '2030-01-01T10:15:00.000Z', now).status, 400);
+  assert.equal(parseMerchantRescheduleTime('accepted', '2026-06-21T02:00:00.000Z', now).status, 409);
+  assert.equal(
+    parseMerchantRescheduleTime('accepted', '2026-06-21T04:00:00.000Z', now).value.getTime(),
+    Date.parse('2026-06-21T04:00:00.000Z'),
+  );
 });
 
 test('isAllowedOrigin allows local Flutter web ports', () => {

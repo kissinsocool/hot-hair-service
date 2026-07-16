@@ -36,11 +36,13 @@ module.exports = (app, ctx) => {
     parseOpeningHours,
     parsePriceValue,
     findActiveBookingAtTime,
+    findActiveBookingAtTimeExcluding,
     isStaffUnavailable,
     findAcceptedBookingAtTimeExcluding,
     incrementNoShowCount,
     normalizeUserId,
     normalizePagination,
+    parseMerchantRescheduleTime,
     setPaginationHeaders,
     INPUT_LIMITS,
   } = ctx;
@@ -555,21 +557,78 @@ module.exports = (app, ctx) => {
   });
   
   app.patch('/api/merchant/bookings/:id', async (req, res) => {
-    const { action, reason = '', assignedStaffId = '' } = req.body;
-    const merchantSalon = await Salon.findOne({ id: req.merchantUser.salonId }).select('staffIds').lean();
+    const { action, reason = '', assignedStaffId = '', startTime } = req.body;
+    const merchantSalon = await Salon.findOne({ id: req.merchantUser.salonId })
+      .select('staffIds openingHours')
+      .lean();
     const booking = await Booking.findOne({
       id: req.params.id,
       ...buildMerchantBookingScope(req.merchantUser.salonId, merchantSalon?.staffIds || []),
     });
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
-    if (!['accept', 'cancel', 'complete', 'no_show', 'reject'].includes(action)) {
-      return res.status(400).json({ message: 'action must be accept, cancel, complete, no_show or reject' });
+    if (!['accept', 'cancel', 'complete', 'no_show', 'reject', 'reschedule'].includes(action)) {
+      return res.status(400).json({ message: 'action must be accept, cancel, complete, no_show, reject or reschedule' });
     }
     if (['accept', 'reject'].includes(action) && booking.status !== 'pending') {
       return res.status(409).json({ message: 'Only pending bookings can be accepted or rejected' });
     }
     if (['cancel', 'complete', 'no_show'].includes(action) && booking.status !== 'accepted') {
       return res.status(409).json({ message: 'Only accepted bookings can be canceled, completed or marked no-show' });
+    }
+
+    if (action === 'reschedule') {
+      const parsed = parseMerchantRescheduleTime(booking.status, startTime);
+      if (parsed.error) return res.status(parsed.status).json({ message: parsed.error });
+
+      const { start: openingStart, end: openingEnd } = parseOpeningHours(merchantSalon?.openingHours);
+      const requestedMinutes = parsed.value.getHours() * 60 + parsed.value.getMinutes();
+      if (requestedMinutes < openingStart || requestedMinutes > openingEnd) {
+        return res.status(409).json({ message: 'This time is outside salon opening hours' });
+      }
+      if (booking.staffId) {
+        if (await findActiveBookingAtTimeExcluding(booking.staffId, startTime, booking.id)) {
+          return res.status(409).json({ message: '该理发师在新时间段已有预约' });
+        }
+        if (await isStaffUnavailable(booking.staffId, startTime)) {
+          return res.status(409).json({ message: '该理发师在新时间段不可预约' });
+        }
+      }
+
+      const previousStartTime = booking.startTime;
+      const changed = previousStartTime.getTime() !== parsed.value.getTime();
+      if (changed && booking.staffId) {
+        try {
+          await SlotOccupancy.updateOne(
+            { bookingId: booking.id },
+            { $set: { staffId: booking.staffId, startTime: parsed.value } },
+            { upsert: true },
+          );
+        } catch (error) {
+          if (isDuplicateSlotError(error)) {
+            return res.status(409).json({ message: '该理发师在新时间段刚刚被其他订单占用' });
+          }
+          throw error;
+        }
+      }
+
+      booking.startTime = parsed.value;
+      booking.updatedAt = new Date().toISOString();
+      booking.merchantMessage = '您已变更预约时间。';
+      booking.userMessage = `商家已将预约时间变更为 ${startTime}。`;
+      try {
+        await booking.save();
+      } catch (error) {
+        if (changed && booking.staffId) {
+          await SlotOccupancy.updateOne(
+            { bookingId: booking.id },
+            { $set: { staffId: booking.staffId, startTime: previousStartTime } },
+            { upsert: true },
+          );
+        }
+        throw error;
+      }
+      broadcastBookingEvent('booking.updated', booking);
+      return res.json({ message: 'Booking rescheduled.', booking: normalizeBooking(booking) });
     }
   
     let createdSlotOccupancy = false;
