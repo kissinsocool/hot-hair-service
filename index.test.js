@@ -1,33 +1,53 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+  activeSessionQuery,
   acceptedBookingAtTimeQuery,
   buildGeoLocation,
   buildMerchantBookingScope,
   buildSearchRadii,
+  createSession,
   ensureSalonForMerchant,
   filterNearbySalons,
+  generateSlotsForStaffAndDate,
   getCoordinates,
   hashPassword,
   INPUT_LIMITS,
   isSalonClosedOnDate,
+  logoutSession,
   normalizeClosedDates,
   normalizeServiceTags,
   normalizeAdLink,
   normalizePagination,
   parseMerchantRescheduleTime,
+  server,
   socketCanReceiveBooking,
   stripSensitiveSalonFields,
   verifyPassword,
 } = require('./index');
 const { isAllowedOrigin } = require('./src/config');
-const { Booking, SlotOccupancy } = require('./src/models');
+const { Booking, Salon, SlotOccupancy, StaffProfile } = require('./src/models');
 const registerMerchantRoutes = require('./src/routes/merchant');
 
 test('getCoordinates accepts common location shapes', () => {
   assert.deepEqual(getCoordinates('121.4737,31.2304'), { latitude: 31.2304, longitude: 121.4737 });
   assert.deepEqual(getCoordinates({ lat: '31.2304', lng: '121.4737' }), { latitude: 31.2304, longitude: 121.4737 });
   assert.deepEqual(getCoordinates({ coordinates: [121.4737, 31.2304] }), { latitude: 31.2304, longitude: 121.4737 });
+});
+
+test('health and readiness endpoints expose process and dependency state', async () => {
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    const health = await fetch(`http://127.0.0.1:${address.port}/health`);
+    const ready = await fetch(`http://127.0.0.1:${address.port}/ready`);
+    assert.equal(health.status, 200);
+    assert.equal((await health.json()).status, 'ok');
+    assert.equal(ready.status, 503);
+    assert.equal((await ready.json()).mongodb, 'down');
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
 });
 
 test('buildGeoLocation stores MongoDB GeoJSON coordinates', () => {
@@ -81,6 +101,33 @@ test('async password hashing remains verifiable', async () => {
     passwordSalt: password.salt,
     passwordHash: password.hash,
   }), false);
+});
+
+test('sessions have an expiry and authentication queries reject expired tokens', () => {
+  const now = Date.parse('2030-01-01T00:00:00.000Z');
+  const session = createSession(now);
+  const query = activeSessionQuery('token-1', new Date(now));
+
+  assert.equal(session.token.length, 64);
+  assert.ok(session.expiresAt.getTime() > now);
+  assert.equal(query.sessionToken, 'token-1');
+  assert.equal(query.sessionExpiresAt.$gt.getTime(), now);
+});
+
+test('logout atomically clears the active session token', async () => {
+  let update;
+  const Model = {
+    async updateOne(filter, changes) { update = { filter, changes }; },
+  };
+
+  await logoutSession(Model, { id: 'user-1' }, {
+    headers: { authorization: 'Bearer token-1' },
+  });
+
+  assert.equal(update.filter.id, 'user-1');
+  assert.equal(update.filter.sessionToken, 'token-1');
+  assert.ok(update.filter.sessionExpiresAt.$gt instanceof Date);
+  assert.deepEqual(update.changes, { $set: { sessionToken: '', sessionExpiresAt: null } });
 });
 
 test('input limits cap query amplification and user content', () => {
@@ -137,6 +184,36 @@ test('filterNearbySalons returns only nearby salons sorted by distance', () => {
     filterNearbySalons(salons, { latitude: 31.2304, longitude: 121.4737 }, 1).map(salon => salon.id),
     ['near-1', 'near-2'],
   );
+});
+
+test('staff slots load daily bookings and unavailability with fixed query count', async () => {
+  const originalSalonFindOne = Salon.findOne;
+  const originalBookingFind = Booking.find;
+  const originalStaffFindOne = StaffProfile.findOne;
+  let bookingQueries = 0;
+  let staffQueries = 0;
+
+  Salon.findOne = () => ({ lean: async () => ({ openingHours: '10:00 - 11:00' }) });
+  Booking.find = () => {
+    bookingQueries += 1;
+    return { select: () => ({ lean: async () => [{ startTime: new Date('2030-01-01T10:30:00') }] }) };
+  };
+  StaffProfile.findOne = () => {
+    staffQueries += 1;
+    return { select: () => ({ lean: async () => ({ unavailableSlots: ['2030-01-01 11:00'] }) }) };
+  };
+
+  try {
+    const slots = await generateSlotsForStaffAndDate('staff-1', '2030-01-01');
+    assert.equal(bookingQueries, 1);
+    assert.equal(staffQueries, 1);
+    assert.equal(slots.find(slot => slot.time === '10:30').reason, '已有订单');
+    assert.equal(slots.find(slot => slot.time === '11:00').reason, '理发师缺勤');
+  } finally {
+    Salon.findOne = originalSalonFindOne;
+    Booking.find = originalBookingFind;
+    StaffProfile.findOne = originalStaffFindOne;
+  }
 });
 
 test('acceptedBookingAtTimeQuery only blocks already accepted bookings', () => {

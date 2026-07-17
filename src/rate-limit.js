@@ -1,7 +1,12 @@
 const crypto = require('crypto');
+const { getRedisClient } = require('./redis');
 
 const MINUTE = 60 * 1000;
-const buckets = new Map();
+const REDIS_RATE_LIMIT_SCRIPT = `
+  local count = redis.call('INCR', KEYS[1])
+  if count == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
+  return { count, redis.call('PTTL', KEYS[1]) }
+`;
 
 const hash = value => crypto.createHash('sha256').update(String(value)).digest('hex');
 const ipKey = req => req.ip || req.socket?.remoteAddress || '';
@@ -23,8 +28,13 @@ const actorKey = req => {
 };
 
 function createRateLimiter({ name, limit, windowMs, key = ipKey, now = Date.now }) {
+  const buckets = new Map();
   let lastSweep = 0;
-  return (req, res, next) => {
+  const reject = (res, retryAfter) => {
+    res.set('Retry-After', String(retryAfter));
+    return res.status(429).json({ message: '请求过于频繁，请稍后再试', retryAfterSeconds: retryAfter });
+  };
+  const useLocalBucket = (identity, res, next) => {
     const currentTime = now();
     if (currentTime - lastSweep >= windowMs) {
       for (const [bucketKey, bucket] of buckets) {
@@ -33,8 +43,6 @@ function createRateLimiter({ name, limit, windowMs, key = ipKey, now = Date.now 
       lastSweep = currentTime;
     }
 
-    const identity = key(req);
-    if (!identity) return next();
     const bucketKey = `${name}:${identity}`;
     const previous = buckets.get(bucketKey);
     const restored = previous
@@ -43,16 +51,34 @@ function createRateLimiter({ name, limit, windowMs, key = ipKey, now = Date.now 
 
     if (restored < 1) {
       const retryAfter = Math.max(1, Math.ceil((1 - restored) * windowMs / limit / 1000));
-      res.set('Retry-After', String(retryAfter));
-      return res.status(429).json({ message: '请求过于频繁，请稍后再试', retryAfterSeconds: retryAfter });
+      return reject(res, retryAfter);
     }
 
     buckets.set(bucketKey, { tokens: restored - 1, updatedAt: currentTime });
     next();
   };
+
+  return async (req, res, next) => {
+    const identity = key(req);
+    if (!identity) return next();
+    const redis = getRedisClient();
+    if (!redis) return useLocalBucket(identity, res, next);
+
+    try {
+      const [count, ttl] = await redis.eval(REDIS_RATE_LIMIT_SCRIPT, {
+        keys: [`hot-hair:rate:${name}:${identity}`],
+        arguments: [String(windowMs)],
+      });
+      if (Number(count) > limit) return reject(res, Math.max(1, Math.ceil(Number(ttl) / 1000)));
+      next();
+    } catch (error) {
+      console.error('Redis rate limit error:', error.message);
+      return useLocalBucket(identity, res, next);
+    }
+  };
 }
 
-// ponytail: process-local buckets; replace the storage with Redis before running multiple API instances.
+// ponytail: local buckets keep development usable without Redis; production multi-instance deployments set REDIS_URL.
 const rateLimits = {
   login: [
     createRateLimiter({ name: 'login-ip', limit: 30, windowMs: 5 * MINUTE }),

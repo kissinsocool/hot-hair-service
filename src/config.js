@@ -22,6 +22,7 @@ const positiveInteger = (value, fallback) => {
 };
 const wsMaxConnections = positiveInteger(process.env.WS_MAX_CONNECTIONS, 5000);
 const wsMaxConnectionsPerIp = positiveInteger(process.env.WS_MAX_CONNECTIONS_PER_IP, 20);
+const sessionTtlSeconds = Math.min(positiveInteger(process.env.SESSION_TTL_SECONDS, 7 * 24 * 60 * 60), 30 * 24 * 60 * 60);
 const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173')
   .split(',')
   .map(origin => origin.trim())
@@ -55,6 +56,7 @@ module.exports = {
   trustProxyHops,
   wsMaxConnections,
   wsMaxConnectionsPerIp,
+  sessionTtlSeconds,
   allowedOrigins,
   isAllowedOrigin,
 };

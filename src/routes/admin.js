@@ -27,6 +27,9 @@ module.exports = (app, ctx) => {
     normalizePagination,
     setPaginationHeaders,
     rateLimits,
+    rotateSession,
+    logoutSession,
+    revokeSessionToken,
   } = ctx;
 
   app.post('/api/admin/auth/login', ...rateLimits.login, async (req, res) => {
@@ -47,18 +50,22 @@ module.exports = (app, ctx) => {
       return res.status(401).json({ message: '账号或密码错误' });
     }
   
-    user.sessionToken = crypto.randomBytes(32).toString('hex');
-    user.lastLoginAt = new Date();
-    await user.save();
-  
+    const session = await rotateSession(user);
+
     res.json({
-      token: user.sessionToken,
+      token: session.token,
+      expiresAt: session.expiresAt,
       user: buildAdminUserPayload(user),
     });
   });
   
   app.get('/api/admin/auth/me', requireAdminAuth, async (req, res) => {
     res.json({ user: buildAdminUserPayload(req.adminUser) });
+  });
+
+  app.post('/api/admin/auth/logout', requireAdminAuth, async (req, res) => {
+    await logoutSession(AdminUser, req.adminUser, req);
+    res.json({ ok: true });
   });
   
   app.get('/api/admin/overview', requireAdminAuth, async (req, res) => {
@@ -192,16 +199,20 @@ module.exports = (app, ctx) => {
       });
       user.salonId = salon.id;
     }
+    let revokedToken = '';
     if (password) {
       if (password.length < 6) return res.status(400).json({ message: '密码至少 6 位' });
       const { salt, hash } = await hashPassword(password);
       user.passwordSalt = salt;
       user.passwordHash = hash;
+      revokedToken = user.sessionToken;
       user.sessionToken = '';
+      user.sessionExpiresAt = null;
     }
     if (deposit !== undefined) user.deposit = deposit;
-  
+
     await user.save();
+    if (revokedToken) await revokeSessionToken(revokedToken);
     res.json({ user: buildMerchantUserPayload(user) });
   });
   

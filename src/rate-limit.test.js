@@ -22,3 +22,23 @@ test('rate limiter rejects excess requests with retry guidance', () => {
   request();
   assert.equal(responses.at(-1).status, 200);
 });
+
+test('short-window cleanup cannot reset another limiter bucket', () => {
+  let time = 1_000_000;
+  const responses = [];
+  const response = () => ({
+    set() {},
+    status(status) { this.statusCode = status; return this; },
+    json() { responses.push(this.statusCode); },
+  });
+  const long = createRateLimiter({ name: 'long', limit: 1, windowMs: 15 * 60_000, key: () => 'user', now: () => time });
+  const short = createRateLimiter({ name: 'short', limit: 1, windowMs: 60_000, key: () => 'user', now: () => time });
+
+  long({}, response(), () => {});
+  long({}, response(), () => {});
+  time += 61_000;
+  short({}, response(), () => {});
+  long({}, response(), () => {});
+
+  assert.deepEqual(responses, [429, 429]);
+});

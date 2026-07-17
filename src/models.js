@@ -123,6 +123,7 @@ const merchantUserSchema = new mongoose.Schema({
   passwordHash: { type: String, required: true },
   passwordSalt: { type: String, required: true },
   sessionToken: { type: String, default: '', index: true },
+  sessionExpiresAt: Date,
   lastLoginAt: Date,
 }, { timestamps: true });
 
@@ -136,6 +137,7 @@ const adminUserSchema = new mongoose.Schema({
   passwordHash: { type: String, required: true },
   passwordSalt: { type: String, required: true },
   sessionToken: { type: String, default: '', index: true },
+  sessionExpiresAt: Date,
   lastLoginAt: Date,
 }, { timestamps: true });
 
@@ -149,6 +151,7 @@ const clientUserSchema = new mongoose.Schema({
   passwordHash: { type: String, required: true },
   passwordSalt: { type: String, required: true },
   sessionToken: { type: String, default: '', index: true },
+  sessionExpiresAt: Date,
   lastLoginAt: Date,
 }, { timestamps: true });
 

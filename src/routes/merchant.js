@@ -48,6 +48,8 @@ module.exports = (app, ctx) => {
     setPaginationHeaders,
     INPUT_LIMITS,
     rateLimits,
+    rotateSession,
+    logoutSession,
   } = ctx;
 
   const reserveBookingSlot = (bookingId, staffId, startTime, session) => {
@@ -93,18 +95,22 @@ module.exports = (app, ctx) => {
       return res.status(401).json({ message: '账号或密码错误' });
     }
   
-    user.sessionToken = crypto.randomBytes(32).toString('hex');
-    user.lastLoginAt = new Date();
-    await user.save();
-  
+    const session = await rotateSession(user);
+
     res.json({
-      token: user.sessionToken,
+      token: session.token,
+      expiresAt: session.expiresAt,
       user: buildMerchantUserPayload(user),
     });
   });
   
   app.get('/api/merchant/auth/me', requireMerchantAuth, async (req, res) => {
     res.json({ user: buildMerchantUserPayload(req.merchantUser) });
+  });
+
+  app.post('/api/merchant/auth/logout', requireMerchantAuth, async (req, res) => {
+    await logoutSession(MerchantUser, req.merchantUser, req);
+    res.json({ ok: true });
   });
   
   app.use('/api/merchant', requireMerchantAuth);
@@ -161,6 +167,7 @@ module.exports = (app, ctx) => {
   
     if (displayName) user.displayName = displayName;
   
+    let session;
     if (newPassword) {
       if (newPassword.length < 6) return res.status(400).json({ message: '新密码至少 6 位' });
       if (!await verifyPassword(currentPassword, user)) {
@@ -169,12 +176,13 @@ module.exports = (app, ctx) => {
       const nextPassword = await hashPassword(newPassword);
       user.passwordSalt = nextPassword.salt;
       user.passwordHash = nextPassword.hash;
-      user.sessionToken = crypto.randomBytes(32).toString('hex');
+      session = await rotateSession(user);
     }
-  
-    await user.save();
+
+    if (!session) await user.save();
     res.json({
       token: user.sessionToken,
+      expiresAt: user.sessionExpiresAt,
       user: buildMerchantUserPayload(user),
     });
   });

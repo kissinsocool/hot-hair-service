@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node index.js",
     "admin:create": "node scripts/create-admin.js",
-    "test": "node --test"
+    "test": "node --test",
+    "test:integration": "node --test src/mongodb.integration.test.js",
+    "test:load": "node scripts/load-test.js"
   },
   "keywords": [],
   "author": "",
@@ -17,6 +19,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "mongoose": "^9.6.3",
+    "redis": "^5.12.1",
     "ws": "^8.21.0"
   }
 }

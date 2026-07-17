@@ -21,6 +21,7 @@ const {
   trustProxyHops,
   wsMaxConnections,
   wsMaxConnectionsPerIp,
+  sessionTtlSeconds,
   isAllowedOrigin,
 } = require('./src/config');
 const {
@@ -46,6 +47,13 @@ const {
 } = require('./src/images');
 const { rateLimits } = require('./src/rate-limit');
 const { hashPassword, verifyPassword } = require('./src/passwords');
+const {
+  connectRedis,
+  getRedisClient,
+  publishSessionRevocation,
+  subscribeSessionRevocations,
+} = require('./src/redis');
+const { errorLogger, requestLogger } = require('./src/observability');
 
 const app = express();
 const server = http.createServer(app);
@@ -64,6 +72,7 @@ const wss = new WebSocketServer({
 
 if (trustProxyHops > 0) app.set('trust proxy', trustProxyHops);
 
+app.use(requestLogger);
 app.use(cors({
   origin: (origin, callback) => {
     if (isAllowedOrigin(origin)) return callback(null, true);
@@ -73,6 +82,19 @@ app.use(cors({
 }));
 app.use(express.json({ limit: process.env.JSON_LIMIT || '10mb' }));
 
+app.get('/health', (_req, res) => {
+  res.set('Cache-Control', 'no-store').json({ status: 'ok', uptimeSeconds: Math.floor(process.uptime()) });
+});
+app.get('/ready', (_req, res) => {
+  const mongoReady = mongoose.connection.readyState === 1;
+  const redisRequired = Boolean(String(process.env.REDIS_URL || '').trim());
+  const redisReady = !redisRequired || Boolean(getRedisClient());
+  res.status(mongoReady && redisReady ? 200 : 503).set('Cache-Control', 'no-store').json({
+    status: mongoReady && redisReady ? 'ready' : 'not_ready',
+    mongodb: mongoReady ? 'up' : 'down',
+    redis: redisReady ? 'up' : 'down',
+  });
+});
 // 静态资源托管
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(imageCacheDir, { recursive: true });
@@ -187,6 +209,35 @@ const buildClientUserPayload = (user) => ({
   phone: user.phone || user.account,
 });
 
+const sessionTokenFromRequest = (req) =>
+  String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+const activeSessionQuery = (token, now = new Date()) => ({
+  sessionToken: token,
+  sessionExpiresAt: { $gt: now },
+});
+const createSession = (now = Date.now()) => ({
+  token: crypto.randomBytes(32).toString('hex'),
+  expiresAt: new Date(now + sessionTtlSeconds * 1000),
+});
+const rotateSession = async (user) => {
+  const previousToken = user.sessionToken;
+  const session = createSession();
+  user.sessionToken = session.token;
+  user.sessionExpiresAt = session.expiresAt;
+  user.lastLoginAt = new Date();
+  await user.save();
+  if (previousToken && previousToken !== session.token) await revokeSessionToken(previousToken);
+  return session;
+};
+const logoutSession = async (Model, user, req) => {
+  const token = sessionTokenFromRequest(req);
+  await Model.updateOne(
+    { id: user.id, ...activeSessionQuery(token) },
+    { $set: { sessionToken: '', sessionExpiresAt: null } },
+  );
+  await revokeSessionToken(token);
+};
+
 let wechatTokenCache = { token: '', expiresAt: 0 };
 
 const getWechatAccessToken = async () => {
@@ -267,21 +318,20 @@ const loginClientByPhone = async (phone) => {
     });
   }
 
-  user.sessionToken = crypto.randomBytes(32).toString('hex');
-  user.lastLoginAt = new Date();
-  await user.save();
+  const session = await rotateSession(user);
 
   return {
-    token: user.sessionToken,
+    token: session.token,
+    expiresAt: session.expiresAt,
     user: buildClientUserPayload(user),
   };
 };
 
 const requireMerchantAuth = async (req, res, next) => {
-  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+  const token = sessionTokenFromRequest(req);
   if (!token) return res.status(401).json({ message: 'Merchant login required' });
 
-  const user = await MerchantUser.findOne({ sessionToken: token }).lean();
+  const user = await MerchantUser.findOne(activeSessionQuery(token)).lean();
   if (!user) return res.status(401).json({ message: 'Merchant login expired' });
 
   req.merchantUser = user;
@@ -289,10 +339,10 @@ const requireMerchantAuth = async (req, res, next) => {
 };
 
 const requireAdminAuth = async (req, res, next) => {
-  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+  const token = sessionTokenFromRequest(req);
   if (!token) return res.status(401).json({ message: 'Admin login required' });
 
-  const user = await AdminUser.findOne({ sessionToken: token }).lean();
+  const user = await AdminUser.findOne(activeSessionQuery(token)).lean();
   if (!user) return res.status(401).json({ message: 'Admin login expired' });
 
   req.adminUser = user;
@@ -300,9 +350,9 @@ const requireAdminAuth = async (req, res, next) => {
 };
 
 const getClientUserFromRequest = async (req) => {
-  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+  const token = sessionTokenFromRequest(req);
   if (!token) return null;
-  return ClientUser.findOne({ sessionToken: token }).lean();
+  return ClientUser.findOne(activeSessionQuery(token)).lean();
 };
 
 const requireClientAuth = async (req, res, next) => {
@@ -328,6 +378,25 @@ const resolveRequestUser = async (req) => {
 };
 
 const socketSubscriptions = new WeakMap();
+const hashSessionToken = token => crypto.createHash('sha256').update(String(token)).digest('hex');
+const closeSocketsBySessionHash = (sessionHash) => {
+  if (!sessionHash) return;
+  wss.clients.forEach((socket) => {
+    if (socketSubscriptions.get(socket)?.sessionHash === sessionHash) {
+      socket.close(1008, 'Session expired');
+    }
+  });
+};
+const revokeSessionToken = async (token) => {
+  if (!token) return;
+  const sessionHash = hashSessionToken(token);
+  closeSocketsBySessionHash(sessionHash);
+  try {
+    await publishSessionRevocation(sessionHash);
+  } catch (error) {
+    console.error('Session revocation publish error:', error.message);
+  }
+};
 
 const sendSocketMessage = (socket, payload) => {
   if (socket.readyState !== WebSocket.OPEN) return;
@@ -362,16 +431,16 @@ const broadcastBookingEvent = (event, booking) => {
 
 const authenticateSocket = async (role, token) => {
   if (role === 'client') {
-    const user = await ClientUser.findOne({ sessionToken: token }).select('id').lean();
-    return user ? { role, userId: normalizeUserId(user.id) } : null;
+    const user = await ClientUser.findOne(activeSessionQuery(token)).select('id sessionExpiresAt').lean();
+    return user ? { role, userId: normalizeUserId(user.id), sessionExpiresAt: user.sessionExpiresAt, sessionHash: hashSessionToken(token) } : null;
   }
   if (role === 'merchant') {
-    const user = await MerchantUser.findOne({ sessionToken: token }).select('salonId').lean();
-    return user ? { role, salonId: user.salonId } : null;
+    const user = await MerchantUser.findOne(activeSessionQuery(token)).select('salonId sessionExpiresAt').lean();
+    return user ? { role, salonId: user.salonId, sessionExpiresAt: user.sessionExpiresAt, sessionHash: hashSessionToken(token) } : null;
   }
   if (role === 'admin') {
-    const user = await AdminUser.findOne({ sessionToken: token }).select('id').lean();
-    return user ? { role } : null;
+    const user = await AdminUser.findOne(activeSessionQuery(token)).select('id sessionExpiresAt').lean();
+    return user ? { role, sessionExpiresAt: user.sessionExpiresAt, sessionHash: hashSessionToken(token) } : null;
   }
   return null;
 };
@@ -406,7 +475,10 @@ wss.on('connection', (socket, request) => {
 
   const authTimeout = setTimeout(() => socket.close(1008, 'Authentication timeout'), 5000);
   authTimeout.unref();
-  socket.on('close', () => clearTimeout(authTimeout));
+  socket.on('close', () => {
+    clearTimeout(authTimeout);
+    clearTimeout(socket.sessionExpiryTimer);
+  });
 
   sendSocketMessage(socket, {
     event: 'auth.required',
@@ -435,6 +507,13 @@ wss.on('connection', (socket, request) => {
       if (!subscription) return socket.close(1008, 'Authentication failed');
       socketSubscriptions.set(socket, subscription);
       clearTimeout(authTimeout);
+      const closeWhenExpired = () => {
+        const remaining = new Date(subscription.sessionExpiresAt).getTime() - Date.now();
+        if (remaining <= 0) return socket.close(1008, 'Session expired');
+        socket.sessionExpiryTimer = setTimeout(closeWhenExpired, Math.min(remaining, 2147000000));
+        socket.sessionExpiryTimer.unref();
+      };
+      closeWhenExpired();
       sendSocketMessage(socket, { event: 'authenticated', role: subscription.role });
     } catch {
       socket.close(1011, 'Authentication unavailable');
@@ -1052,18 +1131,37 @@ const generateSlotsForStaffAndDate = async (staffId, date) => {
       reason: '店铺休息日',
     }));
   }
-  const slots = await Promise.all(times.map(async (time) => {
+  const dayStart = new Date(`${date}T00:00:00`);
+  const dayEnd = new Date(`${date}T23:59:59.999`);
+  const [bookings, person] = await Promise.all([
+    Booking.find({
+      staffId,
+      startTime: { $gte: dayStart, $lte: dayEnd },
+      status: { $in: ['pending', 'accepted'] },
+    }).select({ startTime: 1, _id: 0 }).lean(),
+    getStaffById(staffId).select('unavailableSlots').lean(),
+  ]);
+  const bookedTimes = new Set(bookings.map(booking => {
+    const startTime = new Date(booking.startTime);
+    return `${String(startTime.getHours()).padStart(2, '0')}:${String(startTime.getMinutes()).padStart(2, '0')}`;
+  }));
+  const unavailableTimes = new Set(
+    normalizeUnavailableSlots(person?.unavailableSlots)
+      .filter(slot => slot.startsWith(`${date} `))
+      .map(slot => slot.slice(11)),
+  );
+
+  return times.map((time) => {
     const startTime = `${date}T${time}:00`;
-    const hasBooking = await findActiveBookingAtTime(staffId, startTime);
-    const unavailable = await isStaffUnavailable(staffId, startTime);
+    const hasBooking = bookedTimes.has(time);
+    const unavailable = unavailableTimes.has(time);
     return {
       time,
       startTime,
       isAvailable: !hasBooking && !unavailable,
       reason: hasBooking ? '已有订单' : unavailable ? '理发师缺勤' : undefined,
     };
-  }));
-  return slots;
+  });
 };
 
 const generateSlotsForNoPreferenceAndDate = async (salon, date) => {
@@ -1138,6 +1236,7 @@ const routeContext = {
   calculateDistanceKm,
   calculateStaffRating,
   ClientUser,
+  createSession,
   crypto,
   DEMO_USER_ID,
   decryptWechatPhoneNumber,
@@ -1166,6 +1265,7 @@ const routeContext = {
   isStaffUnavailable,
   isValidPhone,
   loginClientByPhone,
+  logoutSession,
   maskPhone,
   MerchantUser,
   mongoose,
@@ -1185,6 +1285,8 @@ const routeContext = {
   parsePriceValue,
   readFavoriteSalons,
   rateLimits,
+  revokeSessionToken,
+  rotateSession,
   refreshFavoriteSalonSnapshots,
   requireAdminAuth,
   requireClientAuth,
@@ -1213,6 +1315,12 @@ require('./src/routes/client')(app, routeContext);
 require('./src/routes/merchant')(app, routeContext);
 require('./src/routes/admin')(app, routeContext);
 
+app.use((error, req, res, next) => {
+  errorLogger(error, req);
+  if (res.headersSent) return next(error);
+  res.status(500).json({ message: 'Internal server error', requestId: req.requestId });
+});
+
 
 const startServer = async () => {
   const mongoUri = process.env.MONGODB_URI;
@@ -1221,6 +1329,13 @@ const startServer = async () => {
   }
 
   await mongoose.connect(mongoUri);
+  const redisConnected = await connectRedis();
+  if (redisConnected) {
+    await subscribeSessionRevocations(closeSocketsBySessionHash);
+    console.log('Redis connected');
+  } else {
+    console.warn('REDIS_URL is missing; using process-local rate limits');
+  }
   await Promise.all([
     Booking.createIndexes(),
     SlotOccupancy.createIndexes(),
@@ -1244,6 +1359,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  activeSessionQuery,
   acceptedBookingAtTimeQuery,
   buildGeoLocation,
   buildSearchRadii,
@@ -1251,6 +1367,7 @@ module.exports = {
   calculateDistanceKm,
   filterNearbySalons,
   getCoordinates,
+  generateSlotsForStaffAndDate,
   hashPassword,
   INPUT_LIMITS,
   normalizeServiceTags,
@@ -1258,9 +1375,12 @@ module.exports = {
   ensureSalonForMerchant,
   normalizeAdLink,
   normalizePagination,
+  createSession,
   parseMerchantRescheduleTime,
   socketCanReceiveBooking,
+  server,
   isSalonClosedOnDate,
+  logoutSession,
   stripSensitiveSalonFields,
   verifyPassword,
 };

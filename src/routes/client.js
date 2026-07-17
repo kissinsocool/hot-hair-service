@@ -19,6 +19,9 @@ module.exports = (app, ctx) => {
     requireClientAuth,
     crypto,
     rateLimits,
+    createSession,
+    rotateSession,
+    logoutSession,
   } = ctx;
 
   app.post('/api/auth/sms/request', ...rateLimits.smsRequest, async (req, res) => {
@@ -109,18 +112,21 @@ module.exports = (app, ctx) => {
     if (existingUser) return res.status(409).json({ message: '该账号已注册' });
   
     const { salt, hash } = await hashPassword(password);
+    const session = createSession();
     const user = await ClientUser.create({
       id: newClientUserId(),
       account,
       displayName,
       passwordSalt: salt,
       passwordHash: hash,
-      sessionToken: crypto.randomBytes(32).toString('hex'),
+      sessionToken: session.token,
+      sessionExpiresAt: session.expiresAt,
       lastLoginAt: new Date(),
     });
   
     res.status(201).json({
       token: user.sessionToken,
+      expiresAt: user.sessionExpiresAt,
       user: buildClientUserPayload(user),
     });
   });
@@ -145,18 +151,22 @@ module.exports = (app, ctx) => {
       return res.status(401).json({ message: '账号或密码错误' });
     }
   
-    user.sessionToken = crypto.randomBytes(32).toString('hex');
-    user.lastLoginAt = new Date();
-    await user.save();
-  
+    const session = await rotateSession(user);
+
     res.json({
-      token: user.sessionToken,
+      token: session.token,
+      expiresAt: session.expiresAt,
       user: buildClientUserPayload(user),
     });
   });
   
   app.get('/api/auth/me', requireClientAuth, async (req, res) => {
     res.json({ user: buildClientUserPayload(req.clientUser) });
+  });
+
+  app.post('/api/auth/logout', requireClientAuth, async (req, res) => {
+    await logoutSession(ClientUser, req.clientUser, req);
+    res.json({ ok: true });
   });
   
   app.patch('/api/auth/profile', requireClientAuth, async (req, res) => {
