@@ -483,8 +483,9 @@ module.exports = (app, ctx) => {
       note = '',
     } = req.body;
     const { userId, userName } = await resolveRequestUser(req);
+    const bookingServiceId = String(serviceId || '').trim();
   
-    if (!staffId || !serviceId || !startTime) {
+    if (!staffId || !bookingServiceId || !startTime) {
       return res.status(400).json({ message: 'staffId, serviceId and startTime are required' });
     }
     if (typeof note !== 'string' || note.length > INPUT_LIMITS.note) {
@@ -509,7 +510,7 @@ module.exports = (app, ctx) => {
     const salon = isNoPreference
       ? await Salon.findOne({ id: String(salonId).trim() }).lean()
       : await getSalonByStaffId(bookingStaffId).lean();
-    const service = salon?.services?.find(item => item.id === serviceId);
+    const service = salon?.services?.find(item => String(item.id).trim() === bookingServiceId);
   
     if ((!isNoPreference && !staffMember) || !service || !salon) {
       return res.status(404).json({ message: 'Staff, service or salon not found' });
@@ -560,7 +561,7 @@ module.exports = (app, ctx) => {
           staffId: bookingStaffId,
           staffName: isNoPreference ? '无需指定' : staffMember.name,
           isNoPreference,
-          serviceId,
+          serviceId: bookingServiceId,
           serviceName: service.name,
           servicePrice: service.price,
           serviceDuration: service.duration,
