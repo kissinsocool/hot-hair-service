@@ -16,6 +16,7 @@ module.exports = (app, ctx) => {
     buildMerchantBookingScope,
     buildContentDraft,
     saveBase64Image,
+    saveModeratedBase64Image,
     savePrivateBase64Image,
     privateImageUrl,
     getStaffById,
@@ -389,7 +390,7 @@ module.exports = (app, ctx) => {
     }
   
     const imageUrls = (await Promise.all(
-      images.map((image, index) => saveBase64Image('review', image?.fileName, image?.data, index)),
+      images.map((image, index) => saveModeratedBase64Image('review', image?.fileName, image?.data, index)),
     ))
       .filter(Boolean);
   
@@ -443,7 +444,7 @@ module.exports = (app, ctx) => {
     }
   
     const imageUrls = (await Promise.all(
-      images.map((image, index) => saveBase64Image('complaint', image?.fileName, image?.data, index)),
+      images.map((image, index) => saveModeratedBase64Image('complaint', image?.fileName, image?.data, index)),
     ))
       .filter(Boolean);
   

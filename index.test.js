@@ -20,13 +20,15 @@ const {
   normalizePagination,
   normalizeRadiusKm,
   parseMerchantRescheduleTime,
+  readFavoriteSalons,
   server,
   socketCanReceiveBooking,
   stripSensitiveSalonFields,
   verifyPassword,
 } = require('./index');
 const { isAllowedOrigin } = require('./src/config');
-const { Booking, Salon, SlotOccupancy, StaffProfile } = require('./src/models');
+const { Booking, FavoriteSalon, Salon, SlotOccupancy, StaffProfile } = require('./src/models');
+const registerAdminRoutes = require('./src/routes/admin');
 const registerMerchantRoutes = require('./src/routes/merchant');
 
 test('getCoordinates accepts common location shapes', () => {
@@ -214,6 +216,37 @@ test('nearby salon expansion performs one geospatial query', async () => {
   }
 });
 
+test('favorites store references and read current salon data', async () => {
+  const originalFavoriteFind = FavoriteSalon.find;
+  const originalSalonFind = Salon.find;
+  const originalStaffFind = StaffProfile.find;
+  let salonQuery;
+  FavoriteSalon.find = () => {
+    const chain = {
+      select() { return chain; },
+      sort() { return chain; },
+      async lean() { return [{ salonId: 'salon-1' }]; },
+    };
+    return chain;
+  };
+  Salon.find = async (query) => {
+    salonQuery = query;
+    return [new Salon({ id: 'salon-1', name: '最新店名', staffIds: [], publishStatus: 'online' })];
+  };
+  StaffProfile.find = () => ({ lean: async () => [] });
+
+  try {
+    const favorites = await readFavoriteSalons('user-1');
+    assert.equal(FavoriteSalon.schema.path('salon'), undefined);
+    assert.deepEqual(salonQuery, { id: { $in: ['salon-1'] }, publishStatus: 'online' });
+    assert.equal(favorites[0].name, '最新店名');
+  } finally {
+    FavoriteSalon.find = originalFavoriteFind;
+    Salon.find = originalSalonFind;
+    StaffProfile.find = originalStaffFind;
+  }
+});
+
 test('staff slots load daily bookings and unavailability with fixed query count', async () => {
   const originalSalonFindOne = Salon.findOne;
   const originalBookingFind = Booking.find;
@@ -301,6 +334,42 @@ test('stripSensitiveSalonFields removes license fields from public salon payload
 
 test('admin merchant creation helper is wired into route context', () => {
   assert.equal(typeof ensureSalonForMerchant, 'function');
+});
+
+test('approving a review publishes moderated images before making it public', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const booking = {
+    id: 'BK-1',
+    staffId: 'staff-1',
+    review: { reviewStatus: 'pending', imageUrls: ['moderation/review-1.png'] },
+    markModified() {},
+    async save() {},
+  };
+  const published = [];
+  registerAdminRoutes(app, {
+    Booking: { async findOne() { return booking; } },
+    async publishModeratedImage(name) {
+      published.push(name);
+      return 'https://public.example/uploads/review-1.png';
+    },
+    async deleteModeratedImages() {},
+    async getStaffById() { return null; },
+    rateLimits: { login: [], upload: [] },
+  });
+
+  await routes.get('/api/admin/user-images')(
+    { body: { bookingId: 'BK-1', type: 'review', action: 'approve' } },
+    { json() {} },
+  );
+
+  assert.deepEqual(published, ['moderation/review-1.png']);
+  assert.equal(booking.review.reviewStatus, 'approved');
+  assert.deepEqual(booking.review.imageUrls, ['https://public.example/uploads/review-1.png']);
 });
 
 test('merchant review replies are scoped to the authenticated merchant salon', async () => {

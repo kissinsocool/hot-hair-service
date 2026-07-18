@@ -59,7 +59,6 @@ const userPolicySchema = new mongoose.Schema({
 const favoriteSalonSchema = new mongoose.Schema({
   userId: { type: String, default: DEMO_USER_ID, index: true },
   salonId: { type: String, required: true, index: true },
-  salon: { type: mongoose.Schema.Types.Mixed, required: true },
 }, { timestamps: true });
 
 favoriteSalonSchema.index({ userId: 1, salonId: 1 }, { unique: true });

@@ -39,9 +39,12 @@ const {
 } = require('./src/models');
 const {
   compressedImageMiddleware,
+  deleteModeratedImages,
   imageExists,
+  publishModeratedImage,
   publicImageUrl,
   saveBase64Image,
+  saveModeratedBase64Image,
   savePrivateBase64Image,
   privateImageUrl,
 } = require('./src/images');
@@ -1037,13 +1040,6 @@ const applyPendingContent = async (salon) => {
   salon.pendingContent = undefined;
 };
 
-const refreshFavoriteSalonSnapshots = async (salon) => {
-  await FavoriteSalon.updateMany(
-    { salonId: salon.id },
-    { $set: { salon: await buildSalonDetail(salon) } },
-  );
-};
-
 const buildMerchantSalonPayload = async (salonId = '1') => {
   const salon = await Salon.findOne({ id: salonId });
   const payload = await buildSalonDetail(salon);
@@ -1084,9 +1080,20 @@ const ensureSalonForMerchant = async ({ salonId, displayName }) => {
 const readFavoriteSalons = async (userId = DEMO_USER_ID) => {
   const favorites = await FavoriteSalon
     .find({ userId: { $in: userIdAliases(userId) } })
+    .select('salonId')
     .sort({ createdAt: -1 })
     .lean();
-  return favorites.map(favorite => stripSensitiveSalonFields(favorite.salon));
+  const salons = await Salon.find({
+    id: { $in: favorites.map(favorite => favorite.salonId) },
+    publishStatus: 'online',
+  });
+  const salonsById = new Map(salons.map(salon => [salon.id, salon]));
+  return Promise.all(
+    favorites
+      .map(favorite => salonsById.get(favorite.salonId))
+      .filter(Boolean)
+      .map(buildSalonDetail),
+  );
 };
 
 const generateSlotsForStaffAndDate = async (staffId, date) => {
@@ -1209,6 +1216,7 @@ const routeContext = {
   crypto,
   DEMO_USER_ID,
   decryptWechatPhoneNumber,
+  deleteModeratedImages,
   FavoriteSalon,
   fetchJson,
   findAcceptedBookingAtTimeExcluding,
@@ -1252,11 +1260,11 @@ const routeContext = {
   parseMerchantRescheduleTime,
   parseOpeningHours,
   parsePriceValue,
+  publishModeratedImage,
   readFavoriteSalons,
   rateLimits,
   revokeSessionToken,
   rotateSession,
-  refreshFavoriteSalonSnapshots,
   requireAdminAuth,
   requireClientAuth,
   requireMerchantAuth,
@@ -1264,6 +1272,7 @@ const routeContext = {
   Salon,
   salonCoverImage,
   saveBase64Image,
+  saveModeratedBase64Image,
   savePrivateBase64Image,
   setPaginationHeaders,
   privateImageUrl,
@@ -1346,6 +1355,7 @@ module.exports = {
   normalizeRadiusKm,
   createSession,
   parseMerchantRescheduleTime,
+  readFavoriteSalons,
   socketCanReceiveBooking,
   server,
   isSalonClosedOnDate,

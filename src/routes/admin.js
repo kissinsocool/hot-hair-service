@@ -17,13 +17,15 @@ module.exports = (app, ctx) => {
     ensureSalonForMerchant,
     hashPassword,
     applyPendingContent,
-    refreshFavoriteSalonSnapshots,
     normalizeBooking,
     getStaffById,
     calculateStaffRating,
     buildAdPayload,
     normalizeAdLink,
     saveBase64Image,
+    privateImageUrl,
+    publishModeratedImage,
+    deleteModeratedImages,
     normalizePagination,
     setPaginationHeaders,
     rateLimits,
@@ -256,8 +258,6 @@ module.exports = (app, ctx) => {
     salon.contentRejectReason = action === 'reject' ? reason : '';
     salon.contentReviewedAt = new Date();
     await salon.save();
-    if (action === 'approve') await refreshFavoriteSalonSnapshots(salon);
-  
     res.json({ merchant: await buildAdminMerchantPayload(user, salon) });
   });
   
@@ -330,7 +330,7 @@ module.exports = (app, ctx) => {
     ]);
     setPaginationHeaders(res, pagination, total);
 
-    res.json(bookings.flatMap(userImageReviewItems));
+    res.json(bookings.flatMap(booking => userImageReviewItems(booking, privateImageUrl)));
   });
 
   app.patch('/api/admin/user-images', requireAdminAuth, async (req, res) => {
@@ -346,6 +346,16 @@ module.exports = (app, ctx) => {
 
     const payload = booking[type] || {};
     if (payload.reviewStatus !== 'pending') return res.status(409).json({ message: 'Image review item is not pending' });
+
+    if (type === 'review' && action === 'approve') {
+      payload.imageUrls = (await Promise.all(
+        (payload.imageUrls || []).map(publishModeratedImage),
+      )).filter(Boolean);
+    }
+    if (action === 'reject') {
+      await deleteModeratedImages(payload.imageUrls || []);
+      payload.imageUrls = [];
+    }
 
     payload.reviewStatus = action === 'approve' ? 'approved' : 'rejected';
 
@@ -366,11 +376,13 @@ module.exports = (app, ctx) => {
   });
 };
 
-function userImageReviewItems(booking) {
+function userImageReviewItems(booking, privateImageUrl) {
   return ['review', 'complaint'].flatMap(type => {
     const payload = booking[type] || {};
     if (payload.reviewStatus !== 'pending') return [];
-    const imageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls : [];
+    const imageUrls = (Array.isArray(payload.imageUrls) ? payload.imageUrls : [])
+      .map(url => privateImageUrl(url))
+      .filter(Boolean);
     return [{
       id: `${booking.id}:${type}`,
       bookingId: booking.id,

@@ -92,7 +92,6 @@ module.exports = (app, ctx) => {
       await FavoriteSalon.create({
         userId,
         salonId,
-        salon: req.body,
       });
     }
   

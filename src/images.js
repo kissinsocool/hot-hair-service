@@ -49,7 +49,7 @@ function compressedImageMiddleware(rootDir) {
 
       const sourcePath = path.resolve(rootDir, relativePath);
       if (!sourcePath.startsWith(path.resolve(rootDir) + path.sep)) return res.status(403).end();
-      const cachePath = await compressedImagePath(sourcePath);
+      const cachePath = await compressedImagePath(sourcePath, false);
       if (!cachePath) return next();
       res.type('jpg').sendFile(cachePath);
     } catch (_) {
@@ -58,7 +58,7 @@ function compressedImageMiddleware(rootDir) {
   };
 }
 
-async function compressedImagePath(sourcePath) {
+async function compressedImagePath(sourcePath, waitForCompression = true) {
   if (!/\.(jpe?g|png)$/i.test(sourcePath)) return '';
 
   let stat;
@@ -88,7 +88,7 @@ async function compressedImagePath(sourcePath) {
         .finally(() => compressionJobs.delete(cachePath));
       compressionJobs.set(cachePath, job);
     }
-    return compressionJobs.get(cachePath);
+    return waitForCompression ? compressionJobs.get(cachePath) : '';
   }
 
   return cachePath;
@@ -130,10 +130,8 @@ const saveBase64Image = async (prefix, fileName, data, index = 0) => {
 
   const imagePath = path.join(uploadDir, imageName);
   await fs.promises.writeFile(imagePath, buffer);
-  const cachePath = await compressedImagePath(imagePath);
-  return cachePath
-    ? `${publicBaseUrl}/cached-images/${path.basename(cachePath)}`
-    : `${publicBaseUrl}/uploads/${imageName}`;
+  await compressedImagePath(imagePath, false);
+  return `${publicBaseUrl}/uploads/${imageName}`;
 };
 
 const decodeBase64Image = (prefix, fileName, data, index = 0) => {
@@ -169,6 +167,32 @@ const savePrivateBase64Image = async (prefix, fileName, data, index = 0) => {
   return objectName;
 };
 
+const saveModeratedBase64Image = async (prefix, fileName, data, index = 0) => {
+  if (!privateOssClient) return saveBase64Image(prefix, fileName, data, index);
+  const { buffer, imageName } = decodeBase64Image(prefix, fileName, data, index);
+  if (!buffer) return '';
+  const objectName = `moderation/${imageName}`;
+  await privateOssClient.put(objectName, buffer, { headers: { 'x-oss-object-acl': 'private' } });
+  return objectName;
+};
+
+const publishModeratedImage = async (objectName) => {
+  if (!objectName || /^https?:\/\//i.test(objectName)) return objectName || '';
+  if (!objectName.startsWith('moderation/') || !privateOssClient || !ossClient) return '';
+  const publicObjectName = `uploads/${path.basename(objectName)}`;
+  const { content } = await privateOssClient.get(objectName);
+  await ossClient.put(publicObjectName, content);
+  await privateOssClient.delete(objectName);
+  return `${ossPublicBaseUrl}/${publicObjectName}`;
+};
+
+const deleteModeratedImages = async (objectNames = []) => {
+  if (!privateOssClient) return;
+  await Promise.all(objectNames
+    .filter(name => typeof name === 'string' && name.startsWith('moderation/'))
+    .map(name => privateOssClient.delete(name)));
+};
+
 const privateImageUrl = (objectName, expires = 600) => {
   if (!objectName || /^https?:\/\//i.test(objectName)) return objectName || '';
   if (!privateOssClient) return '';
@@ -179,7 +203,10 @@ module.exports = {
   compressedImageMiddleware,
   imageExists,
   publicImageUrl,
+  deleteModeratedImages,
+  publishModeratedImage,
   saveBase64Image,
+  saveModeratedBase64Image,
   savePrivateBase64Image,
   privateImageUrl,
 };
