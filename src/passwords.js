@@ -16,8 +16,7 @@ const timingSafeEqualHex = (left, right) => {
 
 const verifyPassword = async (password, user) => {
   const currentHash = (await hashPassword(password, user.passwordSalt)).hash;
-  const legacyHash = crypto.createHash('sha256').update(`${user.passwordSalt}:${password}`).digest('hex');
-  return timingSafeEqualHex(currentHash, user.passwordHash) || timingSafeEqualHex(legacyHash, user.passwordHash);
+  return timingSafeEqualHex(currentHash, user.passwordHash);
 };
 
 module.exports = { hashPassword, verifyPassword };

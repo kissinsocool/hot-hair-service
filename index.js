@@ -215,29 +215,34 @@ const buildClientUserPayload = (user) => ({
 
 const sessionTokenFromRequest = (req) =>
   String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+const hashSessionToken = token => crypto.createHash('sha256').update(String(token)).digest('hex');
 const activeSessionQuery = (token, now = new Date()) => ({
-  sessionToken: token,
+  sessionTokenHash: hashSessionToken(token),
   sessionExpiresAt: { $gt: now },
 });
-const createSession = (now = Date.now()) => ({
-  token: crypto.randomBytes(32).toString('hex'),
-  expiresAt: new Date(now + sessionTtlSeconds * 1000),
-});
+const createSession = (now = Date.now()) => {
+  const token = crypto.randomBytes(32).toString('hex');
+  return {
+    token,
+    tokenHash: hashSessionToken(token),
+    expiresAt: new Date(now + sessionTtlSeconds * 1000),
+  };
+};
 const rotateSession = async (user) => {
-  const previousToken = user.sessionToken;
+  const previousSessionHash = user.sessionTokenHash;
   const session = createSession();
-  user.sessionToken = session.token;
+  user.sessionTokenHash = session.tokenHash;
   user.sessionExpiresAt = session.expiresAt;
   user.lastLoginAt = new Date();
   await user.save();
-  if (previousToken && previousToken !== session.token) await revokeSessionToken(previousToken);
+  if (previousSessionHash && previousSessionHash !== session.tokenHash) await revokeSessionHash(previousSessionHash);
   return session;
 };
 const logoutSession = async (Model, user, req) => {
   const token = sessionTokenFromRequest(req);
   await Model.updateOne(
     { id: user.id, ...activeSessionQuery(token) },
-    { $set: { sessionToken: '', sessionExpiresAt: null } },
+    { $set: { sessionTokenHash: '', sessionExpiresAt: null } },
   );
   await revokeSessionToken(token);
 };
@@ -382,7 +387,6 @@ const resolveRequestUser = async (req) => {
 };
 
 const socketSubscriptions = new WeakMap();
-const hashSessionToken = token => crypto.createHash('sha256').update(String(token)).digest('hex');
 const closeSocketsBySessionHash = (sessionHash) => {
   if (!sessionHash) return;
   wss.clients.forEach((socket) => {
@@ -391,9 +395,8 @@ const closeSocketsBySessionHash = (sessionHash) => {
     }
   });
 };
-const revokeSessionToken = async (token) => {
-  if (!token) return;
-  const sessionHash = hashSessionToken(token);
+const revokeSessionHash = async (sessionHash) => {
+  if (!sessionHash) return;
   closeSocketsBySessionHash(sessionHash);
   try {
     await publishSessionRevocation(sessionHash);
@@ -401,6 +404,7 @@ const revokeSessionToken = async (token) => {
     console.error('Session revocation publish error:', error.message);
   }
 };
+const revokeSessionToken = token => token ? revokeSessionHash(hashSessionToken(token)) : Promise.resolve();
 
 const sendSocketMessage = (socket, payload) => {
   if (socket.readyState !== WebSocket.OPEN) return;
@@ -1266,10 +1270,12 @@ const routeContext = {
   readFavoriteSalons,
   rateLimits,
   revokeSessionToken,
+  revokeSessionHash,
   rotateSession,
   requireAdminAuth,
   requireClientAuth,
   requireMerchantAuth,
+  sessionTokenFromRequest,
   resolveRequestUser,
   Salon,
   salonCoverImage,
@@ -1309,6 +1315,12 @@ const startServer = async () => {
   }
 
   await mongoose.connect(mongoUri);
+  // No live users yet: invalidate and remove legacy plaintext sessions instead of maintaining a dual-read migration.
+  await Promise.all([ClientUser, MerchantUser, AdminUser].map(Model =>
+    Model.collection.updateMany(
+      { sessionToken: { $exists: true } },
+      { $unset: { sessionToken: '' }, $set: { sessionTokenHash: '', sessionExpiresAt: null } },
+    )));
   const redisConnected = await connectRedis();
   if (redisConnected) {
     await subscribeSessionRevocations(closeSocketsBySessionHash);

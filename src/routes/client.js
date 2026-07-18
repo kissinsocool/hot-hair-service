@@ -23,6 +23,7 @@ module.exports = (app, ctx) => {
     rotateSession,
     logoutSession,
     createModeratedUploadPolicies,
+    sessionTokenFromRequest,
   } = ctx;
 
   app.post('/api/uploads/moderation/sign', requireClientAuth, ...rateLimits.upload, async (req, res) => {
@@ -133,13 +134,13 @@ module.exports = (app, ctx) => {
       displayName,
       passwordSalt: salt,
       passwordHash: hash,
-      sessionToken: session.token,
+      sessionTokenHash: session.tokenHash,
       sessionExpiresAt: session.expiresAt,
       lastLoginAt: new Date(),
     });
   
     res.status(201).json({
-      token: user.sessionToken,
+      token: session.token,
       expiresAt: user.sessionExpiresAt,
       user: buildClientUserPayload(user),
     });
@@ -221,7 +222,7 @@ module.exports = (app, ctx) => {
     await user.save();
   
     res.json({
-      token: user.sessionToken,
+      token: sessionTokenFromRequest(req),
       user: buildClientUserPayload(user),
     });
   });

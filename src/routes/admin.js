@@ -31,7 +31,7 @@ module.exports = (app, ctx) => {
     rateLimits,
     rotateSession,
     logoutSession,
-    revokeSessionToken,
+    revokeSessionHash,
   } = ctx;
 
   app.post('/api/admin/auth/login', ...rateLimits.login, async (req, res) => {
@@ -201,20 +201,20 @@ module.exports = (app, ctx) => {
       });
       user.salonId = salon.id;
     }
-    let revokedToken = '';
+    let revokedSessionHash = '';
     if (password) {
       if (password.length < 6) return res.status(400).json({ message: '密码至少 6 位' });
       const { salt, hash } = await hashPassword(password);
       user.passwordSalt = salt;
       user.passwordHash = hash;
-      revokedToken = user.sessionToken;
-      user.sessionToken = '';
+      revokedSessionHash = user.sessionTokenHash;
+      user.sessionTokenHash = '';
       user.sessionExpiresAt = null;
     }
     if (deposit !== undefined) user.deposit = deposit;
 
     await user.save();
-    if (revokedToken) await revokeSessionToken(revokedToken);
+    if (revokedSessionHash) await revokeSessionHash(revokedSessionHash);
     res.json({ user: buildMerchantUserPayload(user) });
   });
   

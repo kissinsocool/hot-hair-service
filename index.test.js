@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const test = require('node:test');
 const {
   activeSessionQuery,
@@ -27,7 +28,7 @@ const {
   verifyPassword,
 } = require('./index');
 const { isAllowedOrigin } = require('./src/config');
-const { Booking, FavoriteSalon, Salon, SlotOccupancy, StaffProfile } = require('./src/models');
+const { Booking, ClientUser, FavoriteSalon, Salon, SlotOccupancy, StaffProfile } = require('./src/models');
 const registerAdminRoutes = require('./src/routes/admin');
 const registerMerchantRoutes = require('./src/routes/merchant');
 const registerPublicRoutes = require('./src/routes/public');
@@ -106,6 +107,11 @@ test('async password hashing remains verifiable', async () => {
     passwordSalt: password.salt,
     passwordHash: password.hash,
   }), false);
+  const legacySalt = 'legacy-salt';
+  assert.equal(await verifyPassword('legacy-password', {
+    passwordSalt: legacySalt,
+    passwordHash: crypto.createHash('sha256').update(`${legacySalt}:legacy-password`).digest('hex'),
+  }), false);
 });
 
 test('sessions have an expiry and authentication queries reject expired tokens', () => {
@@ -114,9 +120,12 @@ test('sessions have an expiry and authentication queries reject expired tokens',
   const query = activeSessionQuery('token-1', new Date(now));
 
   assert.equal(session.token.length, 64);
+  assert.equal(session.tokenHash, crypto.createHash('sha256').update(session.token).digest('hex'));
   assert.ok(session.expiresAt.getTime() > now);
-  assert.equal(query.sessionToken, 'token-1');
+  assert.equal(query.sessionTokenHash, crypto.createHash('sha256').update('token-1').digest('hex'));
   assert.equal(query.sessionExpiresAt.$gt.getTime(), now);
+  assert.equal(ClientUser.schema.path('sessionToken'), undefined);
+  assert.ok(ClientUser.schema.path('sessionTokenHash'));
 });
 
 test('logout atomically clears the active session token', async () => {
@@ -130,9 +139,9 @@ test('logout atomically clears the active session token', async () => {
   });
 
   assert.equal(update.filter.id, 'user-1');
-  assert.equal(update.filter.sessionToken, 'token-1');
+  assert.equal(update.filter.sessionTokenHash, crypto.createHash('sha256').update('token-1').digest('hex'));
   assert.ok(update.filter.sessionExpiresAt.$gt instanceof Date);
-  assert.deepEqual(update.changes, { $set: { sessionToken: '', sessionExpiresAt: null } });
+  assert.deepEqual(update.changes, { $set: { sessionTokenHash: '', sessionExpiresAt: null } });
 });
 
 test('input limits cap query amplification and user content', () => {

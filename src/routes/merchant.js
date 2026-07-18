@@ -52,6 +52,7 @@ module.exports = (app, ctx) => {
     rateLimits,
     rotateSession,
     logoutSession,
+    sessionTokenFromRequest,
   } = ctx;
 
   const reserveBookingSlot = (bookingId, staffId, startTime, session) => {
@@ -183,7 +184,7 @@ module.exports = (app, ctx) => {
 
     if (!session) await user.save();
     res.json({
-      token: user.sessionToken,
+      token: session?.token || sessionTokenFromRequest(req),
       expiresAt: user.sessionExpiresAt,
       user: buildMerchantUserPayload(user),
     });
