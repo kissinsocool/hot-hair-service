@@ -79,22 +79,27 @@ module.exports = (app, ctx) => {
     res.json(await readFavoriteSalons(userId));
   });
   
-  app.post('/api/favorites/toggle', async (req, res) => {
+  app.put('/api/favorites/:id', async (req, res) => {
     const { userId } = await resolveRequestUser(req);
-    const salonId = req.body?.id?.toString();
+    const salonId = String(req.params.id || '').trim();
     if (!salonId) return res.status(400).json({ message: 'Salon id is required' });
-  
-    const existingFavorite = await FavoriteSalon.findOne({ userId: { $in: userIdAliases(userId) }, salonId });
-  
-    if (existingFavorite) {
-      await existingFavorite.deleteOne();
-    } else {
-      await FavoriteSalon.create({
-        userId,
-        salonId,
-      });
+    try {
+      await FavoriteSalon.updateOne(
+        { userId, salonId },
+        { $setOnInsert: { userId, salonId } },
+        { upsert: true },
+      );
+    } catch (error) {
+      if (error?.code !== 11000) throw error;
     }
-  
+    res.json(await readFavoriteSalons(userId));
+  });
+
+  app.delete('/api/favorites/:id', async (req, res) => {
+    const { userId } = await resolveRequestUser(req);
+    const salonId = String(req.params.id || '').trim();
+    if (!salonId) return res.status(400).json({ message: 'Salon id is required' });
+    await FavoriteSalon.deleteMany({ userId: { $in: userIdAliases(userId) }, salonId });
     res.json(await readFavoriteSalons(userId));
   });
 };

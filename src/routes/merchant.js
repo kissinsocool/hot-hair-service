@@ -17,6 +17,7 @@ module.exports = (app, ctx) => {
     buildContentDraft,
     saveBase64Image,
     verifyModeratedImageObjects,
+    deleteModeratedImages,
     savePrivateBase64Image,
     privateImageUrl,
     getStaffById,
@@ -415,13 +416,18 @@ module.exports = (app, ctx) => {
     const staffMember = await getStaffById(booking.staffId);
     if (!staffMember) return res.status(404).json({ message: 'Staff not found' });
   
-    booking.reviewed = true;
-    booking.review = review;
-    booking.updatedAt = new Date().toISOString();
-    await booking.save();
+    const updatedBooking = await Booking.findOneAndUpdate(
+      { _id: booking._id, status: 'completed', reviewed: { $ne: true } },
+      { $set: { reviewed: true, review, updatedAt: new Date() } },
+      { new: true },
+    );
+    if (!updatedBooking) {
+      await deleteModeratedImages(imageUrls);
+      return res.status(409).json({ message: 'Booking already reviewed' });
+    }
   
-    broadcastBookingEvent('booking.updated', booking);
-    res.status(201).json({ review, booking: normalizeBooking(booking) });
+    broadcastBookingEvent('booking.updated', updatedBooking);
+    res.status(201).json({ review, booking: normalizeBooking(updatedBooking) });
   });
   
   app.post('/api/bookings/:id/complaint', ...rateLimits.booking, async (req, res) => {
@@ -476,13 +482,18 @@ module.exports = (app, ctx) => {
       status: 'submitted',
     };
   
-    booking.complained = true;
-    booking.complaint = complaint;
-    booking.updatedAt = new Date().toISOString();
-    await booking.save();
+    const updatedBooking = await Booking.findOneAndUpdate(
+      { _id: booking._id, status: 'completed', complained: { $ne: true } },
+      { $set: { complained: true, complaint, updatedAt: new Date() } },
+      { new: true },
+    );
+    if (!updatedBooking) {
+      await deleteModeratedImages(imageUrls);
+      return res.status(409).json({ message: 'Booking already complained' });
+    }
   
-    broadcastBookingEvent('booking.updated', booking);
-    res.status(201).json({ complaint, booking: normalizeBooking(booking) });
+    broadcastBookingEvent('booking.updated', updatedBooking);
+    res.status(201).json({ complaint, booking: normalizeBooking(updatedBooking) });
   });
   
   app.post('/api/bookings', ...rateLimits.booking, async (req, res) => {

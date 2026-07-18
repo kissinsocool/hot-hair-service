@@ -30,6 +30,7 @@ const { isAllowedOrigin } = require('./src/config');
 const { Booking, FavoriteSalon, Salon, SlotOccupancy, StaffProfile } = require('./src/models');
 const registerAdminRoutes = require('./src/routes/admin');
 const registerMerchantRoutes = require('./src/routes/merchant');
+const registerPublicRoutes = require('./src/routes/public');
 
 test('getCoordinates accepts common location shapes', () => {
   assert.deepEqual(getCoordinates('121.4737,31.2304'), { latitude: 31.2304, longitude: 121.4737 });
@@ -247,6 +248,43 @@ test('favorites store references and read current salon data', async () => {
   }
 });
 
+test('favorite writes are idempotent upserts and deletes', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    put(path, handler) { routes.set(`PUT ${path}`, handler); },
+    delete(path, handler) { routes.set(`DELETE ${path}`, handler); },
+  };
+  let updateCall;
+  let deleteCall;
+  registerPublicRoutes(app, {
+    FavoriteSalon: {
+      async updateOne(...args) { updateCall = args; },
+      async deleteMany(query) { deleteCall = query; },
+    },
+    async resolveRequestUser() { return { userId: 'user-1' }; },
+    async readFavoriteSalons() { return []; },
+    userIdAliases: userId => [userId, 'legacy-user-1'],
+  });
+  const response = { json() {}, status() { return this; } };
+  const request = { params: { id: 'salon-1' } };
+
+  await routes.get('PUT /api/favorites/:id')(request, response);
+  await routes.get('PUT /api/favorites/:id')(request, response);
+  await routes.get('DELETE /api/favorites/:id')(request, response);
+
+  assert.deepEqual(updateCall, [
+    { userId: 'user-1', salonId: 'salon-1' },
+    { $setOnInsert: { userId: 'user-1', salonId: 'salon-1' } },
+    { upsert: true },
+  ]);
+  assert.deepEqual(deleteCall, {
+    userId: { $in: ['user-1', 'legacy-user-1'] },
+    salonId: 'salon-1',
+  });
+});
+
 test('staff slots load daily bookings and unavailability with fixed query count', async () => {
   const originalSalonFindOne = Salon.findOne;
   const originalBookingFind = Booking.find;
@@ -412,6 +450,65 @@ test('merchant review replies are scoped to the authenticated merchant salon', a
 
   assert.deepEqual(query, { id: 'BK-1', salonId: 'salon-7' });
   assert.equal(status, 404);
+});
+
+test('concurrent review and complaint submissions only update once', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+    patch() {},
+    use() {},
+  };
+  const claimed = { review: false, complaint: false };
+  const booking = {
+    _id: 'mongo-booking-1',
+    id: 'BK-1',
+    userId: 'user-1',
+    userName: 'User',
+    status: 'completed',
+    reviewed: false,
+    complained: false,
+    staffId: 'staff-1',
+  };
+  registerMerchantRoutes(app, {
+    Booking: {
+      async findOne() { return booking; },
+      async findOneAndUpdate(query, update) {
+        const type = query.reviewed ? 'review' : 'complaint';
+        if (claimed[type]) return null;
+        claimed[type] = true;
+        return { ...booking, ...update.$set };
+      },
+    },
+    async resolveRequestUser() { return { userId: 'user-1' }; },
+    userIdAliases: userId => [userId],
+    normalizeUserId: value => value,
+    normalizeBooking: value => value,
+    async verifyModeratedImageObjects() { return []; },
+    async deleteModeratedImages() {},
+    async getStaffById() { return {}; },
+    broadcastBookingEvent() {},
+    INPUT_LIMITS: { review: 1000, complaint: 2000 },
+    rateLimits: { login: [], booking: [], merchantBooking: [], upload: [] },
+  });
+  const invokeTwice = (path, body) => Promise.all([1, 2].map(async () => {
+    const result = { status: 200 };
+    await routes.get(path)(
+      { params: { id: 'BK-1' }, body },
+      {
+        status(value) { result.status = value; return this; },
+        json() {},
+      },
+    );
+    return result.status;
+  }));
+
+  const reviewStatuses = await invokeTwice('/api/bookings/:id/review', { rating: 5, comment: 'good' });
+  const complaintStatuses = await invokeTwice('/api/bookings/:id/complaint', { description: 'problem' });
+
+  assert.deepEqual(reviewStatuses.sort(), [201, 409]);
+  assert.deepEqual(complaintStatuses.sort(), [201, 409]);
 });
 
 test('booking cancellation atomically checks state and releases its slot in one transaction', async () => {
