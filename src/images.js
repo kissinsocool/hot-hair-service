@@ -244,12 +244,17 @@ const verifyModeratedImageObjects = async ({ type, userId, objectNames }) => {
       throw error;
     }
     try {
-      const result = await privateOssClient.getObjectMeta(objectName);
+      const result = await privateOssClient.head(objectName);
       const headers = result?.res?.headers || result?.headers || {};
       const size = Number(headers['content-length']);
       const contentType = String(headers['content-type'] || '').split(';')[0].toLowerCase();
-      if (!Number.isFinite(size) || size < 1 || size > MODERATED_IMAGE_MAX_BYTES || !MODERATED_IMAGE_TYPES.has(contentType)) {
-        const error = new Error('Uploaded image is invalid or larger than 800 KB');
+      if (!Number.isFinite(size) || size < 1 || size > MODERATED_IMAGE_MAX_BYTES) {
+        const error = new Error('图片压缩后仍超过 800 KB');
+        error.httpStatus = 400;
+        throw error;
+      }
+      if (!MODERATED_IMAGE_TYPES.has(contentType)) {
+        const error = new Error('上传的图片格式无效');
         error.httpStatus = 400;
         throw error;
       }
