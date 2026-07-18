@@ -3,12 +3,12 @@ const { DEMO_USER_ID } = require('./config');
 
 const bookingSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
-  userId: { type: String, default: DEMO_USER_ID, index: true },
+  userId: { type: String, default: DEMO_USER_ID },
   userName: { type: String, default: 'Demo 用户' },
   salonId: String,
   salonName: String,
   // No-preference bookings stay unassigned until the merchant accepts them.
-  staffId: { type: String, default: '', index: true },
+  staffId: { type: String, default: '' },
   staffName: String,
   isNoPreference: { type: Boolean, default: false },
   serviceId: { type: String, required: true },
@@ -33,8 +33,10 @@ const bookingSchema = new mongoose.Schema({
 }, { id: false });
 
 bookingSchema.index({ staffId: 1, startTime: 1, status: 1 });
-bookingSchema.index({ salonId: 1, createdAt: -1, status: 1 });
-bookingSchema.index({ userId: 1, createdAt: -1, status: 1 });
+bookingSchema.index({ salonId: 1, createdAt: -1 });
+bookingSchema.index({ salonId: 1, status: 1, createdAt: -1 });
+bookingSchema.index({ userId: 1, createdAt: -1 });
+bookingSchema.index({ userId: 1, status: 1, createdAt: -1 });
 bookingSchema.index({ createdAt: -1 });
 bookingSchema.index({ 'review.reviewStatus': 1, updatedAt: -1 });
 bookingSchema.index({ 'complaint.reviewStatus': 1, updatedAt: -1 });
@@ -96,7 +98,7 @@ const salonSchema = new mongoose.Schema({
   pendingContent: mongoose.Schema.Types.Mixed,
 }, { timestamps: true });
 
-salonSchema.index({ geoLocation: '2dsphere' });
+salonSchema.index({ geoLocation: '2dsphere', publishStatus: 1 });
 salonSchema.index({ staffIds: 1 });
 salonSchema.index({ 'services.id': 1 });
 

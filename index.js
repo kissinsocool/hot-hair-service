@@ -536,18 +536,6 @@ server.on('close', () => clearInterval(socketHeartbeat));
 const normalizeDocument = (document) =>
   typeof document?.toObject === 'function' ? document.toObject() : document;
 
-const getAllSalons = async (limit) => {
-  if (limit) {
-    return Salon.find({ publishStatus: 'online' })
-      .select('-licenseUrl -licenseStatus -licenseRejectReason -licenseSubmittedAt -licenseReviewedAt -pendingContent -contentReviewStatus -contentRejectReason -contentReviewedAt')
-      .sort({ id: 1 }).limit(limit).lean();
-  }
-  const salonList = await Salon.find({ publishStatus: 'online' })
-    .select('-licenseUrl -licenseStatus -licenseRejectReason -licenseSubmittedAt -licenseReviewedAt -pendingContent -contentReviewStatus -contentRejectReason -contentReviewedAt')
-    .lean();
-  return salonList.sort((a, b) => Number(a.id) - Number(b.id));
-};
-
 const toFiniteNumber = (value) => {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
@@ -557,16 +545,21 @@ const getCoordinates = (location) => {
   if (!location) return null;
   if (typeof location === 'string') {
     const [longitude, latitude] = location.split(',').map(toFiniteNumber);
-    return latitude !== null && longitude !== null ? { latitude, longitude } : null;
+    return validCoordinates(latitude, longitude) ? { latitude, longitude } : null;
   }
   if (Array.isArray(location?.coordinates)) {
     const [longitude, latitude] = location.coordinates.map(toFiniteNumber);
-    return latitude !== null && longitude !== null ? { latitude, longitude } : null;
+    return validCoordinates(latitude, longitude) ? { latitude, longitude } : null;
   }
   const latitude = toFiniteNumber(location.latitude ?? location.lat);
   const longitude = toFiniteNumber(location.longitude ?? location.lng ?? location.lon);
-  return latitude !== null && longitude !== null ? { latitude, longitude } : null;
+  return validCoordinates(latitude, longitude) ? { latitude, longitude } : null;
 };
+
+const validCoordinates = (latitude, longitude) =>
+  latitude !== null && longitude !== null
+  && latitude >= -90 && latitude <= 90
+  && longitude >= -180 && longitude <= 180;
 
 const buildGeoLocation = (location) => {
   const coordinates = getCoordinates(location);
@@ -586,20 +579,14 @@ const calculateDistanceKm = (from, to) => {
   return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
 
-const filterNearbySalons = (salonList, userLocation, radiusKm = 10) =>
-  salonList
-    .map((salon) => {
-      const salonLocation = getCoordinates(salon.location || salon.geoLocation);
-      if (!salonLocation) return null;
-      return { ...salon, distanceKm: Number(calculateDistanceKm(userLocation, salonLocation).toFixed(2)) };
-    })
-    .filter(Boolean)
-    .filter((salon) => salon.distanceKm <= radiusKm)
-    .sort((a, b) => a.distanceKm - b.distanceKm);
-
 const normalizeLimit = (value, fallback = 50, max = 100) => {
   const limit = Math.floor(Number(value));
   return Number.isFinite(limit) && limit > 0 ? Math.min(limit, max) : fallback;
+};
+
+const normalizeRadiusKm = (value, fallback, max, min = 0.1) => {
+  const radius = toFiniteNumber(value);
+  return radius === null ? fallback : Math.min(Math.max(radius, min), max);
 };
 
 const normalizePagination = (query = {}, fallback = 50, max = 100) => {
@@ -636,17 +623,6 @@ const INPUT_LIMITS = Object.freeze({
   unavailableSlots: 500,
 });
 
-const buildSearchRadii = (radiusKm, maxRadiusKm) => {
-  const radii = [];
-  let currentRadiusKm = Math.max(radiusKm, 0.1);
-  const stopRadiusKm = Math.max(currentRadiusKm, maxRadiusKm);
-  while (currentRadiusKm <= stopRadiusKm) {
-    radii.push(currentRadiusKm);
-    currentRadiusKm *= 2;
-  }
-  return radii;
-};
-
 const findNearbySalons = async (userLocation, radiusKm, limit) => {
   const maxDistance = Math.max(radiusKm, 0.1) * 1000;
   const query = {
@@ -670,21 +646,14 @@ const findNearbySalons = async (userLocation, radiusKm, limit) => {
       return salonLocation
         ? { ...salon, distanceKm: Number(calculateDistanceKm(userLocation, salonLocation).toFixed(2)) }
         : salon;
-    })
-    .sort((a, b) => (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity));
+    });
 };
 
-const getNearbySalons = async (userLocation, radiusKm, limit, minResults = 10, maxRadiusKm = 5000) => {
+const getNearbySalons = async (userLocation, radiusKm, limit, minResults = 10, maxRadiusKm = 50) => {
   const targetCount = Math.min(limit, minResults);
-  let salonList = [];
-
-  for (const searchRadiusKm of buildSearchRadii(radiusKm, maxRadiusKm)) {
-    salonList = await findNearbySalons(userLocation, searchRadiusKm, limit);
-    if (salonList.length >= targetCount) return salonList;
-  }
-
-  // ponytail: legacy coordinate fallback, remove after every salon has geoLocation.
-  return filterNearbySalons(await getAllSalons(), userLocation, maxRadiusKm).slice(0, limit);
+  const salonList = await findNearbySalons(userLocation, maxRadiusKm, limit);
+  const initialRadiusResults = salonList.filter(salon => salon.distanceKm <= radiusKm);
+  return initialRadiusResults.length >= targetCount ? initialRadiusResults : salonList;
 };
 
 const getServiceById = async (serviceId) => {
@@ -1007,7 +976,7 @@ const buildContentDraft = async (salon, payload) => {
     draft.services = payload.services
       .filter(service => service && service.name)
       .map((service, index) => ({
-        id: service.id || `s1-${Date.now()}-${index}`,
+        id: String(service.id || `s1-${Date.now()}-${index}`).trim(),
         name: service.name,
         tags: normalizeServiceTags(service.tags),
         price: service.price || '',
@@ -1242,7 +1211,6 @@ const routeContext = {
   decryptWechatPhoneNumber,
   FavoriteSalon,
   fetchJson,
-  filterNearbySalons,
   findAcceptedBookingAtTimeExcluding,
   findActiveBookingAtTime,
   findActiveBookingAtTimeExcluding,
@@ -1277,6 +1245,7 @@ const routeContext = {
   normalizeDeposit,
   normalizeLimit,
   normalizePagination,
+  normalizeRadiusKm,
   normalizePhone,
   normalizeUserId,
   parseAmapReverseAddress,
@@ -1362,10 +1331,9 @@ module.exports = {
   activeSessionQuery,
   acceptedBookingAtTimeQuery,
   buildGeoLocation,
-  buildSearchRadii,
   buildMerchantBookingScope,
   calculateDistanceKm,
-  filterNearbySalons,
+  getNearbySalons,
   getCoordinates,
   generateSlotsForStaffAndDate,
   hashPassword,
@@ -1375,6 +1343,7 @@ module.exports = {
   ensureSalonForMerchant,
   normalizeAdLink,
   normalizePagination,
+  normalizeRadiusKm,
   createSession,
   parseMerchantRescheduleTime,
   socketCanReceiveBooking,

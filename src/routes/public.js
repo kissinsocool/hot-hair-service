@@ -2,13 +2,13 @@ module.exports = (app, ctx) => {
   const {
     getNearbySalons,
     normalizeLimit,
+    normalizeRadiusKm,
     buildSalonDetail,
     resolveRequestUser,
     readFavoriteSalons,
     FavoriteSalon,
     DEMO_USER_ID,
     getCoordinates,
-    toFiniteNumber,
     salonCoverImage,
     existingSalonImages,
     Salon,
@@ -26,10 +26,10 @@ module.exports = (app, ctx) => {
   app.get('/api/salons', async (req, res) => {
     const userLocation = getCoordinates(req.query);
     if (!userLocation) return res.status(400).json({ message: 'latitude and longitude are required' });
-    const radiusKm = toFiniteNumber(req.query.radiusKm) ?? 10;
+    const radiusKm = normalizeRadiusKm(req.query.radiusKm, 10, 50);
     const limit = normalizeLimit(req.query.limit);
     const minResults = normalizeLimit(req.query.minResults, 10, limit);
-    const maxRadiusKm = toFiniteNumber(req.query.maxRadiusKm) ?? 5000;
+    const maxRadiusKm = normalizeRadiusKm(req.query.maxRadiusKm, 50, 100, radiusKm);
     const salonList = await getNearbySalons(userLocation, radiusKm, limit, minResults, maxRadiusKm);
     res.json(await Promise.all(salonList.map(async (s) => {
       const { fullDescription, openingHours, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(s);

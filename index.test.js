@@ -5,10 +5,9 @@ const {
   acceptedBookingAtTimeQuery,
   buildGeoLocation,
   buildMerchantBookingScope,
-  buildSearchRadii,
   createSession,
   ensureSalonForMerchant,
-  filterNearbySalons,
+  getNearbySalons,
   generateSlotsForStaffAndDate,
   getCoordinates,
   hashPassword,
@@ -19,6 +18,7 @@ const {
   normalizeServiceTags,
   normalizeAdLink,
   normalizePagination,
+  normalizeRadiusKm,
   parseMerchantRescheduleTime,
   server,
   socketCanReceiveBooking,
@@ -33,6 +33,8 @@ test('getCoordinates accepts common location shapes', () => {
   assert.deepEqual(getCoordinates('121.4737,31.2304'), { latitude: 31.2304, longitude: 121.4737 });
   assert.deepEqual(getCoordinates({ lat: '31.2304', lng: '121.4737' }), { latitude: 31.2304, longitude: 121.4737 });
   assert.deepEqual(getCoordinates({ coordinates: [121.4737, 31.2304] }), { latitude: 31.2304, longitude: 121.4737 });
+  assert.equal(getCoordinates({ latitude: 91, longitude: 121.4737 }), null);
+  assert.equal(getCoordinates({ latitude: 31.2304, longitude: -181 }), null);
 });
 
 test('health and readiness endpoints expose process and dependency state', async () => {
@@ -157,6 +159,18 @@ test('slot occupancies enforce one booking per staff and start time', () => {
   assert.equal(uniqueSlotIndex?.[1]?.unique, true);
 });
 
+test('query indexes match geospatial and filtered booking access patterns', () => {
+  const bookingIndexes = Booking.schema.indexes().map(([fields]) => fields);
+  const salonIndexes = Salon.schema.indexes().map(([fields]) => fields);
+
+  assert.ok(bookingIndexes.some(fields =>
+    fields.userId === 1 && fields.status === 1 && fields.createdAt === -1));
+  assert.ok(bookingIndexes.some(fields =>
+    fields.salonId === 1 && fields.status === 1 && fields.createdAt === -1));
+  assert.ok(salonIndexes.some(fields =>
+    fields.geoLocation === '2dsphere' && fields.publishStatus === 1));
+});
+
 test('merchant active booking scope follows current salon staff ownership', () => {
   assert.deepEqual(buildMerchantBookingScope('1', ['tina']), {
     $or: [
@@ -167,23 +181,37 @@ test('merchant active booking scope follows current salon staff ownership', () =
   });
 });
 
-test('buildSearchRadii expands until the max radius', () => {
-  assert.deepEqual(buildSearchRadii(10, 80), [10, 20, 40, 80]);
-  assert.deepEqual(buildSearchRadii(10, 5), [10]);
+test('normalizeRadiusKm applies defaults and bounds', () => {
+  assert.equal(normalizeRadiusKm(undefined, 10, 50), 10);
+  assert.equal(normalizeRadiusKm('5000', 10, 50), 50);
+  assert.equal(normalizeRadiusKm('-1', 10, 50), 0.1);
 });
 
-test('filterNearbySalons returns only nearby salons sorted by distance', () => {
-  const salons = [
-    { id: 'far', location: { latitude: 31.9, longitude: 121.9 } },
-    { id: 'near-2', location: { latitude: 31.231, longitude: 121.475 } },
-    { id: 'near-1', location: { latitude: 31.2305, longitude: 121.4738 } },
-    { id: 'missing-location' },
-  ];
+test('nearby salon expansion performs one geospatial query', async () => {
+  const originalFind = Salon.find;
+  let queries = 0;
+  Salon.find = () => {
+    queries += 1;
+    const chain = {
+      select() { return chain; },
+      limit() { return chain; },
+      async lean() {
+        return [
+          { id: 'near', geoLocation: { type: 'Point', coordinates: [121.4738, 31.2305] } },
+          { id: 'farther', geoLocation: { type: 'Point', coordinates: [121.6, 31.3] } },
+        ];
+      },
+    };
+    return chain;
+  };
 
-  assert.deepEqual(
-    filterNearbySalons(salons, { latitude: 31.2304, longitude: 121.4737 }, 1).map(salon => salon.id),
-    ['near-1', 'near-2'],
-  );
+  try {
+    const salons = await getNearbySalons({ latitude: 31.2304, longitude: 121.4737 }, 1, 10, 2, 50);
+    assert.equal(queries, 1);
+    assert.deepEqual(salons.map(salon => salon.id), ['near', 'farther']);
+  } finally {
+    Salon.find = originalFind;
+  }
 });
 
 test('staff slots load daily bookings and unavailability with fixed query count', async () => {
