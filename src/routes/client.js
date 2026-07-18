@@ -22,7 +22,21 @@ module.exports = (app, ctx) => {
     createSession,
     rotateSession,
     logoutSession,
+    createModeratedUploadPolicies,
   } = ctx;
+
+  app.post('/api/uploads/moderation/sign', requireClientAuth, ...rateLimits.upload, async (req, res) => {
+    try {
+      const uploads = createModeratedUploadPolicies({
+        type: String(req.body.type || ''),
+        userId: req.clientUser.id,
+        files: req.body.files,
+      });
+      res.json({ uploads });
+    } catch (error) {
+      res.status(error.httpStatus || 500).json({ message: error.message });
+    }
+  });
 
   app.post('/api/auth/sms/request', ...rateLimits.smsRequest, async (req, res) => {
     const phone = normalizePhone(req.body.phone);

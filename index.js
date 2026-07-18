@@ -42,11 +42,12 @@ const {
   deleteModeratedImages,
   imageExists,
   publishModeratedImage,
+  createModeratedUploadPolicies,
   publicImageUrl,
   saveBase64Image,
-  saveModeratedBase64Image,
   savePrivateBase64Image,
   privateImageUrl,
+  verifyModeratedImageObjects,
 } = require('./src/images');
 const { rateLimits } = require('./src/rate-limit');
 const { hashPassword, verifyPassword } = require('./src/passwords');
@@ -1213,6 +1214,7 @@ const routeContext = {
   calculateStaffRating,
   ClientUser,
   createSession,
+  createModeratedUploadPolicies,
   crypto,
   DEMO_USER_ID,
   decryptWechatPhoneNumber,
@@ -1272,7 +1274,6 @@ const routeContext = {
   Salon,
   salonCoverImage,
   saveBase64Image,
-  saveModeratedBase64Image,
   savePrivateBase64Image,
   setPaginationHeaders,
   privateImageUrl,
@@ -1283,6 +1284,7 @@ const routeContext = {
   USER_CANCEL_WINDOW_MS,
   userIdAliases,
   verifyPassword,
+  verifyModeratedImageObjects,
   INPUT_LIMITS,
   wechatAppId,
   wechatAppSecret,

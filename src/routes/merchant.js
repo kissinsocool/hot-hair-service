@@ -16,7 +16,7 @@ module.exports = (app, ctx) => {
     buildMerchantBookingScope,
     buildContentDraft,
     saveBase64Image,
-    saveModeratedBase64Image,
+    verifyModeratedImageObjects,
     savePrivateBase64Image,
     privateImageUrl,
     getStaffById,
@@ -377,7 +377,10 @@ module.exports = (app, ctx) => {
   
     const rating = Number(req.body.rating);
     const comment = String(req.body.comment || '').trim();
-    const images = Array.isArray(req.body.images) ? req.body.images.slice(0, 5) : [];
+    const imageObjects = Array.isArray(req.body.imageObjects) ? req.body.imageObjects : [];
+    if (Array.isArray(req.body.images) && req.body.images.length) {
+      return res.status(400).json({ message: '请升级客户端后重新上传图片' });
+    }
   
     if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
       return res.status(400).json({ message: 'rating must be an integer from 1 to 5' });
@@ -389,10 +392,12 @@ module.exports = (app, ctx) => {
       return res.status(400).json({ message: `comment cannot exceed ${INPUT_LIMITS.review} characters` });
     }
   
-    const imageUrls = (await Promise.all(
-      images.map((image, index) => saveModeratedBase64Image('review', image?.fileName, image?.data, index)),
-    ))
-      .filter(Boolean);
+    let imageUrls;
+    try {
+      imageUrls = await verifyModeratedImageObjects({ type: 'review', userId, objectNames: imageObjects });
+    } catch (error) {
+      return res.status(error.httpStatus || 500).json({ message: error.message });
+    }
   
     const review = {
       id: 'RV' + Date.now(),
@@ -434,7 +439,10 @@ module.exports = (app, ctx) => {
     }
   
     const description = String(req.body.description || '').trim();
-    const images = Array.isArray(req.body.images) ? req.body.images.slice(0, 5) : [];
+    const imageObjects = Array.isArray(req.body.imageObjects) ? req.body.imageObjects : [];
+    if (Array.isArray(req.body.images) && req.body.images.length) {
+      return res.status(400).json({ message: '请升级客户端后重新上传图片' });
+    }
   
     if (!description) {
       return res.status(400).json({ message: 'description is required' });
@@ -443,10 +451,12 @@ module.exports = (app, ctx) => {
       return res.status(400).json({ message: `description cannot exceed ${INPUT_LIMITS.complaint} characters` });
     }
   
-    const imageUrls = (await Promise.all(
-      images.map((image, index) => saveModeratedBase64Image('complaint', image?.fileName, image?.data, index)),
-    ))
-      .filter(Boolean);
+    let imageUrls;
+    try {
+      imageUrls = await verifyModeratedImageObjects({ type: 'complaint', userId, objectNames: imageObjects });
+    } catch (error) {
+      return res.status(error.httpStatus || 500).json({ message: error.message });
+    }
   
     const complaint = {
       id: 'CP' + Date.now(),

@@ -14,8 +14,12 @@ const {
   ossPrivateBucket,
   ossEndpoint,
   ossPublicBaseUrl,
+  ossPrivateUploadUrl,
   ossEnabled,
 } = require('./config');
+
+const MODERATED_IMAGE_MAX_BYTES = 800 * 1024;
+const MODERATED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 
 const execFileAsync = promisify(execFile);
 const compressionJobs = new Map();
@@ -167,13 +171,96 @@ const savePrivateBase64Image = async (prefix, fileName, data, index = 0) => {
   return objectName;
 };
 
-const saveModeratedBase64Image = async (prefix, fileName, data, index = 0) => {
-  if (!privateOssClient) return saveBase64Image(prefix, fileName, data, index);
-  const { buffer, imageName } = decodeBase64Image(prefix, fileName, data, index);
-  if (!buffer) return '';
-  const objectName = `moderation/${imageName}`;
-  await privateOssClient.put(objectName, buffer, { headers: { 'x-oss-object-acl': 'private' } });
-  return objectName;
+const moderatedOwnerKey = userId => crypto.createHash('sha256').update(String(userId)).digest('hex').slice(0, 24);
+
+const createModeratedUploadPolicies = ({ type, userId, files }) => {
+  if (!privateOssClient) {
+    const error = new Error('OSS direct upload is not configured');
+    error.httpStatus = 503;
+    throw error;
+  }
+  if (!['review', 'complaint'].includes(type) || !Array.isArray(files) || files.length < 1 || files.length > 5) {
+    const error = new Error('Invalid image upload request');
+    error.httpStatus = 400;
+    throw error;
+  }
+
+  const expiration = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  return files.map(file => {
+    const contentType = String(file?.contentType || '').toLowerCase();
+    const size = Number(file?.size);
+    const extension = path.extname(String(file?.fileName || '')).toLowerCase();
+    const safeExtension = ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(extension) ? extension : '.jpg';
+    if (!MODERATED_IMAGE_TYPES.has(contentType) || !Number.isInteger(size) || size < 1 || size > MODERATED_IMAGE_MAX_BYTES) {
+      const error = new Error('Image must be JPEG, PNG, WebP or GIF and no larger than 800 KB');
+      error.httpStatus = 400;
+      throw error;
+    }
+
+    const objectName = `moderation/${type}/${moderatedOwnerKey(userId)}/${crypto.randomUUID()}${safeExtension}`;
+    const signature = privateOssClient.calculatePostSignature({
+      expiration,
+      conditions: [
+        ['eq', '$key', objectName],
+        ['eq', '$Content-Type', contentType],
+        ['eq', '$success_action_status', '200'],
+        ['content-length-range', 1, MODERATED_IMAGE_MAX_BYTES],
+      ],
+    });
+    return {
+      objectName,
+      uploadUrl: ossPrivateUploadUrl,
+      expiresAt: expiration,
+      fields: {
+        key: objectName,
+        policy: signature.policy,
+        OSSAccessKeyId: signature.OSSAccessKeyId,
+        signature: signature.Signature,
+        'Content-Type': contentType,
+        success_action_status: '200',
+      },
+    };
+  });
+};
+
+const verifyModeratedImageObjects = async ({ type, userId, objectNames }) => {
+  if (!Array.isArray(objectNames) || objectNames.length > 5 || new Set(objectNames).size !== objectNames.length) {
+    const error = new Error('Invalid image objects');
+    error.httpStatus = 400;
+    throw error;
+  }
+  if (!objectNames.length) return [];
+  if (!privateOssClient) {
+    const error = new Error('OSS direct upload is not configured');
+    error.httpStatus = 503;
+    throw error;
+  }
+
+  const prefix = `moderation/${type}/${moderatedOwnerKey(userId)}/`;
+  await Promise.all(objectNames.map(async objectName => {
+    if (typeof objectName !== 'string' || !objectName.startsWith(prefix) || objectName.includes('..')) {
+      const error = new Error('Invalid image object');
+      error.httpStatus = 400;
+      throw error;
+    }
+    try {
+      const result = await privateOssClient.getObjectMeta(objectName);
+      const headers = result?.res?.headers || result?.headers || {};
+      const size = Number(headers['content-length']);
+      const contentType = String(headers['content-type'] || '').split(';')[0].toLowerCase();
+      if (!Number.isFinite(size) || size < 1 || size > MODERATED_IMAGE_MAX_BYTES || !MODERATED_IMAGE_TYPES.has(contentType)) {
+        const error = new Error('Uploaded image is invalid or larger than 800 KB');
+        error.httpStatus = 400;
+        throw error;
+      }
+    } catch (error) {
+      if (error.httpStatus) throw error;
+      const invalid = new Error('Uploaded image was not found');
+      invalid.httpStatus = 400;
+      throw invalid;
+    }
+  }));
+  return objectNames;
 };
 
 const publishModeratedImage = async (objectName) => {
@@ -201,12 +288,13 @@ const privateImageUrl = (objectName, expires = 600) => {
 
 module.exports = {
   compressedImageMiddleware,
+  createModeratedUploadPolicies,
   imageExists,
   publicImageUrl,
   deleteModeratedImages,
   publishModeratedImage,
   saveBase64Image,
-  saveModeratedBase64Image,
   savePrivateBase64Image,
   privateImageUrl,
+  verifyModeratedImageObjects,
 };

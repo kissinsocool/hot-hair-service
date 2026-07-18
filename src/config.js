@@ -11,6 +11,7 @@ const ossBucket = process.env.OSS_BUCKET || 'hothairapp';
 const ossPrivateBucket = process.env.OSS_PRIVATE_BUCKET || 'hothairprivate';
 const ossEndpoint = process.env.OSS_ENDPOINT || 'https://oss-cn-beijing.aliyuncs.com';
 const ossPublicBaseUrl = (process.env.OSS_PUBLIC_BASE_URL || `https://${ossBucket}.${ossRegion}.aliyuncs.com`).replace(/\/+$/, '');
+const ossPrivateUploadUrl = (process.env.OSS_PRIVATE_UPLOAD_URL || `https://${ossPrivateBucket}.${ossRegion}.aliyuncs.com`).replace(/\/+$/, '');
 const ossEnabled = Boolean(process.env.OSS_ACCESS_KEY_ID && process.env.OSS_ACCESS_KEY_SECRET);
 const amapWebServiceKey = process.env.AMAP_WEB_SERVICE_KEY || process.env.AMAP_WEB_KEY || '';
 const wechatAppId = process.env.WECHAT_APP_ID || process.env.WX_APP_ID || '';
@@ -49,6 +50,7 @@ module.exports = {
   ossPrivateBucket,
   ossEndpoint,
   ossPublicBaseUrl,
+  ossPrivateUploadUrl,
   ossEnabled,
   amapWebServiceKey,
   wechatAppId,
