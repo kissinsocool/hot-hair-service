@@ -14,11 +14,13 @@ const {
   ossPrivateBucket,
   ossEndpoint,
   ossPublicBaseUrl,
+  ossPublicUploadUrl,
   ossPrivateUploadUrl,
   ossEnabled,
 } = require('./config');
 
 const MODERATED_IMAGE_MAX_BYTES = 800 * 1024;
+const MERCHANT_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const MODERATED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 
 const execFileAsync = promisify(execFile);
@@ -163,15 +165,101 @@ const decodeBase64Image = (prefix, fileName, data, index = 0) => {
   };
 };
 
-const savePrivateBase64Image = async (prefix, fileName, data, index = 0) => {
-  const { buffer, imageName } = decodeBase64Image(prefix, fileName, data, index);
-  if (!buffer || !privateOssClient) return '';
-  const objectName = `licenses/${imageName}`;
-  await privateOssClient.put(objectName, buffer, { headers: { 'x-oss-object-acl': 'private' } });
-  return objectName;
+const moderatedOwnerKey = userId => crypto.createHash('sha256').update(String(userId)).digest('hex').slice(0, 24);
+
+const createMerchantUploadPolicies = ({ type, userId, files }) => {
+  const isPrivate = type === 'qualification';
+  const client = isPrivate ? privateOssClient : ossClient;
+  if (!['public', 'qualification'].includes(type) || !client) {
+    const error = new Error('OSS direct upload is not configured');
+    error.httpStatus = 503;
+    throw error;
+  }
+  if (!Array.isArray(files) || files.length < 1 || files.length > 4) {
+    const error = new Error('Invalid merchant image upload request');
+    error.httpStatus = 400;
+    throw error;
+  }
+
+  const expiration = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  return files.map(file => {
+    const contentType = String(file?.contentType || '').toLowerCase();
+    const size = Number(file?.size);
+    const extension = path.extname(String(file?.fileName || '')).toLowerCase();
+    const safeExtension = ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(extension) ? extension : '.jpg';
+    if (!MODERATED_IMAGE_TYPES.has(contentType) || !Number.isInteger(size) || size < 1 || size > MERCHANT_IMAGE_MAX_BYTES) {
+      const error = new Error('Image must be JPEG, PNG, WebP or GIF and no larger than 5 MB');
+      error.httpStatus = 400;
+      throw error;
+    }
+
+    const owner = moderatedOwnerKey(userId);
+    const objectName = `${isPrivate ? 'licenses' : 'uploads'}/${owner}/${crypto.randomUUID()}${safeExtension}`;
+    const signature = client.calculatePostSignature({
+      expiration,
+      conditions: [
+        ['eq', '$key', objectName],
+        ['eq', '$Content-Type', contentType],
+        ['eq', '$success_action_status', '200'],
+        ['content-length-range', 1, MERCHANT_IMAGE_MAX_BYTES],
+      ],
+    });
+    return {
+      objectName,
+      uploadUrl: isPrivate ? ossPrivateUploadUrl : ossPublicUploadUrl,
+      url: isPrivate ? undefined : `${ossPublicBaseUrl}/${objectName}`,
+      expiresAt: expiration,
+      fields: {
+        key: objectName,
+        policy: signature.policy,
+        OSSAccessKeyId: signature.OSSAccessKeyId,
+        signature: signature.Signature,
+        'Content-Type': contentType,
+        success_action_status: '200',
+      },
+    };
+  });
 };
 
-const moderatedOwnerKey = userId => crypto.createHash('sha256').update(String(userId)).digest('hex').slice(0, 24);
+const verifyMerchantQualificationObjects = async ({ userId, objectNames }) => {
+  if (!Array.isArray(objectNames) || objectNames.length > 4 || new Set(objectNames).size !== objectNames.length) {
+    const error = new Error('Invalid qualification image objects');
+    error.httpStatus = 400;
+    throw error;
+  }
+  if (!objectNames.length) return [];
+  if (!privateOssClient) {
+    const error = new Error('OSS direct upload is not configured');
+    error.httpStatus = 503;
+    throw error;
+  }
+
+  const prefix = `licenses/${moderatedOwnerKey(userId)}/`;
+  await Promise.all(objectNames.map(async objectName => {
+    if (typeof objectName !== 'string' || !objectName.startsWith(prefix) || objectName.includes('..')) {
+      const error = new Error('Invalid qualification image object');
+      error.httpStatus = 400;
+      throw error;
+    }
+    try {
+      const result = await privateOssClient.head(objectName);
+      const headers = result?.res?.headers || result?.headers || {};
+      const size = Number(headers['content-length']);
+      const contentType = String(headers['content-type'] || '').split(';')[0].toLowerCase();
+      if (!Number.isFinite(size) || size < 1 || size > MERCHANT_IMAGE_MAX_BYTES || !MODERATED_IMAGE_TYPES.has(contentType)) {
+        const error = new Error('Invalid qualification image');
+        error.httpStatus = 400;
+        throw error;
+      }
+    } catch (error) {
+      if (error.httpStatus) throw error;
+      const invalid = new Error('Uploaded qualification image was not found');
+      invalid.httpStatus = 400;
+      throw invalid;
+    }
+  }));
+  return objectNames;
+};
 
 const createModeratedUploadPolicies = ({ type, userId, files }) => {
   if (!privateOssClient) {
@@ -293,13 +381,14 @@ const privateImageUrl = (objectName, expires = 600) => {
 
 module.exports = {
   compressedImageMiddleware,
+  createMerchantUploadPolicies,
   createModeratedUploadPolicies,
   imageExists,
   publicImageUrl,
   deleteModeratedImages,
   publishModeratedImage,
   saveBase64Image,
-  savePrivateBase64Image,
   privateImageUrl,
+  verifyMerchantQualificationObjects,
   verifyModeratedImageObjects,
 };

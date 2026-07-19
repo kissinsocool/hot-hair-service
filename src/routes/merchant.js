@@ -21,8 +21,9 @@ module.exports = (app, ctx) => {
     saveBase64Image,
     verifyModeratedImageObjects,
     deleteModeratedImages,
-    savePrivateBase64Image,
     privateImageUrl,
+    createMerchantUploadPolicies,
+    verifyMerchantQualificationObjects,
     getStaffById,
     getSalonByStaffId,
     getStaffMapByIds,
@@ -120,6 +121,19 @@ module.exports = (app, ctx) => {
   });
   
   app.use('/api/merchant', requireMerchantAuth);
+
+  app.post('/api/merchant/uploads/sign', ...rateLimits.upload, async (req, res) => {
+    try {
+      const uploads = createMerchantUploadPolicies({
+        type: String(req.body.type || ''),
+        userId: req.merchantUser.id,
+        files: req.body.files,
+      });
+      res.json({ uploads });
+    } catch (error) {
+      res.status(error.httpStatus || 500).json({ message: error.message });
+    }
+  });
   
   app.post('/api/merchant/geocode', async (req, res) => {
     if (!amapWebServiceKey) return res.status(503).json({ message: 'AMAP_WEB_SERVICE_KEY is missing' });
@@ -216,32 +230,23 @@ module.exports = (app, ctx) => {
     const salon = await Salon.findOne({ id: req.merchantUser.salonId || '1' });
     if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
 
-    const [licenseUrl, legalPersonIdFrontUrl, legalPersonIdBackUrl, addressProofUrl] = await Promise.all([
-      req.body.data
-        ? savePrivateBase64Image('license', req.body.fileName || 'license.png', req.body.data)
-        : salon.licenseUrl || String(req.body.licenseUrl || '').trim(),
-      req.body.legalPersonIdFrontData
-        ? savePrivateBase64Image(
-          'legal-person-id-front',
-          req.body.legalPersonIdFrontFileName || 'legal-person-id-front.png',
-          req.body.legalPersonIdFrontData,
-        )
-        : salon.legalPersonIdFrontUrl || '',
-      req.body.legalPersonIdBackData
-        ? savePrivateBase64Image(
-          'legal-person-id-back',
-          req.body.legalPersonIdBackFileName || 'legal-person-id-back.png',
-          req.body.legalPersonIdBackData,
-        )
-        : salon.legalPersonIdBackUrl || '',
-      req.body.addressProofData
-        ? savePrivateBase64Image(
-          'address-proof',
-          req.body.addressProofFileName || 'address-proof.png',
-          req.body.addressProofData,
-        )
-        : salon.addressProofUrl || '',
-    ]);
+    const directObjects = [
+      req.body.licenseUrl,
+      req.body.legalPersonIdFrontUrl,
+      req.body.legalPersonIdBackUrl,
+      req.body.addressProofUrl,
+    ].filter(value => typeof value === 'string' && value.startsWith('licenses/'));
+    try {
+      await verifyMerchantQualificationObjects({ userId: req.merchantUser.id, objectNames: directObjects });
+    } catch (error) {
+      return res.status(error.httpStatus || 500).json({ message: error.message });
+    }
+    const directOrCurrent = (candidate, current) => directObjects.includes(candidate) ? candidate : current || '';
+
+    const licenseUrl = directOrCurrent(req.body.licenseUrl, salon.licenseUrl);
+    const legalPersonIdFrontUrl = directOrCurrent(req.body.legalPersonIdFrontUrl, salon.legalPersonIdFrontUrl);
+    const legalPersonIdBackUrl = directOrCurrent(req.body.legalPersonIdBackUrl, salon.legalPersonIdBackUrl);
+    const addressProofUrl = directOrCurrent(req.body.addressProofUrl, salon.addressProofUrl);
     if (!licenseUrl || !legalPersonIdFrontUrl || !legalPersonIdBackUrl || !addressProofUrl) {
       return res.status(400).json({ message: '营业执照、法人身份证正反面和地址证明均为必填项' });
     }
@@ -305,13 +310,6 @@ module.exports = (app, ctx) => {
     }
     await salon.save();
     res.json(await buildMerchantSalonPayload(req.merchantUser.salonId || '1'));
-  });
-  
-  app.post('/api/merchant/uploads', ...rateLimits.upload, async (req, res) => {
-    const { data, fileName = 'avatar.png' } = req.body;
-    const url = await saveBase64Image('staff', fileName, data);
-    if (!url) return res.status(400).json({ message: 'Valid image data under 5MB is required' });
-    res.status(201).json({ url });
   });
   
   app.get('/api/staff/:id', ...rateLimits.publicRead, async (req, res) => {

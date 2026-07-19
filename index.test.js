@@ -409,7 +409,7 @@ test('content review only covers merchant text and uploaded images', () => {
   assert.equal(hasReviewableContentChanges(current, { promoImages: ['new-cover.jpg'] }), true);
 });
 
-test('merchant qualification submission stores all required private documents', async () => {
+test('merchant qualification submission stores all required direct-upload documents', async () => {
   const routes = new Map();
   const app = {
     get() {},
@@ -423,7 +423,7 @@ test('merchant qualification submission stores all required private documents', 
   };
   registerMerchantRoutes(app, {
     Salon: { async findOne() { return salon; } },
-    async savePrivateBase64Image(prefix) { return `licenses/${prefix}.png`; },
+    async verifyMerchantQualificationObjects() {},
     privateImageUrl: value => `private:${value}`,
     rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
   });
@@ -431,25 +431,95 @@ test('merchant qualification submission stores all required private documents', 
   let response;
   await routes.get('/api/merchant/qualification')(
     {
-      merchantUser: { salonId: 'salon-1' },
+      merchantUser: { id: 'merchant-1', salonId: 'salon-1' },
       body: {
-        data: 'license-data',
-        legalPersonIdFrontData: 'id-front-data',
-        legalPersonIdBackData: 'id-back-data',
-        addressProofData: 'address-data',
+        licenseUrl: 'licenses/merchant/license.png',
+        legalPersonIdFrontUrl: 'licenses/merchant/legal-person-id-front.png',
+        legalPersonIdBackUrl: 'licenses/merchant/legal-person-id-back.png',
+        addressProofUrl: 'licenses/merchant/address-proof.png',
       },
     },
     { status() { return this; }, json(value) { response = value; } },
   );
 
-  assert.equal(salon.licenseUrl, 'licenses/license.png');
-  assert.equal(salon.legalPersonIdFrontUrl, 'licenses/legal-person-id-front.png');
-  assert.equal(salon.legalPersonIdBackUrl, 'licenses/legal-person-id-back.png');
-  assert.equal(salon.addressProofUrl, 'licenses/address-proof.png');
+  assert.equal(salon.licenseUrl, 'licenses/merchant/license.png');
+  assert.equal(salon.legalPersonIdFrontUrl, 'licenses/merchant/legal-person-id-front.png');
+  assert.equal(salon.legalPersonIdBackUrl, 'licenses/merchant/legal-person-id-back.png');
+  assert.equal(salon.addressProofUrl, 'licenses/merchant/address-proof.png');
   assert.equal(salon.licenseStatus, 'pending');
-  assert.equal(response.legalPersonIdFrontUrl, 'private:licenses/legal-person-id-front.png');
-  assert.equal(response.legalPersonIdBackUrl, 'private:licenses/legal-person-id-back.png');
-  assert.equal(response.addressProofUrl, 'private:licenses/address-proof.png');
+  assert.equal(response.legalPersonIdFrontUrl, 'private:licenses/merchant/legal-person-id-front.png');
+  assert.equal(response.legalPersonIdBackUrl, 'private:licenses/merchant/legal-person-id-back.png');
+  assert.equal(response.addressProofUrl, 'private:licenses/merchant/address-proof.png');
+});
+
+test('merchant upload signing is scoped to the authenticated merchant', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    patch() {},
+    use() {},
+    post(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  let signedRequest;
+  registerMerchantRoutes(app, {
+    createMerchantUploadPolicies(request) {
+      signedRequest = request;
+      return [{ objectName: 'uploads/merchant/image.jpg' }];
+    },
+    rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
+  });
+
+  let response;
+  await routes.get('/api/merchant/uploads/sign')(
+    {
+      merchantUser: { id: 'merchant-1' },
+      body: { type: 'public', files: [{ fileName: 'image.jpg', contentType: 'image/jpeg', size: 10 }] },
+    },
+    { status() { return this; }, json(value) { response = value; } },
+  );
+
+  assert.equal(signedRequest.userId, 'merchant-1');
+  assert.equal(signedRequest.type, 'public');
+  assert.deepEqual(response, { uploads: [{ objectName: 'uploads/merchant/image.jpg' }] });
+});
+
+test('merchant qualification accepts only verified direct-upload objects', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    use() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const salon = {
+    id: 'salon-1',
+    licenseUrl: 'licenses/old-license.png',
+    legalPersonIdFrontUrl: 'licenses/id-front.png',
+    legalPersonIdBackUrl: 'licenses/id-back.png',
+    addressProofUrl: 'licenses/address.png',
+    async save() {},
+  };
+  let verified;
+  registerMerchantRoutes(app, {
+    Salon: { async findOne() { return salon; } },
+    async verifyMerchantQualificationObjects(request) { verified = request; },
+    privateImageUrl: value => value,
+    rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
+  });
+
+  await routes.get('/api/merchant/qualification')(
+    {
+      merchantUser: { id: 'merchant-1', salonId: 'salon-1' },
+      body: { licenseUrl: 'licenses/merchant-owner/new-license.png' },
+    },
+    { status() { return this; }, json() {} },
+  );
+
+  assert.deepEqual(verified, {
+    userId: 'merchant-1',
+    objectNames: ['licenses/merchant-owner/new-license.png'],
+  });
+  assert.equal(salon.licenseUrl, 'licenses/merchant-owner/new-license.png');
 });
 
 test('admin merchant creation helper is wired into route context', () => {
