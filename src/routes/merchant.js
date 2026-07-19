@@ -13,8 +13,11 @@ module.exports = (app, ctx) => {
     Salon,
     SlotOccupancy,
     buildMerchantSalonPayload,
+    buildSalonDetail,
     buildMerchantBookingScope,
     buildContentDraft,
+    applyDirectSalonContent,
+    hasReviewableContentChanges,
     saveBase64Image,
     verifyModeratedImageObjects,
     deleteModeratedImages,
@@ -279,20 +282,27 @@ module.exports = (app, ctx) => {
     const validationError = validateSalonContent(payload, INPUT_LIMITS);
     if (validationError) return res.status(400).json({ message: validationError });
 
-    const draft = await buildContentDraft(salon, payload);
-    if (typeof draft.name === 'string' && draft.name) {
-      const existingSalon = await Salon.findOne({
-        id: { $ne: salon.id },
-        name: draft.name,
-      }).lean();
-      if (existingSalon) return res.status(409).json({ message: '店名已存在' });
+    const currentContent = salon.pendingContent || await buildSalonDetail(salon);
+    const requiresReview = Boolean(salon.pendingContent)
+      || hasReviewableContentChanges(currentContent, payload);
+    await applyDirectSalonContent(salon, payload);
+
+    if (requiresReview) {
+      const draft = await buildContentDraft(salon, payload);
+      if (typeof draft.name === 'string' && draft.name) {
+        const existingSalon = await Salon.findOne({
+          id: { $ne: salon.id },
+          name: draft.name,
+        }).lean();
+        if (existingSalon) return res.status(409).json({ message: '店名已存在' });
+      }
+
+      salon.pendingContent = draft;
+      salon.markModified('pendingContent');
+      salon.contentReviewStatus = 'pending';
+      salon.contentRejectReason = '';
+      salon.contentReviewedAt = null;
     }
-  
-    salon.pendingContent = draft;
-    salon.markModified('pendingContent');
-    salon.contentReviewStatus = 'pending';
-    salon.contentRejectReason = '';
-    salon.contentReviewedAt = null;
     await salon.save();
     res.json(await buildMerchantSalonPayload(req.merchantUser.salonId || '1'));
   });

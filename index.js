@@ -960,6 +960,85 @@ const normalizeServiceTags = (tags) => {
   return [...new Set(values.map(tag => tag?.toString().trim()).filter(Boolean))].slice(0, 6);
 };
 
+const hasReviewableContentChanges = (current = {}, payload = {}) => {
+  const changed = (field, normalize = value => value) =>
+    payload[field] !== undefined
+    && JSON.stringify(normalize(payload[field])) !== JSON.stringify(normalize(current[field]));
+  const text = value => String(value || '').trim();
+  const images = value => (Array.isArray(value) ? value : [])
+    .map(item => String(item || '').trim())
+    .filter(Boolean)
+    .slice(0, 20);
+
+  if (['name', 'description', 'fullDescription', 'image'].some(field => changed(field, text))) return true;
+  if (payload.images !== undefined || payload.promoImages !== undefined) {
+    const incoming = payload.promoImages ?? payload.images;
+    if (JSON.stringify(images(incoming)) !== JSON.stringify(images(current.promoImages ?? current.images))) return true;
+  }
+
+  const currentServices = new Map((current.services || []).map(item => [String(item.id || ''), item]));
+  if ((payload.services || []).some(service => {
+    const previous = currentServices.get(String(service?.id || '')) || {};
+    return ['name', 'note', 'imageUrl'].some(field =>
+      service?.[field] !== undefined && text(service[field]) !== text(previous[field]));
+  })) return true;
+
+  const currentStaff = new Map((current.staff || []).map(item => [String(item.id || ''), item]));
+  return (payload.staff || []).some(profile => {
+    const previous = currentStaff.get(String(profile?.id || '')) || {};
+    return ['name', 'bio', 'imageUrl'].some(field =>
+      profile?.[field] !== undefined && text(profile[field]) !== text(previous[field]));
+  });
+};
+
+const applyDirectSalonContent = async (salon, payload = {}) => {
+  const set = (key, value) => {
+    if (value !== undefined) salon[key] = value;
+  };
+  set('address', typeof payload.address === 'string' ? payload.address : undefined);
+  set('addressRegion', payload.addressRegion && typeof payload.addressRegion === 'object' ? payload.addressRegion : undefined);
+  set('addressDetail', typeof payload.addressDetail === 'string' ? payload.addressDetail : undefined);
+  set('location', payload.location && typeof payload.location === 'object' ? payload.location : undefined);
+  set('openingHours', typeof payload.openingHours === 'string' ? payload.openingHours : undefined);
+  set('closedDates', Array.isArray(payload.closedDates) ? normalizeClosedDates(payload.closedDates) : undefined);
+  set('phone', typeof payload.phone === 'string' ? payload.phone : undefined);
+  if (payload.location && typeof payload.location === 'object') {
+    salon.geoLocation = buildGeoLocation(payload.location);
+  }
+
+  if (Array.isArray(payload.services)) {
+    const currentServices = new Map((salon.services || []).map(item => [String(item.id || ''), item]));
+    salon.services = payload.services.flatMap((service, index) => {
+      const id = String(service?.id || `s1-${Date.now()}-${index}`).trim();
+      const previous = currentServices.get(id);
+      if (!previous) return [];
+      return [{
+        ...previous,
+        id,
+        tags: normalizeServiceTags(service.tags),
+        price: service.price || '',
+        duration: service.duration || '',
+      }];
+    });
+  }
+
+  if (Array.isArray(payload.staff)) {
+    const ids = payload.staff.map(profile => String(profile?.id || '').trim()).filter(Boolean);
+    const currentStaff = await getStaffMapByIds(ids);
+    const directStaff = payload.staff.filter(profile => currentStaff[profile?.id]);
+    salon.staffIds = directStaff.map(profile => profile.id);
+    await Promise.all(directStaff.map(profile => StaffProfile.updateOne(
+      { id: profile.id },
+      { $set: {
+        role: profile.role || '',
+        experience: profile.experience || '',
+        extraServiceFee: Number(profile.extraServiceFee || 0),
+        unavailableSlots: normalizeUnavailableSlots(profile.unavailableSlots),
+      } },
+    )));
+  }
+};
+
 const buildContentDraft = async (salon, payload) => {
   const draft = salon.pendingContent || await buildSalonDetail(salon);
   const set = (key, value) => {
@@ -1209,6 +1288,7 @@ const routeContext = {
   AdminUser,
   AdConfig,
   amapWebServiceKey,
+  applyDirectSalonContent,
   applyPendingContent,
   Booking,
   SlotOccupancy,
@@ -1249,6 +1329,7 @@ const routeContext = {
   getWechatPhoneNumber,
   hashPassword,
   hashSmsCode,
+  hasReviewableContentChanges,
   ensureSalonForMerchant,
   existingSalonImages,
   incrementNoShowCount,
@@ -1369,6 +1450,7 @@ module.exports = {
   getCoordinates,
   generateSlotsForStaffAndDate,
   hashPassword,
+  hasReviewableContentChanges,
   INPUT_LIMITS,
   normalizeServiceTags,
   normalizeClosedDates,
