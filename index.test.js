@@ -395,13 +395,13 @@ test('content review only covers merchant text and uploaded images', () => {
   };
 
   assert.equal(hasReviewableContentChanges(current, {
-    address: '新地址',
     phone: '13800000000',
     openingHours: '09:00 - 21:00',
     closedDates: ['2026-07-20'],
     services: [{ id: 'S1', price: '¥800', duration: '60分钟', tags: ['剪发'] }],
     staff: [{ id: 'P1', role: '店长', experience: '10年', extraServiceFee: 200 }],
   }), false);
+  assert.equal(hasReviewableContentChanges(current, { address: '新地址' }), true);
   assert.equal(hasReviewableContentChanges(current, { description: '新介绍' }), true);
   assert.equal(hasReviewableContentChanges(current, {
     services: [{ id: 'S1', note: '新备注' }],

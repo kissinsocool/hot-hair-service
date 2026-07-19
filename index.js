@@ -970,7 +970,8 @@ const hasReviewableContentChanges = (current = {}, payload = {}) => {
     .filter(Boolean)
     .slice(0, 20);
 
-  if (['name', 'description', 'fullDescription', 'image'].some(field => changed(field, text))) return true;
+  if (['name', 'address', 'addressDetail', 'description', 'fullDescription', 'image'].some(field => changed(field, text))) return true;
+  if (changed('addressRegion') || changed('location')) return true;
   if (payload.images !== undefined || payload.promoImages !== undefined) {
     const incoming = payload.promoImages ?? payload.images;
     if (JSON.stringify(images(incoming)) !== JSON.stringify(images(current.promoImages ?? current.images))) return true;
@@ -995,17 +996,9 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
   const set = (key, value) => {
     if (value !== undefined) salon[key] = value;
   };
-  set('address', typeof payload.address === 'string' ? payload.address : undefined);
-  set('addressRegion', payload.addressRegion && typeof payload.addressRegion === 'object' ? payload.addressRegion : undefined);
-  set('addressDetail', typeof payload.addressDetail === 'string' ? payload.addressDetail : undefined);
-  set('location', payload.location && typeof payload.location === 'object' ? payload.location : undefined);
   set('openingHours', typeof payload.openingHours === 'string' ? payload.openingHours : undefined);
   set('closedDates', Array.isArray(payload.closedDates) ? normalizeClosedDates(payload.closedDates) : undefined);
   set('phone', typeof payload.phone === 'string' ? payload.phone : undefined);
-  if (payload.location && typeof payload.location === 'object') {
-    salon.geoLocation = buildGeoLocation(payload.location);
-  }
-
   if (Array.isArray(payload.services)) {
     const currentServices = new Map((salon.services || []).map(item => [String(item.id || ''), item]));
     salon.services = payload.services.flatMap((service, index) => {
@@ -1133,7 +1126,13 @@ const applyPendingContent = async (salon) => {
 const buildMerchantSalonPayload = async (salonId = '1') => {
   const salon = await Salon.findOne({ id: salonId });
   const payload = await buildSalonDetail(salon);
-  return salon.pendingContent ? { ...payload, ...salon.pendingContent } : payload;
+  return {
+    ...payload,
+    ...salon.pendingContent,
+    contentReviewStatus: salon.contentReviewStatus || 'pending',
+    contentRejectReason: salon.contentRejectReason || '',
+    contentReviewedAt: salon.contentReviewedAt,
+  };
 };
 
 const ensureSalonForMerchant = async ({ salonId, displayName }) => {

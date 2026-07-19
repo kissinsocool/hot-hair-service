@@ -922,6 +922,9 @@ function validateSalonContent(payload = {}, limits) {
   for (const [field, max] of Object.entries(strings)) {
     if (typeof payload[field] === 'string' && payload[field].length > max) return `${field} cannot exceed ${max} characters`;
   }
+  if (typeof payload.phone === 'string' && !/^\d*$/.test(payload.phone)) {
+    return 'phone must contain digits only';
+  }
 
   for (const service of Array.isArray(payload.services) ? payload.services : []) {
     if (
