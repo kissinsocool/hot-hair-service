@@ -229,7 +229,14 @@ module.exports = (app, ctx) => {
     if (!user) return res.status(404).json({ message: 'Merchant user not found' });
     const salon = await Salon.findOne({ id: user.salonId });
     if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
-    if (!salon.licenseUrl) return res.status(409).json({ message: '营业执照尚未提交' });
+    if (
+      !salon.licenseUrl
+      || !salon.legalPersonIdFrontUrl
+      || !salon.legalPersonIdBackUrl
+      || !salon.addressProofUrl
+    ) {
+      return res.status(409).json({ message: '商家资质材料尚未提交完整' });
+    }
   
     salon.licenseStatus = action === 'approve' ? 'approved' : 'rejected';
     salon.licenseRejectReason = action === 'reject' ? reason : '';
@@ -324,7 +331,7 @@ module.exports = (app, ctx) => {
     };
     const pagination = normalizePagination(_req.query);
     const [bookings, total] = await Promise.all([
-      Booking.find(query).select('id userName salonName staffName serviceName review complaint updatedAt createdAt')
+      Booking.find(query).select('id userId userName salonName staffName serviceName review complaint updatedAt createdAt')
         .sort({ updatedAt: -1 }).skip(pagination.skip).limit(pagination.limit).lean(),
       Booking.countDocuments(query),
     ]);
@@ -389,6 +396,7 @@ function userImageReviewItems(booking, privateImageUrl) {
       type,
       url: imageUrls[0] || '',
       imageUrls,
+      userId: payload.userId || booking.userId || '',
       userName: booking.userName || '',
       salonName: booking.salonName || '',
       staffName: booking.staffName || '',

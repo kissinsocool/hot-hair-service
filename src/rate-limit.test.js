@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createRateLimiter } = require('./rate-limit');
+const { createRateLimiter, rateLimits } = require('./rate-limit');
 
 test('rate limiter rejects excess requests with retry guidance', () => {
   let time = 0;
@@ -17,6 +17,7 @@ test('rate limiter rejects excess requests with retry guidance', () => {
   request();
   assert.deepEqual(responses.map(item => item.status), [200, 200, 429]);
   assert.equal(responses[2].retryAfter, '1');
+  assert.equal(responses[2].body.message, '操作频繁，请稍后再试');
 
   time = 500;
   request();
@@ -41,4 +42,27 @@ test('short-window cleanup cannot reset another limiter bucket', () => {
   long({}, response(), () => {});
 
   assert.deepEqual(responses, [429, 429]);
+});
+
+test('public read limit is 50 requests per IP and route', () => {
+  const limit = rateLimits.publicRead[0];
+  const statuses = [];
+  const response = () => ({
+    set() {},
+    status(value) { this.statusCode = value; return this; },
+    json() { statuses.push(this.statusCode); },
+  });
+  const request = route => limit(
+    { ip: '203.0.113.50', route: { path: route } },
+    response(),
+    () => statuses.push(200),
+  );
+
+  for (let index = 0; index < 50; index += 1) request('/api/salons');
+  request('/api/salons');
+  request('/api/salons/:id');
+
+  assert.equal(statuses[49], 200);
+  assert.equal(statuses[50], 429);
+  assert.equal(statuses[51], 200);
 });

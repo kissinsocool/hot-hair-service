@@ -199,6 +199,9 @@ module.exports = (app, ctx) => {
       salonName: salon.name,
       publishStatus: salon.publishStatus || 'offline',
       licenseUrl: privateImageUrl(salon.licenseUrl || ''),
+      legalPersonIdFrontUrl: privateImageUrl(salon.legalPersonIdFrontUrl || ''),
+      legalPersonIdBackUrl: privateImageUrl(salon.legalPersonIdBackUrl || ''),
+      addressProofUrl: privateImageUrl(salon.addressProofUrl || ''),
       licenseStatus: salon.licenseStatus || 'unsubmitted',
       licenseRejectReason: salon.licenseRejectReason || '',
       licenseSubmittedAt: salon.licenseSubmittedAt,
@@ -207,15 +210,43 @@ module.exports = (app, ctx) => {
   });
   
   app.patch('/api/merchant/qualification', async (req, res) => {
-    const licenseUrl = req.body.data
-      ? await savePrivateBase64Image('license', req.body.fileName || 'license.png', req.body.data)
-      : String(req.body.licenseUrl || '').trim();
-    if (!licenseUrl) return res.status(400).json({ message: 'licenseUrl is required' });
-  
     const salon = await Salon.findOne({ id: req.merchantUser.salonId || '1' });
     if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
+
+    const [licenseUrl, legalPersonIdFrontUrl, legalPersonIdBackUrl, addressProofUrl] = await Promise.all([
+      req.body.data
+        ? savePrivateBase64Image('license', req.body.fileName || 'license.png', req.body.data)
+        : salon.licenseUrl || String(req.body.licenseUrl || '').trim(),
+      req.body.legalPersonIdFrontData
+        ? savePrivateBase64Image(
+          'legal-person-id-front',
+          req.body.legalPersonIdFrontFileName || 'legal-person-id-front.png',
+          req.body.legalPersonIdFrontData,
+        )
+        : salon.legalPersonIdFrontUrl || '',
+      req.body.legalPersonIdBackData
+        ? savePrivateBase64Image(
+          'legal-person-id-back',
+          req.body.legalPersonIdBackFileName || 'legal-person-id-back.png',
+          req.body.legalPersonIdBackData,
+        )
+        : salon.legalPersonIdBackUrl || '',
+      req.body.addressProofData
+        ? savePrivateBase64Image(
+          'address-proof',
+          req.body.addressProofFileName || 'address-proof.png',
+          req.body.addressProofData,
+        )
+        : salon.addressProofUrl || '',
+    ]);
+    if (!licenseUrl || !legalPersonIdFrontUrl || !legalPersonIdBackUrl || !addressProofUrl) {
+      return res.status(400).json({ message: '营业执照、法人身份证正反面和地址证明均为必填项' });
+    }
   
     salon.licenseUrl = licenseUrl;
+    salon.legalPersonIdFrontUrl = legalPersonIdFrontUrl;
+    salon.legalPersonIdBackUrl = legalPersonIdBackUrl;
+    salon.addressProofUrl = addressProofUrl;
     salon.licenseStatus = 'pending';
     salon.licenseRejectReason = '';
     salon.licenseSubmittedAt = new Date();
@@ -226,6 +257,9 @@ module.exports = (app, ctx) => {
       salonName: salon.name,
       publishStatus: salon.publishStatus || 'offline',
       licenseUrl: privateImageUrl(salon.licenseUrl || ''),
+      legalPersonIdFrontUrl: privateImageUrl(salon.legalPersonIdFrontUrl || ''),
+      legalPersonIdBackUrl: privateImageUrl(salon.legalPersonIdBackUrl || ''),
+      addressProofUrl: privateImageUrl(salon.addressProofUrl || ''),
       licenseStatus: salon.licenseStatus || 'pending',
       licenseRejectReason: salon.licenseRejectReason || '',
       licenseSubmittedAt: salon.licenseSubmittedAt,
@@ -270,7 +304,7 @@ module.exports = (app, ctx) => {
     res.status(201).json({ url });
   });
   
-  app.get('/api/staff/:id', async (req, res) => {
+  app.get('/api/staff/:id', ...rateLimits.publicRead, async (req, res) => {
     const person = await getStaffById(req.params.id).lean();
     if (!person) return res.status(404).json({ message: 'Staff not found' });
     const salon = await getSalonByStaffId(req.params.id).lean();
@@ -284,7 +318,7 @@ module.exports = (app, ctx) => {
     });
   });
   
-  app.get('/api/staff/:id/slots', async (req, res) => {
+  app.get('/api/staff/:id/slots', ...rateLimits.publicRead, async (req, res) => {
     const staffId = req.params.id;
     const date = req.query.date || '2026-06-01';
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -344,6 +378,7 @@ module.exports = (app, ctx) => {
             merchantMessage: '用户已取消该预约。',
             userMessage: '您已取消本次预约。',
             rejectReason: '',
+            canceledBy: 'user',
           } },
           { new: true, session },
         );
@@ -409,6 +444,7 @@ module.exports = (app, ctx) => {
       rating,
       comment,
       date: new Date().toISOString().slice(0, 10),
+      createdAt: new Date().toISOString(),
       serviceName: booking.serviceName,
       imageUrls,
       reviewStatus: 'pending',
@@ -723,6 +759,7 @@ module.exports = (app, ctx) => {
           reject: `商家已拒绝本次预约${reason ? `：${reason}` : '。'}`,
         }[action],
         rejectReason: ['cancel', 'no_show', 'reject'].includes(action) ? reason : '',
+        ...(action === 'cancel' ? { canceledBy: 'merchant' } : {}),
         ...(action === 'accept' ? { staffId: selectedStaffId, staffName: selectedStaffName } : {}),
       };
     }

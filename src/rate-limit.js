@@ -10,6 +10,11 @@ const REDIS_RATE_LIMIT_SCRIPT = `
 
 const hash = value => crypto.createHash('sha256').update(String(value)).digest('hex');
 const ipKey = req => req.ip || req.socket?.remoteAddress || '';
+const routeIpKey = req => {
+  const ip = ipKey(req);
+  const route = req.route?.path || String(req.path || req.originalUrl || '').split('?')[0];
+  return ip && route ? `${ip}:${route}` : ip;
+};
 const bodyKey = field => req => {
   const value = String(req.body?.[field] || '').trim().toLowerCase();
   const endpoint = String(req.originalUrl || req.path || '').split('?')[0];
@@ -32,7 +37,7 @@ function createRateLimiter({ name, limit, windowMs, key = ipKey, now = Date.now 
   let lastSweep = 0;
   const reject = (res, retryAfter) => {
     res.set('Retry-After', String(retryAfter));
-    return res.status(429).json({ message: '请求过于频繁，请稍后再试', retryAfterSeconds: retryAfter });
+    return res.status(429).json({ message: '操作频繁，请稍后再试', retryAfterSeconds: retryAfter });
   };
   const useLocalBucket = (identity, res, next) => {
     const currentTime = now();
@@ -80,6 +85,9 @@ function createRateLimiter({ name, limit, windowMs, key = ipKey, now = Date.now 
 
 // ponytail: local buckets keep development usable without Redis; production multi-instance deployments set REDIS_URL.
 const rateLimits = {
+  publicRead: [
+    createRateLimiter({ name: 'public-read', limit: 50, windowMs: MINUTE, key: routeIpKey }),
+  ],
   login: [
     createRateLimiter({ name: 'login-ip', limit: 30, windowMs: 5 * MINUTE }),
     createRateLimiter({ name: 'login-account', limit: 10, windowMs: 15 * MINUTE, key: req =>

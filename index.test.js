@@ -275,6 +275,7 @@ test('favorite writes are idempotent upserts and deletes', async () => {
     async resolveRequestUser() { return { userId: 'user-1' }; },
     async readFavoriteSalons() { return []; },
     userIdAliases: userId => [userId, 'legacy-user-1'],
+    rateLimits: { publicRead: [] },
   });
   const response = { json() {}, status() { return this; } };
   const request = { params: { id: 'salon-1' } };
@@ -368,6 +369,9 @@ test('stripSensitiveSalonFields removes license fields from public salon payload
     id: '1',
     name: 'Hot Hair',
     licenseUrl: 'licenses/license.png',
+    legalPersonIdFrontUrl: 'licenses/legal-person-id-front.png',
+    legalPersonIdBackUrl: 'licenses/legal-person-id-back.png',
+    addressProofUrl: 'licenses/address-proof.png',
     licenseStatus: 'pending',
     licenseRejectReason: 'bad image',
     licenseSubmittedAt: new Date(),
@@ -377,6 +381,49 @@ test('stripSensitiveSalonFields removes license fields from public salon payload
   });
 
   assert.deepEqual(payload, { id: '1', name: 'Hot Hair' });
+});
+
+test('merchant qualification submission stores all required private documents', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    use() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const salon = {
+    id: 'salon-1',
+    async save() {},
+  };
+  registerMerchantRoutes(app, {
+    Salon: { async findOne() { return salon; } },
+    async savePrivateBase64Image(prefix) { return `licenses/${prefix}.png`; },
+    privateImageUrl: value => `private:${value}`,
+    rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
+  });
+
+  let response;
+  await routes.get('/api/merchant/qualification')(
+    {
+      merchantUser: { salonId: 'salon-1' },
+      body: {
+        data: 'license-data',
+        legalPersonIdFrontData: 'id-front-data',
+        legalPersonIdBackData: 'id-back-data',
+        addressProofData: 'address-data',
+      },
+    },
+    { status() { return this; }, json(value) { response = value; } },
+  );
+
+  assert.equal(salon.licenseUrl, 'licenses/license.png');
+  assert.equal(salon.legalPersonIdFrontUrl, 'licenses/legal-person-id-front.png');
+  assert.equal(salon.legalPersonIdBackUrl, 'licenses/legal-person-id-back.png');
+  assert.equal(salon.addressProofUrl, 'licenses/address-proof.png');
+  assert.equal(salon.licenseStatus, 'pending');
+  assert.equal(response.legalPersonIdFrontUrl, 'private:licenses/legal-person-id-front.png');
+  assert.equal(response.legalPersonIdBackUrl, 'private:licenses/legal-person-id-back.png');
+  assert.equal(response.addressProofUrl, 'private:licenses/address-proof.png');
 });
 
 test('admin merchant creation helper is wired into route context', () => {
@@ -440,6 +487,7 @@ test('merchant review replies are scoped to the authenticated merchant salon', a
       login: [],
       booking: [],
       merchantBooking: [],
+      publicRead: [],
       upload: [],
     },
   });
@@ -499,7 +547,7 @@ test('concurrent review and complaint submissions only update once', async () =>
     async getStaffById() { return {}; },
     broadcastBookingEvent() {},
     INPUT_LIMITS: { review: 1000, complaint: 2000 },
-    rateLimits: { login: [], booking: [], merchantBooking: [], upload: [] },
+    rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
   });
   const invokeTwice = (path, body) => Promise.all([1, 2].map(async () => {
     const result = { status: 200 };
@@ -557,7 +605,7 @@ test('booking cancellation atomically checks state and releases its slot in one 
     normalizeBooking: value => value,
     broadcastBookingEvent() {},
     USER_CANCEL_WINDOW_MS: 3 * 60 * 60 * 1000,
-    rateLimits: { login: [], booking: [], merchantBooking: [], upload: [] },
+    rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
   });
 
   let response;
@@ -567,6 +615,7 @@ test('booking cancellation atomically checks state and releases its slot in one 
   );
 
   assert.equal(updateCall[0].status, 'pending');
+  assert.equal(updateCall[1].$set.canceledBy, 'user');
   assert.equal(updateCall[2].session, session);
   assert.deepEqual(deleteCall, [{ bookingId: 'BK-1' }, { session }]);
   assert.deepEqual(transactionOptions, {

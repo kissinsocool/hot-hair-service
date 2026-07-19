@@ -17,13 +17,14 @@ module.exports = (app, ctx) => {
     stripSensitiveSalonFields,
     AdConfig,
     buildAdPayload,
+    rateLimits,
   } = ctx;
 
   app.get('/api/ad', async (_req, res) => {
     res.json(buildAdPayload(await AdConfig.findOne({ key: 'main' }).lean()));
   });
 
-  app.get('/api/salons', async (req, res) => {
+  app.get('/api/salons', ...rateLimits.publicRead, async (req, res) => {
     const userLocation = getCoordinates(req.query);
     if (!userLocation) return res.status(400).json({ message: 'latitude and longitude are required' });
     const radiusKm = normalizeRadiusKm(req.query.radiusKm, 10, 50);
@@ -41,7 +42,7 @@ module.exports = (app, ctx) => {
     })));
   });
   
-  app.get('/api/salons/suggestions', async (req, res) => {
+  app.get('/api/salons/suggestions', ...rateLimits.publicRead, async (req, res) => {
     const keyword = String(req.query.keyword || '').trim();
     if (!keyword) return res.json([]);
     const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -66,9 +67,9 @@ module.exports = (app, ctx) => {
     })));
   });
   
-  app.get('/api/salons/:id', async (req, res) => {
+  app.get('/api/salons/:id', ...rateLimits.publicRead, async (req, res) => {
     const salon = await Salon.findOne({ id: req.params.id, publishStatus: 'online' })
-      .select('-licenseUrl -licenseStatus -licenseRejectReason -licenseSubmittedAt -licenseReviewedAt -pendingContent -contentReviewStatus -contentRejectReason -contentReviewedAt');
+      .select('-licenseUrl -legalPersonIdFrontUrl -legalPersonIdBackUrl -addressProofUrl -licenseStatus -licenseRejectReason -licenseSubmittedAt -licenseReviewedAt -pendingContent -contentReviewStatus -contentRejectReason -contentReviewedAt');
     if (!salon) return res.status(404).json({ message: 'Salon not found' });
   
     res.json(await buildSalonDetail(salon));

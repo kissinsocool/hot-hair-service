@@ -158,6 +158,9 @@ const buildMerchantUserPayload = (user) => ({
 const stripSensitiveSalonFields = (salon = {}) => {
   const {
     licenseUrl,
+    legalPersonIdFrontUrl,
+    legalPersonIdBackUrl,
+    addressProofUrl,
     licenseStatus,
     licenseRejectReason,
     licenseSubmittedAt,
@@ -183,6 +186,9 @@ const buildAdminMerchantPayload = async (user, salonDocument = {}) => {
     salonName: salon.name || '',
     publishStatus: salon.publishStatus || 'offline',
     licenseUrl: privateImageUrl(salon.licenseUrl || ''),
+    legalPersonIdFrontUrl: privateImageUrl(salon.legalPersonIdFrontUrl || ''),
+    legalPersonIdBackUrl: privateImageUrl(salon.legalPersonIdBackUrl || ''),
+    addressProofUrl: privateImageUrl(salon.addressProofUrl || ''),
     licenseStatus: salon.licenseStatus || 'unsubmitted',
     licenseRejectReason: salon.licenseRejectReason || '',
     licenseSubmittedAt: salon.licenseSubmittedAt,
@@ -646,7 +652,7 @@ const findNearbySalons = async (userLocation, radiusKm, limit) => {
     },
   };
   const salonList = await Salon.find(query)
-    .select('-licenseUrl -licenseStatus -licenseRejectReason -licenseSubmittedAt -licenseReviewedAt -pendingContent -contentReviewStatus -contentRejectReason -contentReviewedAt')
+    .select('-licenseUrl -legalPersonIdFrontUrl -legalPersonIdBackUrl -addressProofUrl -licenseStatus -licenseRejectReason -licenseSubmittedAt -licenseReviewedAt -pendingContent -contentReviewStatus -contentRejectReason -contentReviewedAt')
     .limit(limit).lean();
   return salonList
     .map((salon) => {
@@ -1077,6 +1083,9 @@ const ensureSalonForMerchant = async ({ salonId, displayName }) => {
     services: [],
     publishStatus: 'offline',
     licenseUrl: '',
+    legalPersonIdFrontUrl: '',
+    legalPersonIdBackUrl: '',
+    addressProofUrl: '',
     licenseStatus: 'unsubmitted',
     licenseRejectReason: '',
   });
