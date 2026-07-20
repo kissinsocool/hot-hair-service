@@ -7,6 +7,7 @@ const latitude = __ENV.K6_LATITUDE || '31.2304';
 const longitude = __ENV.K6_LONGITUDE || '121.4737';
 const writeEnabled = String(__ENV.K6_ENABLE_WRITES || '').toLowerCase() === 'true';
 const configuredSalonId = String(__ENV.K6_SALON_ID || '').trim();
+const rateLimitBypassToken = String(__ENV.K6_RATE_LIMIT_BYPASS_TOKEN || '').trim();
 const clientTokens = String(__ENV.K6_CLIENT_TOKENS || '')
   .split(',')
   .map(token => token.trim())
@@ -46,6 +47,7 @@ const requestParams = token => ({
   headers: {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(rateLimitBypassToken ? { 'X-Load-Test-Token': rateLimitBypassToken } : {}),
   },
 });
 
@@ -70,6 +72,9 @@ export function setup() {
   if (writeEnabled && !configuredSalonId) {
     throw new Error('K6_SALON_ID is required when K6_ENABLE_WRITES=true');
   }
+  if (rateLimitBypassToken && rateLimitBypassToken.length < 32) {
+    throw new Error('K6_RATE_LIMIT_BYPASS_TOKEN must contain at least 32 characters');
+  }
 
   const response = http.get(`${baseUrl}/ready`, { tags: { name: 'GET /ready' } });
   if (response.status !== 200) {
@@ -81,7 +86,7 @@ const runFlow = () => {
   const token = clientTokens[(__VU - 1) % Math.max(clientTokens.length, 1)];
   const salonsResponse = http.get(
     `${baseUrl}/api/salons?latitude=${latitude}&longitude=${longitude}&limit=20&minResults=1`,
-    { tags: { name: 'GET /api/salons' } },
+    { ...requestParams(), tags: { name: 'GET /api/salons' } },
   );
   const salons = json(salonsResponse);
   if (!check(salonsResponse, {
@@ -96,7 +101,7 @@ const runFlow = () => {
   const salonId = configuredSalonId || salons[(__VU + __ITER) % salons.length].id;
   const salonResponse = http.get(
     `${baseUrl}/api/salons/${encodeURIComponent(salonId)}`,
-    { tags: { name: 'GET /api/salons/:id' } },
+    { ...requestParams(), tags: { name: 'GET /api/salons/:id' } },
   );
   const salonDetail = json(salonResponse);
   if (!check(salonResponse, {
@@ -110,7 +115,7 @@ const runFlow = () => {
   const date = bookingDate();
   const slotsResponse = http.get(
     `${baseUrl}/api/staff/__no_preference__/slots?date=${date}&salonId=${encodeURIComponent(salonId)}`,
-    { tags: { name: 'GET /api/staff/:id/slots' } },
+    { ...requestParams(), tags: { name: 'GET /api/staff/:id/slots' } },
   );
   const slots = json(slotsResponse);
   const availableSlots = Array.isArray(slots) ? slots.filter(slot => slot.isAvailable) : [];

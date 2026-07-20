@@ -1,6 +1,17 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createRateLimiter, rateLimits } = require('./rate-limit');
+const { createRateLimiter, isLoadTestBypass, rateLimits } = require('./rate-limit');
+
+test('load-test bypass requires an explicit non-production environment and matching secret', () => {
+  const secret = 'a'.repeat(32);
+  const request = { headers: { 'x-load-test-token': secret } };
+  const enabled = { NODE_ENV: 'staging', LOAD_TEST_BYPASS_ENABLED: 'true', LOAD_TEST_BYPASS_TOKEN: secret };
+
+  assert.equal(isLoadTestBypass(request, enabled), true);
+  assert.equal(isLoadTestBypass(request, { ...enabled, NODE_ENV: 'production' }), false);
+  assert.equal(isLoadTestBypass(request, { ...enabled, LOAD_TEST_BYPASS_ENABLED: 'false' }), false);
+  assert.equal(isLoadTestBypass({ headers: { 'x-load-test-token': 'wrong' } }, enabled), false);
+});
 
 test('rate limiter rejects excess requests with retry guidance', () => {
   let time = 0;

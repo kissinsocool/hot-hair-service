@@ -9,6 +9,15 @@ const REDIS_RATE_LIMIT_SCRIPT = `
 `;
 
 const hash = value => crypto.createHash('sha256').update(String(value)).digest('hex');
+const isLoadTestBypass = (req, env = process.env) => {
+  if (!['development', 'test', 'staging'].includes(String(env.NODE_ENV || '').toLowerCase())) return false;
+  if (String(env.LOAD_TEST_BYPASS_ENABLED || '').toLowerCase() !== 'true') return false;
+  const expected = String(env.LOAD_TEST_BYPASS_TOKEN || '');
+  const supplied = String(req.headers?.['x-load-test-token'] || '');
+  return expected.length >= 32
+    && supplied.length === expected.length
+    && crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+};
 const ipKey = req => req.ip || req.socket?.remoteAddress || '';
 const routeIpKey = req => {
   const ip = ipKey(req);
@@ -64,6 +73,7 @@ function createRateLimiter({ name, limit, windowMs, key = ipKey, now = Date.now 
   };
 
   return async (req, res, next) => {
+    if (isLoadTestBypass(req)) return next();
     const identity = key(req);
     if (!identity) return next();
     const redis = getRedisClient();
@@ -116,4 +126,4 @@ const rateLimits = {
   ],
 };
 
-module.exports = { createRateLimiter, rateLimits };
+module.exports = { createRateLimiter, isLoadTestBypass, rateLimits };
