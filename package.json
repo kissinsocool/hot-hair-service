@@ -7,8 +7,10 @@
     "start": "node index.js",
     "admin:create": "node scripts/create-admin.js",
     "test": "node --test",
-    "test:integration": "node --test src/mongodb.integration.test.js",
-    "test:load": "node scripts/load-test.js"
+    "test:integration": "jest --runInBand --testMatch '**/mongodb.integration.jest.js'",
+    "test:load": "node scripts/load-test.js",
+    "load:tokens": "node scripts/create-load-test-users.js",
+    "test:performance": "k6 run scripts/k6-booking-flow.js"
   },
   "keywords": [],
   "author": "",
@@ -21,5 +23,8 @@
     "mongoose": "^9.6.3",
     "redis": "^5.12.1",
     "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "jest": "^30.4.2"
   }
 }
