@@ -372,6 +372,7 @@ test('websocket booking subscriptions only receive their own user or salon event
 test('isAllowedOrigin allows local Flutter web ports', () => {
   assert.equal(isAllowedOrigin('http://localhost:61234'), true);
   assert.equal(isAllowedOrigin('http://127.0.0.1:61234'), true);
+  assert.equal(isAllowedOrigin('http://oss.hothair.top'), true);
   assert.equal(isAllowedOrigin('http://example.com'), false);
 });
 
