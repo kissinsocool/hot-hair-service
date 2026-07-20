@@ -45,6 +45,7 @@ module.exports = (app, ctx) => {
     findActiveBookingAtTime,
     findActiveBookingAtTimeExcluding,
     isSalonClosedOnDate,
+    isSameDayBookingBlocked,
     isStaffUnavailable,
     findAcceptedBookingAtTimeExcluding,
     incrementNoShowCount,
@@ -323,6 +324,7 @@ module.exports = (app, ctx) => {
       salonServices: salon?.services || [],
       salonStaff: salon ? salon.staffIds.map(id => staffMap[id]).filter(Boolean).map(buildStaffPayload) : [],
       salonClosedDates: salon?.closedDates || [],
+      salonAcceptsSameDayBooking: salon?.acceptsSameDayBooking !== false,
     });
   });
   
@@ -584,6 +586,9 @@ module.exports = (app, ctx) => {
     }
     if (isSalonClosedOnDate(salon, startTime)) {
       return res.status(409).json({ message: '该日期为店铺休息日' });
+    }
+    if (isSameDayBookingBlocked(salon, startTime)) {
+      return res.status(409).json({ message: '该店铺不接受当天预约' });
     }
     if (isNoPreference && !(salon.staffIds || []).length) {
       return res.status(409).json({ message: 'This salon has no staff available for assignment' });
@@ -884,6 +889,9 @@ module.exports = (app, ctx) => {
 };
 
 function validateSalonContent(payload = {}, limits) {
+  if (payload.acceptsSameDayBooking !== undefined && typeof payload.acceptsSameDayBooking !== 'boolean') {
+    return 'acceptsSameDayBooking must be a boolean';
+  }
   const arrays = [
     ['services', limits.services],
     ['staff', limits.contentStaff],

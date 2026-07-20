@@ -786,6 +786,20 @@ const isSalonClosedOnDate = (salon, date) => {
   return Boolean(dateKey && normalizeClosedDates(salon?.closedDates).includes(dateKey));
 };
 
+const localDateKey = (date = new Date()) => {
+  const value = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(value.getTime())) return '';
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+};
+
+const isSameDayBookingBlocked = (salon, date, now = new Date()) => {
+  if (salon?.acceptsSameDayBooking !== false) return false;
+  const dateKey = typeof date === 'string'
+    ? date.match(/^(\d{4}-\d{2}-\d{2})/)?.[1] || ''
+    : localDateKey(date);
+  return Boolean(dateKey && dateKey === localDateKey(now));
+};
+
 const isStaffUnavailable = async (staffId, startTime) => {
   const person = await getStaffById(staffId).lean();
   if (!person) return false;
@@ -950,6 +964,7 @@ const contentFields = [
   'images',
   'promoImages',
   'openingHours',
+  'acceptsSameDayBooking',
   'closedDates',
   'phone',
   'services',
@@ -998,6 +1013,7 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
     if (value !== undefined) salon[key] = value;
   };
   set('openingHours', typeof payload.openingHours === 'string' ? payload.openingHours : undefined);
+  set('acceptsSameDayBooking', typeof payload.acceptsSameDayBooking === 'boolean' ? payload.acceptsSameDayBooking : undefined);
   set('closedDates', Array.isArray(payload.closedDates) ? normalizeClosedDates(payload.closedDates) : undefined);
   set('phone', typeof payload.phone === 'string' ? payload.phone : undefined);
   if (Array.isArray(payload.services)) {
@@ -1048,6 +1064,7 @@ const buildContentDraft = async (salon, payload) => {
   set('fullDescription', typeof payload.fullDescription === 'string' ? payload.fullDescription : undefined);
   set('image', typeof payload.image === 'string' ? payload.image : undefined);
   set('openingHours', typeof payload.openingHours === 'string' ? payload.openingHours : undefined);
+  set('acceptsSameDayBooking', typeof payload.acceptsSameDayBooking === 'boolean' ? payload.acceptsSameDayBooking : undefined);
   set('closedDates', Array.isArray(payload.closedDates) ? normalizeClosedDates(payload.closedDates) : undefined);
   set('phone', typeof payload.phone === 'string' ? payload.phone : undefined);
 
@@ -1156,6 +1173,7 @@ const ensureSalonForMerchant = async ({ salonId, displayName }) => {
     description: '',
     fullDescription: '',
     openingHours: '10:00 - 20:00',
+    acceptsSameDayBooking: true,
     closedDates: [],
     phone: '',
     staffIds: [],
@@ -1200,6 +1218,14 @@ const generateSlotsForStaffAndDate = async (staffId, date) => {
       reason: '店铺休息日',
     }));
   }
+  if (isSameDayBookingBlocked(salon, date)) {
+    return times.map(time => ({
+      time,
+      startTime: `${date}T${time}:00`,
+      isAvailable: false,
+      reason: '当天不可预约',
+    }));
+  }
   const dayStart = new Date(`${date}T00:00:00`);
   const dayEnd = new Date(`${date}T23:59:59.999`);
   const [bookings, person] = await Promise.all([
@@ -1240,6 +1266,14 @@ const generateSlotsForNoPreferenceAndDate = async (salon, date) => {
       startTime: `${date}T${time}:00`,
       isAvailable: false,
       reason: '店铺休息日',
+    }));
+  }
+  if (isSameDayBookingBlocked(salon, date)) {
+    return generateHalfHourSlots(salon?.openingHours).map(time => ({
+      time,
+      startTime: `${date}T${time}:00`,
+      isAvailable: false,
+      reason: '当天不可预约',
     }));
   }
   const staffIds = salon.staffIds || [];
@@ -1335,6 +1369,7 @@ const routeContext = {
   existingSalonImages,
   incrementNoShowCount,
   isSalonClosedOnDate,
+  isSameDayBookingBlocked,
   isStaffUnavailable,
   isValidPhone,
   loginClientByPhone,
@@ -1465,6 +1500,7 @@ module.exports = {
   socketCanReceiveBooking,
   server,
   isSalonClosedOnDate,
+  isSameDayBookingBlocked,
   logoutSession,
   stripSensitiveSalonFields,
   verifyPassword,

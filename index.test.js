@@ -15,6 +15,7 @@ const {
   hasReviewableContentChanges,
   INPUT_LIMITS,
   isSalonClosedOnDate,
+  isSameDayBookingBlocked,
   logoutSession,
   normalizeClosedDates,
   normalizeServiceTags,
@@ -83,6 +84,15 @@ test('closed dates are normalized and matched by calendar date', () => {
   );
   assert.equal(isSalonClosedOnDate({ closedDates: ['2026-07-18'] }, '2026-07-18T10:00:00'), true);
   assert.equal(isSalonClosedOnDate({ closedDates: ['2026-07-18'] }, '2026-07-19T10:00:00'), false);
+});
+
+test('same-day booking policy blocks only today', () => {
+  const now = new Date(2026, 6, 20, 9);
+  const salon = { acceptsSameDayBooking: false };
+
+  assert.equal(isSameDayBookingBlocked(salon, '2026-07-20T18:00:00', now), true);
+  assert.equal(isSameDayBookingBlocked(salon, '2026-07-21T10:00:00', now), false);
+  assert.equal(isSameDayBookingBlocked({ acceptsSameDayBooking: true }, '2026-07-20T18:00:00', now), false);
 });
 
 test('normalizeAdLink only accepts mini program page paths', () => {
@@ -560,6 +570,45 @@ test('approving a review publishes moderated images before making it public', as
   assert.deepEqual(published, ['moderation/review-1.png']);
   assert.equal(booking.review.reviewStatus, 'approved');
   assert.deepEqual(booking.review.imageUrls, ['https://public.example/uploads/review-1.png']);
+});
+
+test('deleting an approved review removes it from the booking and staff profile', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const booking = {
+    id: 'BK-1',
+    staffId: 'staff-1',
+    reviewed: true,
+    review: { id: 'review-1', bookingId: 'BK-1', reviewStatus: 'approved', imageUrls: [] },
+    markModified() {},
+    async save() {},
+  };
+  const staff = {
+    reviews: [booking.review],
+    markModified() {},
+    async save() {},
+  };
+  registerAdminRoutes(app, {
+    Booking: { async findOne() { return booking; } },
+    async publishModeratedImage(name) { return name; },
+    async deleteModeratedImages() {},
+    async getStaffById() { return staff; },
+    calculateStaffRating() { return 0; },
+    rateLimits: { login: [], upload: [] },
+  });
+
+  await routes.get('/api/admin/user-images')(
+    { body: { bookingId: 'BK-1', type: 'review', action: 'delete' } },
+    { json() {} },
+  );
+
+  assert.equal(booking.review, undefined);
+  assert.equal(booking.reviewed, false);
+  assert.deepEqual(staff.reviews, []);
 });
 
 test('merchant review replies are scoped to the authenticated merchant salon', async () => {

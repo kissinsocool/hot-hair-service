@@ -325,7 +325,7 @@ module.exports = (app, ctx) => {
   app.get('/api/admin/user-images', requireAdminAuth, async (_req, res) => {
     const query = {
       $or: [
-        { 'review.reviewStatus': 'pending' },
+        { review: { $exists: true, $ne: null } },
         { 'complaint.reviewStatus': 'pending' },
       ],
     };
@@ -344,7 +344,7 @@ module.exports = (app, ctx) => {
     const bookingId = String(req.body.bookingId || '').trim();
     const type = String(req.body.type || '').trim();
     const action = String(req.body.action || '').trim();
-    if (!bookingId || !['review', 'complaint'].includes(type) || !['approve', 'reject'].includes(action)) {
+    if (!bookingId || !['review', 'complaint'].includes(type) || !['approve', 'reject', 'delete'].includes(action)) {
       return res.status(400).json({ message: 'bookingId, type and action are required' });
     }
 
@@ -352,26 +352,32 @@ module.exports = (app, ctx) => {
     if (!booking || !booking[type]) return res.status(404).json({ message: 'Image review item not found' });
 
     const payload = booking[type] || {};
-    if (payload.reviewStatus !== 'pending') return res.status(409).json({ message: 'Image review item is not pending' });
-
     if (type === 'review' && action === 'approve') {
       payload.imageUrls = (await Promise.all(
         (payload.imageUrls || []).map(publishModeratedImage),
       )).filter(Boolean);
     }
-    if (action === 'reject') {
+    if (action !== 'approve') {
       await deleteModeratedImages(payload.imageUrls || []);
       payload.imageUrls = [];
     }
 
-    payload.reviewStatus = action === 'approve' ? 'approved' : 'rejected';
+    if (type === 'review' && action !== 'approve') {
+      await unpublishStaffReview(booking, payload, getStaffById, calculateStaffRating);
+    }
 
-    booking[type] = payload;
-    booking.markModified(type);
-    if (action === 'reject') {
+    if (action === 'delete') {
+      booking[type] = undefined;
       if (type === 'review') booking.reviewed = false;
       if (type === 'complaint') booking.complained = false;
+    } else {
+      payload.reviewStatus = action === 'approve' ? 'approved' : 'rejected';
+      booking[type] = payload;
+      if (type === 'review') booking.reviewed = action === 'approve';
+      if (type === 'complaint') booking.complained = action === 'approve';
     }
+
+    booking.markModified(type);
     booking.updatedAt = new Date().toISOString();
     await booking.save();
 
@@ -386,7 +392,8 @@ module.exports = (app, ctx) => {
 function userImageReviewItems(booking, privateImageUrl) {
   return ['review', 'complaint'].flatMap(type => {
     const payload = booking[type] || {};
-    if (payload.reviewStatus !== 'pending') return [];
+    if (!Object.keys(payload).length) return [];
+    if (type === 'complaint' && payload.reviewStatus !== 'pending') return [];
     const imageUrls = (Array.isArray(payload.imageUrls) ? payload.imageUrls : [])
       .map(url => privateImageUrl(url))
       .filter(Boolean);
@@ -403,6 +410,7 @@ function userImageReviewItems(booking, privateImageUrl) {
       serviceName: booking.serviceName || '',
       content: type === 'review' ? payload.comment || '' : payload.description || '',
       rating: payload.rating || null,
+      status: payload.reviewStatus || 'pending',
       createdAt: payload.createdAt || payload.date || booking.updatedAt || booking.createdAt || '',
     }];
   });
@@ -420,6 +428,16 @@ async function publishStaffReview(booking, review, getStaffById, calculateStaffR
     publicReview,
     ...(staffMember.reviews || []).filter(item => item?.bookingId !== booking.id && item?.id !== review.id),
   ];
+  staffMember.rating = calculateStaffRating(staffMember);
+  staffMember.markModified('reviews');
+  await staffMember.save();
+}
+
+async function unpublishStaffReview(booking, review, getStaffById, calculateStaffRating) {
+  const staffMember = await getStaffById(booking.staffId);
+  if (!staffMember) return;
+  staffMember.reviews = (staffMember.reviews || [])
+    .filter(item => item?.bookingId !== booking.id && item?.id !== review.id);
   staffMember.rating = calculateStaffRating(staffMember);
   staffMember.markModified('reviews');
   await staffMember.save();
