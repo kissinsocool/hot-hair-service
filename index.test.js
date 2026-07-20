@@ -572,6 +572,38 @@ test('approving a review publishes moderated images before making it public', as
   assert.deepEqual(booking.review.imageUrls, ['https://public.example/uploads/review-1.png']);
 });
 
+test('rejecting a review keeps moderated images for preview and later approval', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const booking = {
+    id: 'BK-1',
+    staffId: 'staff-1',
+    review: { reviewStatus: 'pending', imageUrls: ['moderation/review-1.png'] },
+    markModified() {},
+    async save() {},
+  };
+  let deleted = false;
+  registerAdminRoutes(app, {
+    Booking: { async findOne() { return booking; } },
+    async deleteModeratedImages() { deleted = true; },
+    async getStaffById() { return null; },
+    rateLimits: { login: [], upload: [] },
+  });
+
+  await routes.get('/api/admin/user-images')(
+    { body: { bookingId: 'BK-1', type: 'review', action: 'reject' } },
+    { json() {} },
+  );
+
+  assert.equal(deleted, false);
+  assert.equal(booking.review.reviewStatus, 'rejected');
+  assert.deepEqual(booking.review.imageUrls, ['moderation/review-1.png']);
+});
+
 test('deleting an approved review removes it from the booking and staff profile', async () => {
   const routes = new Map();
   const app = {

@@ -357,9 +357,8 @@ module.exports = (app, ctx) => {
         (payload.imageUrls || []).map(publishModeratedImage),
       )).filter(Boolean);
     }
-    if (action !== 'approve') {
+    if (action === 'delete') {
       await deleteModeratedImages(payload.imageUrls || []);
-      payload.imageUrls = [];
     }
 
     if (type === 'review' && action !== 'approve') {
