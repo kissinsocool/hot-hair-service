@@ -17,6 +17,8 @@ const {
   isSalonClosedOnDate,
   isSameDayBookingBlocked,
   logoutSession,
+  normalizeBooking,
+  normalizeMerchantBooking,
   normalizeClosedDates,
   normalizeServiceTags,
   normalizeAdLink,
@@ -685,6 +687,105 @@ test('merchant review replies are scoped to the authenticated merchant salon', a
 
   assert.deepEqual(query, { id: 'BK-1', salonId: 'salon-7' });
   assert.equal(status, 404);
+});
+
+test('merchant review replies stay pending without replacing the public reply', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    use() {},
+    patch(path, handler) { routes.set(path, handler); },
+  };
+  const oldReply = { content: '旧回复', reviewStatus: 'approved' };
+  const booking = {
+    id: 'BK-1',
+    salonId: 'salon-7',
+    staffId: 'staff-1',
+    reviewed: true,
+    review: { id: 'review-1', merchantReply: oldReply },
+    markModified() {},
+    async save() {},
+  };
+  registerMerchantRoutes(app, {
+    Booking: { async findOne() { return booking; } },
+    INPUT_LIMITS: { reviewReply: 1000 },
+    normalizeMerchantBooking: value => value,
+    broadcastBookingEvent() {},
+    rateLimits: {
+      login: [], booking: [], merchantBooking: [], publicRead: [], upload: [],
+    },
+  });
+
+  await routes.get('/api/merchant/bookings/:id/review-reply')(
+    {
+      body: { reply: '新回复' },
+      params: { id: 'BK-1' },
+      merchantUser: { salonId: 'salon-7' },
+    },
+    { json() {} },
+  );
+
+  assert.equal(booking.review.merchantReply, oldReply);
+  assert.equal(booking.review.pendingMerchantReply.content, '新回复');
+  assert.equal(booking.review.pendingMerchantReply.reviewStatus, 'pending');
+});
+
+test('approving a merchant reply publishes it without changing the user review status', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const booking = {
+    id: 'BK-1',
+    staffId: 'staff-1',
+    review: {
+      id: 'review-1',
+      bookingId: 'BK-1',
+      reviewStatus: 'approved',
+      merchantReply: { content: '旧回复', reviewStatus: 'approved' },
+      pendingMerchantReply: { content: '新回复', reviewStatus: 'pending' },
+    },
+    markModified() {},
+    async save() {},
+  };
+  const staff = {
+    reviews: [{ ...booking.review, pendingMerchantReply: undefined }],
+    markModified() {},
+    async save() {},
+  };
+  registerAdminRoutes(app, {
+    Booking: { async findOne() { return booking; } },
+    async getStaffById() { return staff; },
+    rateLimits: { login: [], upload: [] },
+  });
+
+  await routes.get('/api/admin/user-images')(
+    { body: { bookingId: 'BK-1', type: 'reviewReply', action: 'approve' } },
+    { status() { return this; }, json() {} },
+  );
+
+  assert.equal(booking.review.reviewStatus, 'approved');
+  assert.equal(booking.review.pendingMerchantReply, undefined);
+  assert.equal(booking.review.merchantReply.content, '新回复');
+  assert.equal(booking.review.merchantReply.reviewStatus, 'approved');
+  assert.equal(staff.reviews[0].merchantReply.content, '新回复');
+});
+
+test('client booking payloads hide pending merchant replies', () => {
+  const booking = {
+    status: 'completed',
+    review: {
+      merchantReply: { content: '已通过', reviewStatus: 'approved' },
+      pendingMerchantReply: { content: '待审核', reviewStatus: 'pending' },
+    },
+  };
+
+  assert.equal(normalizeBooking(booking).review.pendingMerchantReply, undefined);
+  assert.equal(normalizeBooking(booking).review.merchantReply.content, '已通过');
+  assert.equal(normalizeMerchantBooking(booking).review.pendingMerchantReply.content, '待审核');
 });
 
 test('concurrent review and complaint submissions only update once', async () => {

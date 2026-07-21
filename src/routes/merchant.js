@@ -34,6 +34,7 @@ module.exports = (app, ctx) => {
     DEMO_USER_ID,
     userIdAliases,
     normalizeBooking,
+    normalizeMerchantBooking,
     Booking,
     USER_CANCEL_WINDOW_MS,
     broadcastBookingEvent,
@@ -823,7 +824,7 @@ module.exports = (app, ctx) => {
   
     res.json({
       message: action === 'reschedule' ? 'Booking rescheduled.' : `Booking ${booking.status}.`,
-      booking: normalizeBooking(booking),
+      booking: normalizeMerchantBooking(booking),
       userPolicy,
     });
   });
@@ -847,30 +848,18 @@ module.exports = (app, ctx) => {
     const replyPayload = {
       content: reply,
       repliedAt: new Date().toISOString(),
+      reviewStatus: 'pending',
     };
     booking.review = {
       ...(booking.review || {}),
-      merchantReply: replyPayload,
+      pendingMerchantReply: replyPayload,
     };
     booking.markModified('review');
     booking.updatedAt = new Date().toISOString();
-  
-    const staffMember = await getStaffById(booking.staffId);
-    if (staffMember && Array.isArray(staffMember.reviews)) {
-      staffMember.reviews = staffMember.reviews.map(review => {
-        if (review?.bookingId !== booking.id && review?.id !== booking.review?.id) return review;
-        return {
-          ...review,
-          merchantReply: replyPayload,
-        };
-      });
-      staffMember.markModified('reviews');
-      await staffMember.save();
-    }
-  
+
     await booking.save();
     broadcastBookingEvent('booking.updated', booking);
-    res.json({ booking: normalizeBooking(booking) });
+    res.json({ booking: normalizeMerchantBooking(booking) });
   });
   
   app.get('/api/merchant/bookings', async (req, res) => {
@@ -884,7 +873,7 @@ module.exports = (app, ctx) => {
       Booking.countDocuments(query),
     ]);
     setPaginationHeaders(res, pagination, total);
-    res.json(result.map(normalizeBooking));
+    res.json(result.map(normalizeMerchantBooking));
   });
 };
 

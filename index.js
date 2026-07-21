@@ -852,17 +852,29 @@ const acceptedBookingAtTimeQuery = (staffId, startTime, bookingId) => ({
 const findAcceptedBookingAtTimeExcluding = (staffId, startTime, bookingId) =>
   Booking.findOne(acceptedBookingAtTimeQuery(staffId, startTime, bookingId));
 
-const normalizeBooking = (booking) => ({
-  ...(typeof booking.toObject === 'function' ? booking.toObject() : booking),
-  statusLabel: {
-    pending: '等待商家确认',
-    accepted: '预约成功',
-    canceled: '预约已取消',
-    completed: '已完成',
-    no_show: '爽约',
-    rejected: '预约被拒绝',
-  }[booking.status] || booking.status,
-});
+const normalizeBookingPayload = (booking, includePendingMerchantReply = false) => {
+  const normalized = typeof booking.toObject === 'function' ? booking.toObject() : booking;
+  const review = normalized.review && { ...normalized.review };
+  if (review && !includePendingMerchantReply) delete review.pendingMerchantReply;
+  if (review?.merchantReply?.reviewStatus && review.merchantReply.reviewStatus !== 'approved') {
+    delete review.merchantReply;
+  }
+  return {
+    ...normalized,
+    ...(review ? { review } : {}),
+    statusLabel: {
+      pending: '等待商家确认',
+      accepted: '预约成功',
+      canceled: '预约已取消',
+      completed: '已完成',
+      no_show: '爽约',
+      rejected: '预约被拒绝',
+    }[booking.status] || booking.status,
+  };
+};
+
+const normalizeBooking = booking => normalizeBookingPayload(booking);
+const normalizeMerchantBooking = booking => normalizeBookingPayload(booking, true);
 
 const USER_CANCEL_WINDOW_MS = 3 * 60 * 60 * 1000;
 const BLACKLIST_NO_SHOW_LIMIT = 3;
@@ -909,7 +921,12 @@ const buildStaffPayload = (person) => ({
 const publicReviews = (person) =>
   ((person && Array.isArray(person.reviews)) ? person.reviews : [])
     .filter(review => !review.reviewStatus || review.reviewStatus === 'approved')
-    .map(({ pendingImageUrls, ...review }) => review);
+    .map(({ pendingImageUrls, pendingMerchantReply, ...review }) => {
+      if (review.merchantReply?.reviewStatus && review.merchantReply.reviewStatus !== 'approved') {
+        delete review.merchantReply;
+      }
+      return review;
+    });
 
 const buildSalonImageList = (salon) => {
   const images = [
@@ -945,7 +962,7 @@ const buildSalonDetail = async (salonDocument) => {
     images,
     promoImages: images,
     staff: staffList.map(buildStaffPayload),
-    reviews: staffList.flatMap(staff => (staff.reviews || []).map(review => ({
+    reviews: staffList.flatMap(staff => publicReviews(staff).map(review => ({
       ...review,
       staffName: staff.name,
     }))),
@@ -1379,6 +1396,7 @@ const routeContext = {
   mongoose,
   newClientUserId,
   normalizeBooking,
+  normalizeMerchantBooking,
   normalizeAdLink,
   normalizeClientAccount,
   normalizeClosedDates,
@@ -1502,6 +1520,8 @@ module.exports = {
   isSalonClosedOnDate,
   isSameDayBookingBlocked,
   logoutSession,
+  normalizeBooking,
+  normalizeMerchantBooking,
   stripSensitiveSalonFields,
   verifyPassword,
 };

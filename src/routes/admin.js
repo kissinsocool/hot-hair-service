@@ -344,12 +344,18 @@ module.exports = (app, ctx) => {
     const bookingId = String(req.body.bookingId || '').trim();
     const type = String(req.body.type || '').trim();
     const action = String(req.body.action || '').trim();
-    if (!bookingId || !['review', 'complaint'].includes(type) || !['approve', 'reject', 'delete'].includes(action)) {
+    if (!bookingId || !['review', 'reviewReply', 'complaint'].includes(type) || !['approve', 'reject', 'delete'].includes(action)) {
       return res.status(400).json({ message: 'bookingId, type and action are required' });
     }
 
     const booking = await Booking.findOne({ id: bookingId });
-    if (!booking || !booking[type]) return res.status(404).json({ message: 'Image review item not found' });
+    if (!booking) return res.status(404).json({ message: 'Image review item not found' });
+    if (type === 'reviewReply') {
+      const moderated = await moderateReviewReply(booking, action, getStaffById);
+      if (!moderated) return res.status(404).json({ message: 'Review reply item not found' });
+      return res.json({ ok: true });
+    }
+    if (!booking[type]) return res.status(404).json({ message: 'Image review item not found' });
 
     const payload = booking[type] || {};
     if (type === 'review' && action === 'approve') {
@@ -389,7 +395,7 @@ module.exports = (app, ctx) => {
 };
 
 function userImageReviewItems(booking, privateImageUrl) {
-  return ['review', 'complaint'].flatMap(type => {
+  const items = ['review', 'complaint'].flatMap(type => {
     const payload = booking[type] || {};
     if (!Object.keys(payload).length) return [];
     if (type === 'complaint' && payload.reviewStatus !== 'pending') return [];
@@ -413,6 +419,77 @@ function userImageReviewItems(booking, privateImageUrl) {
       createdAt: payload.createdAt || payload.date || booking.updatedAt || booking.createdAt || '',
     }];
   });
+
+  const reply = booking.review?.pendingMerchantReply || booking.review?.merchantReply;
+  if (reply) {
+    items.push({
+      id: `${booking.id}:reviewReply`,
+      bookingId: booking.id,
+      type: 'reviewReply',
+      url: '',
+      imageUrls: [],
+      userId: booking.userId || '',
+      userName: booking.userName || '',
+      salonName: booking.salonName || '',
+      staffName: booking.staffName || '',
+      serviceName: booking.serviceName || '',
+      content: reply.content || '',
+      rating: null,
+      status: reply.reviewStatus || 'approved',
+      createdAt: reply.repliedAt || booking.updatedAt || booking.createdAt || '',
+    });
+  }
+  return items;
+}
+
+async function moderateReviewReply(booking, action, getStaffById) {
+  const review = booking.review || {};
+  const pendingReply = review.pendingMerchantReply;
+  const publicReply = review.merchantReply;
+  if ((action === 'approve' || action === 'reject') && !pendingReply) return false;
+  if (action === 'delete' && !pendingReply && !publicReply) return false;
+
+  const reviewedAt = new Date().toISOString();
+  let nextPublicReply = publicReply;
+  if (action === 'approve') {
+    nextPublicReply = { ...pendingReply, reviewStatus: 'approved', reviewedAt };
+    booking.review = { ...review, merchantReply: nextPublicReply };
+    delete booking.review.pendingMerchantReply;
+  } else if (action === 'reject') {
+    booking.review = {
+      ...review,
+      pendingMerchantReply: { ...pendingReply, reviewStatus: 'rejected', reviewedAt },
+    };
+  } else if (pendingReply) {
+    booking.review = { ...review };
+    delete booking.review.pendingMerchantReply;
+  } else {
+    nextPublicReply = undefined;
+    booking.review = { ...review };
+    delete booking.review.merchantReply;
+  }
+
+  booking.markModified('review');
+  booking.updatedAt = reviewedAt;
+  await booking.save();
+  if (action === 'approve' || (action === 'delete' && !pendingReply)) {
+    await syncStaffReviewReply(booking, nextPublicReply, getStaffById);
+  }
+  return true;
+}
+
+async function syncStaffReviewReply(booking, reply, getStaffById) {
+  const staffMember = await getStaffById(booking.staffId);
+  if (!staffMember || !Array.isArray(staffMember.reviews)) return;
+  staffMember.reviews = staffMember.reviews.map(review => {
+    if (review?.bookingId !== booking.id && review?.id !== booking.review?.id) return review;
+    const updated = { ...review };
+    if (reply) updated.merchantReply = reply;
+    else delete updated.merchantReply;
+    return updated;
+  });
+  staffMember.markModified('reviews');
+  await staffMember.save();
 }
 
 async function publishStaffReview(booking, review, getStaffById, calculateStaffRating) {
