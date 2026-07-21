@@ -774,6 +774,56 @@ test('approving a merchant reply publishes it without changing the user review s
   assert.equal(staff.reviews[0].merchantReply.content, '新回复');
 });
 
+test('rejecting an approved merchant reply hides it without rejecting the user review', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const booking = {
+    id: 'BK-1',
+    staffId: 'staff-1',
+    review: {
+      id: 'review-1',
+      bookingId: 'BK-1',
+      reviewStatus: 'approved',
+      merchantReply: { content: '需要下架', reviewStatus: 'approved' },
+    },
+    markModified() {},
+    async save() {},
+  };
+  const staff = {
+    reviews: [{ ...booking.review }],
+    markModified() {},
+    async save() {},
+  };
+  registerAdminRoutes(app, {
+    Booking: { async findOne() { return booking; } },
+    async getStaffById() { return staff; },
+    rateLimits: { login: [], upload: [] },
+  });
+
+  await routes.get('/api/admin/user-images')(
+    { body: { bookingId: 'BK-1', type: 'reviewReply', action: 'reject' } },
+    { status() { return this; }, json() {} },
+  );
+
+  assert.equal(booking.review.reviewStatus, 'approved');
+  assert.equal(booking.review.merchantReply.reviewStatus, 'rejected');
+  assert.equal(staff.reviews[0].merchantReply.reviewStatus, 'rejected');
+  assert.equal(normalizeBooking(booking).review.merchantReply, undefined);
+
+  await routes.get('/api/admin/user-images')(
+    { body: { bookingId: 'BK-1', type: 'reviewReply', action: 'approve' } },
+    { status() { return this; }, json() {} },
+  );
+
+  assert.equal(booking.review.reviewStatus, 'approved');
+  assert.equal(booking.review.merchantReply.reviewStatus, 'approved');
+  assert.equal(staff.reviews[0].merchantReply.reviewStatus, 'approved');
+});
+
 test('client booking payloads hide pending merchant replies', () => {
   const booking = {
     status: 'completed',

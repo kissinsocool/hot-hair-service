@@ -446,20 +446,27 @@ async function moderateReviewReply(booking, action, getStaffById) {
   const review = booking.review || {};
   const pendingReply = review.pendingMerchantReply;
   const publicReply = review.merchantReply;
-  if ((action === 'approve' || action === 'reject') && !pendingReply) return false;
+  const approvableReply = pendingReply || (publicReply?.reviewStatus === 'rejected' ? publicReply : null);
+  if (action === 'approve' && !approvableReply) return false;
+  if (action === 'reject' && !pendingReply && !publicReply) return false;
   if (action === 'delete' && !pendingReply && !publicReply) return false;
 
   const reviewedAt = new Date().toISOString();
   let nextPublicReply = publicReply;
   if (action === 'approve') {
-    nextPublicReply = { ...pendingReply, reviewStatus: 'approved', reviewedAt };
+    nextPublicReply = { ...approvableReply, reviewStatus: 'approved', reviewedAt };
     booking.review = { ...review, merchantReply: nextPublicReply };
     delete booking.review.pendingMerchantReply;
   } else if (action === 'reject') {
-    booking.review = {
-      ...review,
-      pendingMerchantReply: { ...pendingReply, reviewStatus: 'rejected', reviewedAt },
-    };
+    if (pendingReply) {
+      booking.review = {
+        ...review,
+        pendingMerchantReply: { ...pendingReply, reviewStatus: 'rejected', reviewedAt },
+      };
+    } else {
+      nextPublicReply = { ...publicReply, reviewStatus: 'rejected', reviewedAt };
+      booking.review = { ...review, merchantReply: nextPublicReply };
+    }
   } else if (pendingReply) {
     booking.review = { ...review };
     delete booking.review.pendingMerchantReply;
@@ -472,7 +479,7 @@ async function moderateReviewReply(booking, action, getStaffById) {
   booking.markModified('review');
   booking.updatedAt = reviewedAt;
   await booking.save();
-  if (action === 'approve' || (action === 'delete' && !pendingReply)) {
+  if (action === 'approve' || (action === 'reject' && !pendingReply) || (action === 'delete' && !pendingReply)) {
     await syncStaffReviewReply(booking, nextPublicReply, getStaffById);
   }
   return true;
