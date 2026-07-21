@@ -902,6 +902,13 @@ const incrementNoShowCount = (userId, session) => {
   );
 };
 
+const MAX_STAFF_REVIEWS = 200;
+const PUBLIC_STAFF_REVIEWS_LIMIT = 50;
+const PUBLIC_SALON_REVIEWS_LIMIT = 150;
+const PUBLIC_SALON_CACHE_TTL_MS = 15_000;
+const PUBLIC_SALON_CACHE_MAX = 100;
+const publicSalonDetailCache = new Map();
+
 const calculateStaffRating = (person) => {
   const reviews = publicReviews(person);
   if (!reviews.length) {
@@ -914,13 +921,14 @@ const calculateStaffRating = (person) => {
 
 const buildStaffPayload = (person) => ({
   ...person,
-  reviews: publicReviews(person),
+  reviews: publicReviews(person, PUBLIC_STAFF_REVIEWS_LIMIT),
   rating: calculateStaffRating(person),
 });
 
-const publicReviews = (person) =>
+const publicReviews = (person, limit = MAX_STAFF_REVIEWS) =>
   ((person && Array.isArray(person.reviews)) ? person.reviews : [])
     .filter(review => !review.reviewStatus || review.reviewStatus === 'approved')
+    .slice(0, limit)
     .map(({ pendingImageUrls, pendingMerchantReply, ...review }) => {
       if (review.merchantReply?.reviewStatus && review.merchantReply.reviewStatus !== 'approved') {
         delete review.merchantReply;
@@ -956,18 +964,44 @@ const buildSalonDetail = async (salonDocument) => {
   const staffMap = await getStaffMapByIds(salon.staffIds);
   const staffList = salon.staffIds.map(id => staffMap[id]).filter(Boolean);
   const images = await existingSalonImages(salon);
+  const staff = staffList.map(buildStaffPayload);
   return {
     ...stripSensitiveSalonFields(salon),
     image: await salonCoverImage(salon),
     images,
     promoImages: images,
-    staff: staffList.map(buildStaffPayload),
-    reviews: staffList.flatMap(staff => publicReviews(staff).map(review => ({
+    staff,
+    reviews: staff.flatMap(person => person.reviews.map(review => ({
       ...review,
-      staffName: staff.name,
-    }))),
+      staffName: person.name,
+    }))).slice(0, PUBLIC_SALON_REVIEWS_LIMIT),
   };
 };
+
+// ponytail: process-local and short-lived; use Redis only when multiple backend instances need a shared cache.
+const buildPublicSalonDetail = async (salonDocument, builder = buildSalonDetail, now = Date.now()) => {
+  const salon = normalizeDocument(salonDocument);
+  const id = String(salon?.id || salon?._id || '');
+  if (!id) return builder(salonDocument);
+  const version = new Date(salon.updatedAt || 0).getTime() || 0;
+  const key = `${id}:${version}`;
+  const cached = publicSalonDetailCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  const value = Promise.resolve().then(() => builder(salonDocument));
+  publicSalonDetailCache.set(key, { expiresAt: now + PUBLIC_SALON_CACHE_TTL_MS, value });
+  while (publicSalonDetailCache.size > PUBLIC_SALON_CACHE_MAX) {
+    publicSalonDetailCache.delete(publicSalonDetailCache.keys().next().value);
+  }
+  try {
+    return await value;
+  } catch (error) {
+    if (publicSalonDetailCache.get(key)?.value === value) publicSalonDetailCache.delete(key);
+    throw error;
+  }
+};
+
+const clearPublicSalonDetailCache = () => publicSalonDetailCache.clear();
 
 const contentFields = [
   'name',
@@ -1220,7 +1254,7 @@ const readFavoriteSalons = async (userId = DEMO_USER_ID) => {
     favorites
       .map(favorite => salonsById.get(favorite.salonId))
       .filter(Boolean)
-      .map(buildSalonDetail),
+      .map(salon => buildPublicSalonDetail(salon)),
   );
 };
 
@@ -1353,6 +1387,7 @@ const routeContext = {
   buildMerchantBookingScope,
   buildMerchantUserPayload,
   buildSalonDetail,
+  buildPublicSalonDetail,
   buildStaffPayload,
   calculateDistanceKm,
   calculateStaffRating,
@@ -1392,6 +1427,7 @@ const routeContext = {
   loginClientByPhone,
   logoutSession,
   maskPhone,
+  MAX_STAFF_REVIEWS,
   MerchantUser,
   mongoose,
   newClientUserId,
@@ -1498,6 +1534,9 @@ module.exports = {
   activeSessionQuery,
   acceptedBookingAtTimeQuery,
   buildGeoLocation,
+  buildPublicSalonDetail,
+  buildStaffPayload,
+  clearPublicSalonDetailCache,
   buildMerchantBookingScope,
   calculateDistanceKm,
   getNearbySalons,

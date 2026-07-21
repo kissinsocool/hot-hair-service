@@ -5,7 +5,10 @@ const {
   activeSessionQuery,
   acceptedBookingAtTimeQuery,
   buildGeoLocation,
+  buildPublicSalonDetail,
+  buildStaffPayload,
   buildMerchantBookingScope,
+  clearPublicSalonDetailCache,
   createSession,
   ensureSalonForMerchant,
   getNearbySalons,
@@ -43,6 +46,35 @@ test('getCoordinates accepts common location shapes', () => {
   assert.deepEqual(getCoordinates({ coordinates: [121.4737, 31.2304] }), { latitude: 31.2304, longitude: 121.4737 });
   assert.equal(getCoordinates({ latitude: 91, longitude: 121.4737 }), null);
   assert.equal(getCoordinates({ latitude: 31.2304, longitude: -181 }), null);
+});
+
+test('public salon details share a bounded short-lived cache entry', async () => {
+  clearPublicSalonDetailCache();
+  let builds = 0;
+  const salon = { id: 'salon-cache', updatedAt: new Date('2030-01-01T00:00:00Z') };
+  const builder = async () => ({ build: ++builds });
+
+  const [first, second] = await Promise.all([
+    buildPublicSalonDetail(salon, builder, 1000),
+    buildPublicSalonDetail(salon, builder, 1000),
+  ]);
+  assert.deepEqual(first, { build: 1 });
+  assert.deepEqual(second, { build: 1 });
+  assert.equal(builds, 1);
+
+  assert.deepEqual(await buildPublicSalonDetail(salon, builder, 16_001), { build: 2 });
+  clearPublicSalonDetailCache();
+});
+
+test('public staff payloads cap embedded reviews while retaining a stable rating', () => {
+  const reviews = Array.from({ length: 205 }, (_, index) => ({
+    id: `review-${index}`,
+    rating: 5,
+    reviewStatus: 'approved',
+  }));
+  const payload = buildStaffPayload({ id: 'staff-1', reviews });
+  assert.equal(payload.reviews.length, 50);
+  assert.equal(payload.rating, 5);
 });
 
 test('health and readiness endpoints expose process and dependency state', async () => {
@@ -192,8 +224,24 @@ test('query indexes match geospatial and filtered booking access patterns', () =
     fields.userId === 1 && fields.status === 1 && fields.createdAt === -1));
   assert.ok(bookingIndexes.some(fields =>
     fields.salonId === 1 && fields.status === 1 && fields.createdAt === -1));
+  assert.ok(bookingIndexes.some(fields =>
+    fields.salonId === 1 && fields.startTime === 1 && fields.status === 1));
   assert.ok(salonIndexes.some(fields =>
     fields.geoLocation === '2dsphere' && fields.publishStatus === 1));
+});
+
+test('merchant booking day range defaults to today and accepts an explicit date', () => {
+  const today = registerMerchantRoutes.bookingDayRange(undefined, new Date(2030, 0, 2, 15, 30));
+  assert.deepEqual(today, {
+    start: new Date(2030, 0, 2),
+    end: new Date(2030, 0, 3),
+  });
+  assert.deepEqual(registerMerchantRoutes.bookingDayRange('2030-02-03'), {
+    start: new Date(2030, 1, 3),
+    end: new Date(2030, 1, 4),
+  });
+  assert.equal(registerMerchantRoutes.bookingDayRange('03/02/2030'), null);
+  assert.equal(registerMerchantRoutes.bookingDayRange('2030-02-30'), null);
 });
 
 test('merchant active booking scope follows current salon staff ownership', () => {
@@ -553,6 +601,11 @@ test('approving a review publishes moderated images before making it public', as
     markModified() {},
     async save() {},
   };
+  const staff = {
+    reviews: Array.from({ length: 205 }, (_, index) => ({ id: `old-${index}`, rating: 5 })),
+    markModified() {},
+    async save() {},
+  };
   const published = [];
   registerAdminRoutes(app, {
     Booking: { async findOne() { return booking; } },
@@ -561,7 +614,9 @@ test('approving a review publishes moderated images before making it public', as
       return 'https://public.example/uploads/review-1.png';
     },
     async deleteModeratedImages() {},
-    async getStaffById() { return null; },
+    async getStaffById() { return staff; },
+    calculateStaffRating() { return 5; },
+    MAX_STAFF_REVIEWS: 200,
     rateLimits: { login: [], upload: [] },
   });
 
@@ -573,6 +628,7 @@ test('approving a review publishes moderated images before making it public', as
   assert.deepEqual(published, ['moderation/review-1.png']);
   assert.equal(booking.review.reviewStatus, 'approved');
   assert.deepEqual(booking.review.imageUrls, ['https://public.example/uploads/review-1.png']);
+  assert.equal(staff.reviews.length, 200);
 });
 
 test('rejecting a review keeps moderated images for preview and later approval', async () => {

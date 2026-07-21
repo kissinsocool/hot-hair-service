@@ -20,6 +20,7 @@ module.exports = (app, ctx) => {
     normalizeBooking,
     getStaffById,
     calculateStaffRating,
+    MAX_STAFF_REVIEWS,
     buildAdPayload,
     normalizeAdLink,
     saveBase64Image,
@@ -387,7 +388,7 @@ module.exports = (app, ctx) => {
     await booking.save();
 
     if (type === 'review' && action === 'approve') {
-      await publishStaffReview(booking, payload, getStaffById, calculateStaffRating);
+      await publishStaffReview(booking, payload, getStaffById, calculateStaffRating, MAX_STAFF_REVIEWS);
     }
 
     res.json({ ok: true });
@@ -499,7 +500,7 @@ async function syncStaffReviewReply(booking, reply, getStaffById) {
   await staffMember.save();
 }
 
-async function publishStaffReview(booking, review, getStaffById, calculateStaffRating) {
+async function publishStaffReview(booking, review, getStaffById, calculateStaffRating, maxReviews = 200) {
   const staffMember = await getStaffById(booking.staffId);
   if (!staffMember) return;
 
@@ -510,7 +511,7 @@ async function publishStaffReview(booking, review, getStaffById, calculateStaffR
   staffMember.reviews = [
     publicReview,
     ...(staffMember.reviews || []).filter(item => item?.bookingId !== booking.id && item?.id !== review.id),
-  ];
+  ].slice(0, maxReviews);
   staffMember.rating = calculateStaffRating(staffMember);
   staffMember.markModified('reviews');
   await staffMember.save();

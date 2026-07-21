@@ -3,7 +3,7 @@ module.exports = (app, ctx) => {
     getNearbySalons,
     normalizeLimit,
     normalizeRadiusKm,
-    buildSalonDetail,
+    buildPublicSalonDetail,
     resolveRequestUser,
     readFavoriteSalons,
     FavoriteSalon,
@@ -25,6 +25,7 @@ module.exports = (app, ctx) => {
   });
 
   app.get('/api/salons', ...rateLimits.publicRead, async (req, res) => {
+    res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
     const userLocation = getCoordinates(req.query);
     if (!userLocation) return res.status(400).json({ message: 'latitude and longitude are required' });
     const radiusKm = normalizeRadiusKm(req.query.radiusKm, 10, 50);
@@ -72,7 +73,8 @@ module.exports = (app, ctx) => {
       .select('-licenseUrl -legalPersonIdFrontUrl -legalPersonIdBackUrl -addressProofUrl -licenseStatus -licenseRejectReason -licenseSubmittedAt -licenseReviewedAt -pendingContent -contentReviewStatus -contentRejectReason -contentReviewedAt');
     if (!salon) return res.status(404).json({ message: 'Salon not found' });
   
-    res.json(await buildSalonDetail(salon));
+    res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
+    res.json(await buildPublicSalonDetail(salon));
   });
   
   app.get('/api/favorites', async (req, res) => {

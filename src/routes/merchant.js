@@ -1,3 +1,20 @@
+const bookingDayRange = (value, now = new Date()) => {
+  const date = String(value || '').trim();
+  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const [year, month, day] = date
+    ? date.split('-').map(Number)
+    : [now.getFullYear(), now.getMonth() + 1, now.getDate()];
+  const start = new Date(year, month - 1, day);
+  if (
+    start.getFullYear() !== year
+    || start.getMonth() !== month - 1
+    || start.getDate() !== day
+  ) return null;
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { start, end };
+};
+
 module.exports = (app, ctx) => {
   const {
     MerchantUser,
@@ -863,10 +880,14 @@ module.exports = (app, ctx) => {
   });
   
   app.get('/api/merchant/bookings', async (req, res) => {
-    const { status } = req.query;
+    const { status, date } = req.query;
+    const day = bookingDayRange(date);
+    if (!day) return res.status(400).json({ message: 'date must use YYYY-MM-DD format' });
     const merchantSalon = await Salon.findOne({ id: req.merchantUser.salonId }).select('staffIds').lean();
     const scope = buildMerchantBookingScope(req.merchantUser.salonId, merchantSalon?.staffIds || []);
-    const query = status ? { $and: [scope, { status }] } : scope;
+    const filters = [scope, { startTime: { $gte: day.start, $lt: day.end } }];
+    if (status) filters.push({ status });
+    const query = { $and: filters };
     const pagination = normalizePagination(req.query);
     const [result, total] = await Promise.all([
       Booking.find(query).select('-_id -__v').sort({ createdAt: -1 }).skip(pagination.skip).limit(pagination.limit).lean(),
@@ -951,3 +972,5 @@ function validateSalonContent(payload = {}, limits) {
   }
   return '';
 }
+
+module.exports.bookingDayRange = bookingDayRange;
