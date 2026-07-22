@@ -18,9 +18,6 @@ module.exports = (app, ctx) => {
     hashPassword,
     applyPendingContent,
     normalizeBooking,
-    getStaffById,
-    calculateStaffRating,
-    MAX_STAFF_REVIEWS,
     buildAdPayload,
     normalizeAdLink,
     saveBase64Image,
@@ -33,6 +30,7 @@ module.exports = (app, ctx) => {
     rotateSession,
     logoutSession,
     revokeSessionHash,
+    clearPublicSalonDetailCache,
   } = ctx;
 
   app.post('/api/admin/auth/login', ...rateLimits.login, async (req, res) => {
@@ -352,21 +350,20 @@ module.exports = (app, ctx) => {
     const booking = await Booking.findOne({ id: bookingId });
     if (!booking) return res.status(404).json({ message: 'Image review item not found' });
     if (type === 'reviewReply') {
-      const moderated = await moderateReviewReply(booking, action, getStaffById);
+      const moderated = await moderateReviewReply(booking, action);
       if (!moderated) return res.status(404).json({ message: 'Review reply item not found' });
+      clearPublicSalonDetailCache?.();
       return res.json({ ok: true });
     }
     if (type === 'reviewEdit') {
       const moderated = await moderateReviewEdit(
         booking,
         action,
-        getStaffById,
-        calculateStaffRating,
         publishModeratedImage,
         deleteModeratedImages,
-        MAX_STAFF_REVIEWS,
       );
       if (!moderated) return res.status(404).json({ message: 'Review edit item not found' });
+      clearPublicSalonDetailCache?.();
       return res.json({ ok: true });
     }
     if (!booking[type]) return res.status(404).json({ message: 'Image review item not found' });
@@ -379,10 +376,6 @@ module.exports = (app, ctx) => {
     }
     if (action === 'delete') {
       await deleteModeratedImages(payload.imageUrls || []);
-    }
-
-    if (type === 'review' && action !== 'approve') {
-      await unpublishStaffReview(booking, payload, getStaffById, calculateStaffRating);
     }
 
     if (action === 'delete') {
@@ -399,10 +392,7 @@ module.exports = (app, ctx) => {
     booking.markModified(type);
     booking.updatedAt = new Date().toISOString();
     await booking.save();
-
-    if (type === 'review' && action === 'approve') {
-      await publishStaffReview(booking, payload, getStaffById, calculateStaffRating, MAX_STAFF_REVIEWS);
-    }
+    clearPublicSalonDetailCache?.();
 
     res.json({ ok: true });
   });
@@ -479,11 +469,8 @@ function userImageReviewItems(booking, privateImageUrl) {
 async function moderateReviewEdit(
   booking,
   action,
-  getStaffById,
-  calculateStaffRating,
   publishModeratedImage,
   deleteModeratedImages,
-  maxReviews,
 ) {
   const edit = booking.review?.pendingEdit;
   if (!edit) return false;
@@ -500,7 +487,6 @@ async function moderateReviewEdit(
     booking.markModified('review');
     booking.updatedAt = new Date().toISOString();
     await booking.save();
-    await publishStaffReview(booking, approved, getStaffById, calculateStaffRating, maxReviews);
     return true;
   }
 
@@ -516,7 +502,7 @@ async function moderateReviewEdit(
   return true;
 }
 
-async function moderateReviewReply(booking, action, getStaffById) {
+async function moderateReviewReply(booking, action) {
   const review = booking.review || {};
   const pendingReply = review.pendingMerchantReply;
   const publicReply = review.merchantReply;
@@ -553,49 +539,5 @@ async function moderateReviewReply(booking, action, getStaffById) {
   booking.markModified('review');
   booking.updatedAt = reviewedAt;
   await booking.save();
-  if (action === 'approve' || (action === 'reject' && !pendingReply) || (action === 'delete' && !pendingReply)) {
-    await syncStaffReviewReply(booking, nextPublicReply, getStaffById);
-  }
   return true;
-}
-
-async function syncStaffReviewReply(booking, reply, getStaffById) {
-  const staffMember = await getStaffById(booking.staffId);
-  if (!staffMember || !Array.isArray(staffMember.reviews)) return;
-  staffMember.reviews = staffMember.reviews.map(review => {
-    if (review?.bookingId !== booking.id && review?.id !== booking.review?.id) return review;
-    const updated = { ...review };
-    if (reply) updated.merchantReply = reply;
-    else delete updated.merchantReply;
-    return updated;
-  });
-  staffMember.markModified('reviews');
-  await staffMember.save();
-}
-
-async function publishStaffReview(booking, review, getStaffById, calculateStaffRating, maxReviews = 200) {
-  const staffMember = await getStaffById(booking.staffId);
-  if (!staffMember) return;
-
-  const publicReview = {
-    ...review,
-    reviewStatus: 'approved',
-  };
-  staffMember.reviews = [
-    publicReview,
-    ...(staffMember.reviews || []).filter(item => item?.bookingId !== booking.id && item?.id !== review.id),
-  ].slice(0, maxReviews);
-  staffMember.rating = calculateStaffRating(staffMember);
-  staffMember.markModified('reviews');
-  await staffMember.save();
-}
-
-async function unpublishStaffReview(booking, review, getStaffById, calculateStaffRating) {
-  const staffMember = await getStaffById(booking.staffId);
-  if (!staffMember) return;
-  staffMember.reviews = (staffMember.reviews || [])
-    .filter(item => item?.bookingId !== booking.id && item?.id !== review.id);
-  staffMember.rating = calculateStaffRating(staffMember);
-  staffMember.markModified('reviews');
-  await staffMember.save();
 }

@@ -178,10 +178,17 @@ const stripSensitiveSalonFields = (salon = {}) => {
 const buildAdminMerchantPayload = async (user, salonDocument = {}) => {
   const salon = normalizeDocument(salonDocument);
   const staffMap = await getStaffMapByIds(salon.staffIds || []);
+  const reviews = await getApprovedReviewsByStaffIds(salon.staffIds || [], PUBLIC_SALON_REVIEWS_LIMIT);
+  const reviewsByStaff = groupReviewsByStaff(reviews);
   const publicSalon = {
     ...stripSensitiveSalonFields(salon),
-    staff: (salon.staffIds || []).map(id => staffMap[id]).filter(Boolean).map(buildStaffPayload),
+    staff: (salon.staffIds || []).map(id => staffMap[id]).filter(Boolean)
+      .map(person => buildStaffPayload(person, reviewsByStaff[person.id] || [])),
   };
+  const salonPayload = salon.pendingContent ? { ...publicSalon, ...salon.pendingContent } : publicSalon;
+  salonPayload.staff = (salonPayload.staff || [])
+    .map(person => buildStaffPayload(person, reviewsByStaff[person.id] || []));
+  salonPayload.reviews = reviews;
   return {
     ...buildMerchantUserPayload(user),
     salonName: salon.name || '',
@@ -197,7 +204,7 @@ const buildAdminMerchantPayload = async (user, salonDocument = {}) => {
     contentReviewStatus: salon.contentReviewStatus || 'pending',
     contentRejectReason: salon.contentRejectReason || '',
     contentReviewedAt: salon.contentReviewedAt,
-    salon: salon.pendingContent ? { ...publicSalon, ...salon.pendingContent } : publicSalon,
+    salon: salonPayload,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
     lastLoginAt: user.lastLoginAt,
@@ -903,15 +910,13 @@ const incrementNoShowCount = (userId, session) => {
   );
 };
 
-const MAX_STAFF_REVIEWS = 200;
 const PUBLIC_STAFF_REVIEWS_LIMIT = 50;
 const PUBLIC_SALON_REVIEWS_LIMIT = 150;
 const PUBLIC_SALON_CACHE_TTL_MS = 15_000;
 const PUBLIC_SALON_CACHE_MAX = 100;
 const publicSalonDetailCache = new Map();
 
-const calculateStaffRating = (person) => {
-  const reviews = publicReviews(person);
+const calculateStaffRating = (reviews = []) => {
   if (!reviews.length) {
     return 5;
   }
@@ -920,22 +925,47 @@ const calculateStaffRating = (person) => {
   return Number((total / reviews.length).toFixed(1));
 };
 
-const buildStaffPayload = (person) => ({
-  ...person,
-  reviews: publicReviews(person, PUBLIC_STAFF_REVIEWS_LIMIT),
-  rating: calculateStaffRating(person),
-});
+const buildStaffPayload = (person, reviews = []) => {
+  const { reviews: _legacyReviews, rating: _legacyRating, ...profile } = person || {};
+  const publicReviews = reviews.slice(0, PUBLIC_STAFF_REVIEWS_LIMIT);
+  return {
+    ...profile,
+    reviews: publicReviews,
+    rating: calculateStaffRating(publicReviews),
+  };
+};
 
-const publicReviews = (person, limit = MAX_STAFF_REVIEWS) =>
-  ((person && Array.isArray(person.reviews)) ? person.reviews : [])
-    .filter(review => !review.reviewStatus || review.reviewStatus === 'approved')
-    .slice(0, limit)
-    .map(({ pendingImageUrls, pendingMerchantReply, ...review }) => {
-      if (review.merchantReply?.reviewStatus && review.merchantReply.reviewStatus !== 'approved') {
-        delete review.merchantReply;
-      }
-      return review;
-    });
+const publicReviewFromBooking = (booking) => {
+  const { pendingImageUrls, pendingMerchantReply, pendingEdit, ...review } = booking.review || {};
+  if (review.merchantReply?.reviewStatus && review.merchantReply.reviewStatus !== 'approved') {
+    delete review.merchantReply;
+  }
+  return {
+    ...review,
+    bookingId: review.bookingId || booking.id,
+    staffId: booking.staffId,
+    staffName: booking.staffName,
+  };
+};
+
+const getApprovedReviewsByStaffIds = async (staffIds = [], limit = PUBLIC_SALON_REVIEWS_LIMIT) => {
+  const ids = [...new Set(staffIds.map(String).filter(Boolean))];
+  if (!ids.length) return [];
+  const bookings = await Booking.find({
+    staffId: { $in: ids },
+    'review.reviewStatus': 'approved',
+  })
+    .select('id staffId staffName review updatedAt')
+    .sort({ updatedAt: -1 })
+    .limit(limit)
+    .lean();
+  return bookings.map(publicReviewFromBooking);
+};
+
+const groupReviewsByStaff = (reviews = []) => reviews.reduce((grouped, review) => {
+  (grouped[review.staffId] ||= []).push(review);
+  return grouped;
+}, {});
 
 const buildSalonImageList = (salon) => {
   const images = [
@@ -964,18 +994,17 @@ const buildSalonDetail = async (salonDocument) => {
   const salon = normalizeDocument(salonDocument);
   const staffMap = await getStaffMapByIds(salon.staffIds);
   const staffList = salon.staffIds.map(id => staffMap[id]).filter(Boolean);
+  const reviews = await getApprovedReviewsByStaffIds(salon.staffIds, PUBLIC_SALON_REVIEWS_LIMIT);
+  const reviewsByStaff = groupReviewsByStaff(reviews);
   const images = await existingSalonImages(salon);
-  const staff = staffList.map(buildStaffPayload);
+  const staff = staffList.map(person => buildStaffPayload(person, reviewsByStaff[person.id] || []));
   return {
     ...stripSensitiveSalonFields(salon),
     image: await salonCoverImage(salon),
     images,
     promoImages: images,
     staff,
-    reviews: staff.flatMap(person => person.reviews.map(review => ({
-      ...review,
-      staffName: person.name,
-    }))).slice(0, PUBLIC_SALON_REVIEWS_LIMIT),
+    reviews,
   };
 };
 
@@ -1143,15 +1172,10 @@ const buildContentDraft = async (salon, payload) => {
   }
 
   if (Array.isArray(payload.staff)) {
-    const incomingStaffIds = payload.staff
-      .map((profile, index) => profile?.id || `merchant-staff-${Date.now()}-${index}`)
-      .filter(Boolean);
-    const existingStaffMap = await getStaffMapByIds(incomingStaffIds);
     draft.staff = payload.staff
       .filter(profile => profile && profile.name)
       .map((profile, index) => {
         const id = profile.id || `merchant-staff-${Date.now()}-${index}`;
-        const previousStaff = existingStaffMap[id] || {};
         return {
           id,
           name: profile.name,
@@ -1161,10 +1185,12 @@ const buildContentDraft = async (salon, payload) => {
           imageUrl: profile.imageUrl || '',
           bio: profile.bio || '',
           unavailableSlots: normalizeUnavailableSlots(profile.unavailableSlots),
-          rating: Number(profile.rating || previousStaff.rating || 4.8),
-          reviews: Array.isArray(profile.reviews) ? profile.reviews : previousStaff.reviews || [],
         };
       });
+  }
+
+  if (Array.isArray(draft.staff)) {
+    draft.staff = draft.staff.map(({ reviews, rating, ...profile }) => profile);
   }
 
   return Object.fromEntries(contentFields.map(key => [key, draft[key]]));
@@ -1196,13 +1222,18 @@ const applyPendingContent = async (salon) => {
 const buildMerchantSalonPayload = async (salonId = '1') => {
   const salon = await Salon.findOne({ id: salonId });
   const payload = await buildSalonDetail(salon);
-  return {
+  const merged = {
     ...payload,
     ...salon.pendingContent,
     contentReviewStatus: salon.contentReviewStatus || 'pending',
     contentRejectReason: salon.contentRejectReason || '',
     contentReviewedAt: salon.contentReviewedAt,
   };
+  const reviewsByStaff = groupReviewsByStaff(payload.reviews);
+  merged.staff = (merged.staff || [])
+    .map(person => buildStaffPayload(person, reviewsByStaff[person.id] || []));
+  merged.reviews = payload.reviews;
+  return merged;
 };
 
 const ensureSalonForMerchant = async ({ salonId, displayName }) => {
@@ -1391,7 +1422,7 @@ const routeContext = {
   buildPublicSalonDetail,
   buildStaffPayload,
   calculateDistanceKm,
-  calculateStaffRating,
+  clearPublicSalonDetailCache,
   ClientUser,
   createSession,
   createModeratedUploadPolicies,
@@ -1408,6 +1439,7 @@ const routeContext = {
   generateSlotsForNoPreferenceAndDate,
   generateSlotsForStaffAndDate,
   getNearbySalons,
+  getApprovedReviewsByStaffIds,
   getCoordinates,
   getSalonByStaffId,
   getServiceById,
@@ -1428,7 +1460,6 @@ const routeContext = {
   loginClientByPhone,
   logoutSession,
   maskPhone,
-  MAX_STAFF_REVIEWS,
   MerchantUser,
   mongoose,
   newClientUserId,
@@ -1540,6 +1571,7 @@ module.exports = {
   clearPublicSalonDetailCache,
   buildMerchantBookingScope,
   calculateDistanceKm,
+  getApprovedReviewsByStaffIds,
   getNearbySalons,
   getCoordinates,
   generateSlotsForStaffAndDate,

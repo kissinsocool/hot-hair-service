@@ -41,6 +41,7 @@ bookingSchema.index({ userId: 1, createdAt: -1 });
 bookingSchema.index({ userId: 1, status: 1, createdAt: -1 });
 bookingSchema.index({ createdAt: -1 });
 bookingSchema.index({ 'review.reviewStatus': 1, updatedAt: -1 });
+bookingSchema.index({ staffId: 1, 'review.reviewStatus': 1, updatedAt: -1 });
 bookingSchema.index({ 'complaint.reviewStatus': 1, updatedAt: -1 });
 
 const slotOccupancySchema = new mongoose.Schema({
@@ -115,8 +116,6 @@ const staffProfileSchema = new mongoose.Schema({
   extraServiceFee: { type: Number, default: 0 },
   imageUrl: String,
   bio: String,
-  rating: Number,
-  reviews: [mongoose.Schema.Types.Mixed],
   unavailableSlots: [String],
 }, { timestamps: true });
 

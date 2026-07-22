@@ -56,7 +56,7 @@ module.exports = (app, ctx) => {
     Booking,
     USER_CANCEL_WINDOW_MS,
     broadcastBookingEvent,
-    calculateStaffRating,
+    getApprovedReviewsByStaffIds,
     getUserPolicy,
     getServiceById,
     parseOpeningHours,
@@ -77,6 +77,7 @@ module.exports = (app, ctx) => {
     rotateSession,
     logoutSession,
     sessionTokenFromRequest,
+    clearPublicSalonDetailCache,
   } = ctx;
 
   const reserveBookingSlot = (bookingId, staffId, startTime, session) => {
@@ -337,11 +338,20 @@ module.exports = (app, ctx) => {
     if (!person) return res.status(404).json({ message: 'Staff not found' });
     const salon = await getSalonByStaffId(req.params.id).lean();
     const staffMap = salon ? await getStaffMapByIds(salon.staffIds) : {};
+    const [reviews, salonReviews] = await Promise.all([
+      getApprovedReviewsByStaffIds([req.params.id], 50),
+      salon ? getApprovedReviewsByStaffIds(salon.staffIds, 150) : [],
+    ]);
+    const reviewsByStaff = salonReviews.reduce((grouped, review) => {
+      (grouped[review.staffId] ||= []).push(review);
+      return grouped;
+    }, {});
     res.json({
-      ...buildStaffPayload(person),
+      ...buildStaffPayload(person, reviews),
       salonId: salon?.id || '',
       salonServices: salon?.services || [],
-      salonStaff: salon ? salon.staffIds.map(id => staffMap[id]).filter(Boolean).map(buildStaffPayload) : [],
+      salonStaff: salon ? salon.staffIds.map(id => staffMap[id]).filter(Boolean)
+        .map(profile => buildStaffPayload(profile, reviewsByStaff[profile.id] || [])) : [],
       salonClosedDates: salon?.closedDates || [],
       salonAcceptsSameDayBooking: salon?.acceptsSameDayBooking !== false,
     });
@@ -563,9 +573,15 @@ module.exports = (app, ctx) => {
       return res.status(409).json({ message: 'Review has changed, please refresh and try again' });
     }
 
-    await deleteModeratedImages(previousPendingEdit?.imageUrls || []);
-    broadcastBookingEvent('booking.updated', updatedBooking);
-    res.json({ review: previousReview, editStatus: 'pending', booking: normalizeBooking(updatedBooking) });
+    res.json({ review: previousReview, editStatus: 'pending' });
+    Promise.allSettled([
+      deleteModeratedImages(previousPendingEdit?.imageUrls || []),
+    ]).then(results => logReviewCleanupFailures('edit', booking.id, results));
+    try {
+      broadcastBookingEvent('booking.updated', updatedBooking);
+    } catch (error) {
+      console.error(`Review edit broadcast failed for ${booking.id}:`, error.message);
+    }
   });
 
   app.delete('/api/bookings/:id/review', requireClientAuth, ...rateLimits.booking, async (req, res) => {
@@ -586,13 +602,19 @@ module.exports = (app, ctx) => {
       return res.status(409).json({ message: 'Review has changed, please refresh and try again' });
     }
 
-    await unpublishStaffReview(booking, review, getStaffById, calculateStaffRating);
-    await deleteModeratedImages([
-      ...(review.imageUrls || []),
-      ...(review.pendingEdit?.imageUrls || []),
-    ]);
-    broadcastBookingEvent('booking.updated', updatedBooking);
-    res.json({ ok: true, booking: normalizeBooking(updatedBooking) });
+    clearPublicSalonDetailCache?.();
+    res.json({ ok: true });
+    Promise.allSettled([
+      deleteModeratedImages([
+        ...(review.imageUrls || []),
+        ...(review.pendingEdit?.imageUrls || []),
+      ]),
+    ]).then(results => logReviewCleanupFailures('delete', booking.id, results));
+    try {
+      broadcastBookingEvent('booking.updated', updatedBooking);
+    } catch (error) {
+      console.error(`Review delete broadcast failed for ${booking.id}:`, error.message);
+    }
   });
   
   app.post('/api/bookings/:id/complaint', ...rateLimits.booking, async (req, res) => {
@@ -1068,9 +1090,19 @@ function validateSalonContent(payload = {}, limits) {
     if (Array.isArray(profile?.unavailableSlots) && profile.unavailableSlots.length > limits.unavailableSlots) {
       return `unavailableSlots cannot exceed ${limits.unavailableSlots} items`;
     }
-    if (Array.isArray(profile?.reviews) && profile.reviews.length > 200) return 'staff reviews cannot exceed 200 items';
   }
   return '';
+}
+
+function logReviewCleanupFailures(action, bookingId, results) {
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.error(
+        `Review ${action} cleanup failed for ${bookingId}:`,
+        result.reason?.message || result.reason,
+      );
+    }
+  }
 }
 
 module.exports.bookingDayRange = bookingDayRange;

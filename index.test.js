@@ -67,13 +67,13 @@ test('public salon details share a bounded short-lived cache entry', async () =>
   clearPublicSalonDetailCache();
 });
 
-test('public staff payloads cap embedded reviews while retaining a stable rating', () => {
+test('public staff payloads use supplied booking reviews and ignore legacy profile reviews', () => {
   const reviews = Array.from({ length: 205 }, (_, index) => ({
     id: `review-${index}`,
     rating: 5,
     reviewStatus: 'approved',
   }));
-  const payload = buildStaffPayload({ id: 'staff-1', reviews });
+  const payload = buildStaffPayload({ id: 'staff-1', reviews: [{ rating: 1 }] }, reviews);
   assert.equal(payload.reviews.length, 50);
   assert.equal(payload.rating, 5);
 });
@@ -227,6 +227,8 @@ test('query indexes match geospatial and filtered booking access patterns', () =
     fields.salonId === 1 && fields.status === 1 && fields.createdAt === -1));
   assert.ok(bookingIndexes.some(fields =>
     fields.salonId === 1 && fields.startTime === 1 && fields.status === 1));
+  assert.ok(bookingIndexes.some(fields =>
+    fields.staffId === 1 && fields['review.reviewStatus'] === 1 && fields.updatedAt === -1));
   assert.ok(salonIndexes.some(fields =>
     fields.geoLocation === '2dsphere' && fields.publishStatus === 1));
 });
@@ -605,11 +607,6 @@ test('approving a review publishes moderated images before making it public', as
     markModified() {},
     async save() {},
   };
-  const staff = {
-    reviews: Array.from({ length: 205 }, (_, index) => ({ id: `old-${index}`, rating: 5 })),
-    markModified() {},
-    async save() {},
-  };
   const published = [];
   registerAdminRoutes(app, {
     Booking: { async findOne() { return booking; } },
@@ -618,9 +615,6 @@ test('approving a review publishes moderated images before making it public', as
       return 'https://public.example/uploads/review-1.png';
     },
     async deleteModeratedImages() {},
-    async getStaffById() { return staff; },
-    calculateStaffRating() { return 5; },
-    MAX_STAFF_REVIEWS: 200,
     rateLimits: { login: [], upload: [] },
   });
 
@@ -632,7 +626,6 @@ test('approving a review publishes moderated images before making it public', as
   assert.deepEqual(published, ['moderation/review-1.png']);
   assert.equal(booking.review.reviewStatus, 'approved');
   assert.deepEqual(booking.review.imageUrls, ['https://public.example/uploads/review-1.png']);
-  assert.equal(staff.reviews.length, 200);
 });
 
 test('approving a review edit replaces the public review only after approval', async () => {
@@ -666,22 +659,14 @@ test('approving a review edit replaces the public review only after approval', a
     markModified() {},
     async save() {},
   };
-  const staff = {
-    reviews: [{ ...original }],
-    markModified() {},
-    async save() {},
-  };
   registerAdminRoutes(app, {
     Booking: { async findOne() { return booking; } },
     async publishModeratedImage() { return 'https://public.example/new.png'; },
     async deleteModeratedImages() {},
-    async getStaffById() { return staff; },
-    calculateStaffRating() { return 5; },
-    MAX_STAFF_REVIEWS: 200,
     rateLimits: { login: [], upload: [] },
   });
 
-  assert.equal(staff.reviews[0].comment, '原评论');
+  assert.equal(booking.review.comment, '原评论');
   await routes.get('/api/admin/user-images')(
     { body: { bookingId: 'BK-1', type: 'reviewEdit', action: 'approve' } },
     { status() { return this; }, json() {} },
@@ -689,7 +674,6 @@ test('approving a review edit replaces the public review only after approval', a
 
   assert.equal(booking.review.comment, '修改后评论');
   assert.equal(booking.review.pendingEdit, undefined);
-  assert.equal(staff.reviews[0].comment, '修改后评论');
 });
 
 test('rejecting a review keeps moderated images for preview and later approval', async () => {
@@ -724,7 +708,7 @@ test('rejecting a review keeps moderated images for preview and later approval',
   assert.deepEqual(booking.review.imageUrls, ['moderation/review-1.png']);
 });
 
-test('deleting an approved review removes it from the booking and staff profile', async () => {
+test('deleting an approved review removes the single booking review', async () => {
   const routes = new Map();
   const app = {
     get() {},
@@ -739,17 +723,10 @@ test('deleting an approved review removes it from the booking and staff profile'
     markModified() {},
     async save() {},
   };
-  const staff = {
-    reviews: [booking.review],
-    markModified() {},
-    async save() {},
-  };
   registerAdminRoutes(app, {
     Booking: { async findOne() { return booking; } },
     async publishModeratedImage(name) { return name; },
     async deleteModeratedImages() {},
-    async getStaffById() { return staff; },
-    calculateStaffRating() { return 0; },
     rateLimits: { login: [], upload: [] },
   });
 
@@ -760,7 +737,6 @@ test('deleting an approved review removes it from the booking and staff profile'
 
   assert.equal(booking.review, undefined);
   assert.equal(booking.reviewed, false);
-  assert.deepEqual(staff.reviews, []);
 });
 
 test('merchant review replies are scoped to the authenticated merchant salon', async () => {
@@ -870,14 +846,8 @@ test('approving a merchant reply publishes it without changing the user review s
     markModified() {},
     async save() {},
   };
-  const staff = {
-    reviews: [{ ...booking.review, pendingMerchantReply: undefined }],
-    markModified() {},
-    async save() {},
-  };
   registerAdminRoutes(app, {
     Booking: { async findOne() { return booking; } },
-    async getStaffById() { return staff; },
     rateLimits: { login: [], upload: [] },
   });
 
@@ -890,7 +860,6 @@ test('approving a merchant reply publishes it without changing the user review s
   assert.equal(booking.review.pendingMerchantReply, undefined);
   assert.equal(booking.review.merchantReply.content, '新回复');
   assert.equal(booking.review.merchantReply.reviewStatus, 'approved');
-  assert.equal(staff.reviews[0].merchantReply.content, '新回复');
 });
 
 test('rejecting an approved merchant reply hides it without rejecting the user review', async () => {
@@ -912,14 +881,8 @@ test('rejecting an approved merchant reply hides it without rejecting the user r
     markModified() {},
     async save() {},
   };
-  const staff = {
-    reviews: [{ ...booking.review }],
-    markModified() {},
-    async save() {},
-  };
   registerAdminRoutes(app, {
     Booking: { async findOne() { return booking; } },
-    async getStaffById() { return staff; },
     rateLimits: { login: [], upload: [] },
   });
 
@@ -930,7 +893,6 @@ test('rejecting an approved merchant reply hides it without rejecting the user r
 
   assert.equal(booking.review.reviewStatus, 'approved');
   assert.equal(booking.review.merchantReply.reviewStatus, 'rejected');
-  assert.equal(staff.reviews[0].merchantReply.reviewStatus, 'rejected');
   assert.equal(normalizeBooking(booking).review.merchantReply, undefined);
 
   await routes.get('/api/admin/user-images')(
@@ -940,7 +902,6 @@ test('rejecting an approved merchant reply hides it without rejecting the user r
 
   assert.equal(booking.review.reviewStatus, 'approved');
   assert.equal(booking.review.merchantReply.reviewStatus, 'approved');
-  assert.equal(staff.reviews[0].merchantReply.reviewStatus, 'approved');
 });
 
 test('client booking payloads hide pending merchant replies', () => {
@@ -1098,6 +1059,46 @@ test('editing a review stores a pending draft without changing the approved revi
   assert.equal(booking.review.comment, '原评论');
   assert.equal(update.$set['review.pendingEdit'].comment, '修改后评论');
   assert.equal(update.$set['review.pendingEdit'].reviewStatus, 'pending');
+});
+
+test('deleting a review returns success even when post-delete cleanup fails', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    patch() {},
+    use() {},
+    delete(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const review = { id: 'review-1', imageUrls: ['https://public.example/old.jpg'] };
+  const booking = { _id: 'mongo-booking-1', id: 'BK-1', userId: 'user-1', review };
+  registerMerchantRoutes(app, {
+    Booking: {
+      async findOne() { return booking; },
+      async findOneAndUpdate() { return { ...booking, review: undefined }; },
+    },
+    async resolveRequestUser() { return { userId: 'user-1' }; },
+    userIdAliases: id => [id],
+    normalizeUserId: value => value,
+    async deleteModeratedImages() { throw new Error('image cleanup failed'); },
+    broadcastBookingEvent() { throw new Error('broadcast failed'); },
+    rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
+  });
+
+  let payload;
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  try {
+    await routes.get('/api/bookings/:id/review')(
+      { params: { id: 'BK-1' } },
+      { json(value) { payload = value; } },
+    );
+    await Promise.resolve();
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  assert.deepEqual(payload, { ok: true });
 });
 
 test('concurrent review and complaint submissions only update once', async () => {
