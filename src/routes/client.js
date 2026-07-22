@@ -23,7 +23,14 @@ module.exports = (app, ctx) => {
     rotateSession,
     logoutSession,
     createModeratedUploadPolicies,
+    createMerchantUploadPolicies,
     sessionTokenFromRequest,
+    Booking,
+    normalizeBooking,
+    normalizePagination,
+    setPaginationHeaders,
+    userIdAliases,
+    privateImageUrl,
   } = ctx;
 
   app.post('/api/uploads/moderation/sign', requireClientAuth, ...rateLimits.upload, async (req, res) => {
@@ -34,6 +41,22 @@ module.exports = (app, ctx) => {
         files: req.body.files,
       });
       res.json({ uploads });
+    } catch (error) {
+      res.status(error.httpStatus || 500).json({ message: error.message });
+    }
+  });
+
+  app.post('/api/uploads/avatar/sign', requireClientAuth, ...rateLimits.upload, async (req, res) => {
+    try {
+      const uploads = createMerchantUploadPolicies({
+        type: 'public',
+        userId: req.clientUser.id,
+        files: req.body.files,
+      });
+      if (uploads.length !== 1) {
+        return res.status(400).json({ message: '请选择一张头像图片' });
+      }
+      res.json({ upload: uploads[0] });
     } catch (error) {
       res.status(error.httpStatus || 500).json({ message: error.message });
     }
@@ -177,6 +200,39 @@ module.exports = (app, ctx) => {
   
   app.get('/api/auth/me', requireClientAuth, async (req, res) => {
     res.json({ user: buildClientUserPayload(req.clientUser) });
+  });
+
+  app.get('/api/auth/reviews', requireClientAuth, async (req, res) => {
+    const query = {
+      userId: { $in: userIdAliases(req.clientUser.id) },
+      reviewed: true,
+      review: { $exists: true, $ne: null },
+    };
+    const pagination = normalizePagination(req.query);
+    const [bookings, total] = await Promise.all([
+      Booking.find(query)
+        .select('id salonId salonName staffId staffName serviceId serviceName review createdAt updatedAt')
+        .sort({ updatedAt: -1 })
+        .skip(pagination.skip)
+        .limit(pagination.limit)
+        .lean(),
+      Booking.countDocuments(query),
+    ]);
+    setPaginationHeaders(res, pagination, total);
+    res.json(bookings.map(booking => {
+      const review = normalizeBooking(booking).review || {};
+      return {
+        ...review,
+        imageUrls: (review.imageUrls || []).map(privateImageUrl).filter(Boolean),
+        bookingId: booking.id,
+        salonId: booking.salonId || '',
+        salonName: booking.salonName || '',
+        staffId: booking.staffId || '',
+        staffName: booking.staffName || '',
+        serviceId: booking.serviceId || '',
+        serviceName: review.serviceName || booking.serviceName || '',
+      };
+    }));
   });
 
   app.post('/api/auth/logout', requireClientAuth, async (req, res) => {

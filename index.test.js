@@ -37,6 +37,7 @@ const {
 const { isAllowedOrigin } = require('./src/config');
 const { Booking, ClientUser, FavoriteSalon, Salon, SlotOccupancy, StaffProfile } = require('./src/models');
 const registerAdminRoutes = require('./src/routes/admin');
+const registerClientRoutes = require('./src/routes/client');
 const registerMerchantRoutes = require('./src/routes/merchant');
 const registerPublicRoutes = require('./src/routes/public');
 
@@ -892,6 +893,86 @@ test('client booking payloads hide pending merchant replies', () => {
   assert.equal(normalizeBooking(booking).review.pendingMerchantReply, undefined);
   assert.equal(normalizeBooking(booking).review.merchantReply.content, '已通过');
   assert.equal(normalizeMerchantBooking(booking).review.pendingMerchantReply.content, '待审核');
+});
+
+test('client reviews are scoped to the authenticated user and include booking context', async () => {
+  const routes = new Map();
+  const app = {
+    get(path, ...handlers) { routes.set(`GET ${path}`, handlers.at(-1)); },
+    post(path, ...handlers) { routes.set(`POST ${path}`, handlers.at(-1)); },
+    patch(path, ...handlers) { routes.set(`PATCH ${path}`, handlers.at(-1)); },
+  };
+  let reviewQuery;
+  const cursor = {
+    select() { return this; },
+    sort() { return this; },
+    skip() { return this; },
+    limit() { return this; },
+    async lean() {
+      return [{
+        id: 'BK-1',
+        userId: 'user-1',
+        salonName: 'Hot Hair',
+        staffName: 'Alice',
+        serviceName: 'Cut',
+        review: { rating: 5, comment: 'Great', imageUrls: ['moderation/review/a.jpg'] },
+      }];
+    },
+  };
+  registerClientRoutes(app, {
+    Booking: {
+      find(query) { reviewQuery = query; return cursor; },
+      async countDocuments() { return 1; },
+    },
+    normalizeBooking: booking => booking,
+    normalizePagination: () => ({ page: 1, limit: 50, skip: 0 }),
+    setPaginationHeaders() {},
+    userIdAliases: id => [id],
+    privateImageUrl: value => `signed:${value}`,
+    requireClientAuth() {},
+    rateLimits: { upload: [], smsRequest: [], smsVerify: [], login: [] },
+  });
+  let payload;
+  await routes.get('GET /api/auth/reviews')(
+    { clientUser: { id: 'user-1' }, query: {} },
+    { json(value) { payload = value; } },
+  );
+
+  assert.deepEqual(reviewQuery.userId, { $in: ['user-1'] });
+  assert.equal(payload[0].bookingId, 'BK-1');
+  assert.equal(payload[0].salonName, 'Hot Hair');
+  assert.deepEqual(payload[0].imageUrls, ['signed:moderation/review/a.jpg']);
+});
+
+test('client avatar upload signs one public OSS object for the authenticated user', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    patch() {},
+    post(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  let signRequest;
+  registerClientRoutes(app, {
+    createMerchantUploadPolicies(request) {
+      signRequest = request;
+      return [{ url: 'https://cdn.example/avatar.jpg' }];
+    },
+    requireClientAuth() {},
+    rateLimits: { upload: [], smsRequest: [], smsVerify: [], login: [] },
+  });
+  let payload;
+  await routes.get('/api/uploads/avatar/sign')(
+    {
+      clientUser: { id: 'user-1' },
+      body: { files: [{ fileName: 'avatar.jpg', contentType: 'image/jpeg', size: 10 }] },
+    },
+    { json(value) { payload = value; } },
+  );
+
+  assert.equal(signRequest.type, 'public');
+  assert.equal(signRequest.userId, 'user-1');
+  assert.equal(signRequest.files.length, 1);
+  assert.equal(payload.upload.url, 'https://cdn.example/avatar.jpg');
 });
 
 test('concurrent review and complaint submissions only update once', async () => {
