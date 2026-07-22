@@ -205,7 +205,6 @@ module.exports = (app, ctx) => {
   app.get('/api/auth/reviews', requireClientAuth, async (req, res) => {
     const query = {
       userId: { $in: userIdAliases(req.clientUser.id) },
-      reviewed: true,
       review: { $exists: true, $ne: null },
     };
     const pagination = normalizePagination(req.query);
@@ -220,9 +219,12 @@ module.exports = (app, ctx) => {
     ]);
     setPaginationHeaders(res, pagination, total);
     res.json(bookings.map(booking => {
+      const editStatus = booking.review?.pendingEdit?.reviewStatus || '';
       const review = normalizeBooking(booking).review || {};
       return {
         ...review,
+        editStatus,
+        imageKeys: review.imageUrls || [],
         imageUrls: (review.imageUrls || []).map(privateImageUrl).filter(Boolean),
         bookingId: booking.id,
         salonId: booking.salonId || '',

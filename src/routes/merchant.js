@@ -45,6 +45,7 @@ module.exports = (app, ctx) => {
     getSalonByStaffId,
     getStaffMapByIds,
     buildStaffPayload,
+    requireClientAuth,
     generateSlotsForNoPreferenceAndDate,
     generateSlotsForStaffAndDate,
     resolveRequestUser,
@@ -493,6 +494,105 @@ module.exports = (app, ctx) => {
   
     broadcastBookingEvent('booking.updated', updatedBooking);
     res.status(201).json({ review, booking: normalizeBooking(updatedBooking) });
+  });
+
+  app.patch('/api/bookings/:id/review', requireClientAuth, ...rateLimits.booking, async (req, res) => {
+    const booking = await Booking.findOne({ id: req.params.id });
+    if (!booking?.review) return res.status(404).json({ message: 'Review not found' });
+    const { userId } = await resolveRequestUser(req);
+    if (!userIdAliases(userId).includes(normalizeUserId(booking.userId))) {
+      return res.status(403).json({ message: 'Cannot edit another user review' });
+    }
+    if (booking.review.reviewStatus === 'pending' || booking.review.pendingEdit?.reviewStatus === 'pending') {
+      return res.status(409).json({ message: '评价正在审核中，请等待审核完成后再修改' });
+    }
+
+    const rating = Number(req.body.rating);
+    const comment = String(req.body.comment || '').trim();
+    const retainedImageUrls = Array.isArray(req.body.retainedImageUrls)
+      ? req.body.retainedImageUrls.map(String)
+      : [];
+    const imageObjects = Array.isArray(req.body.imageObjects) ? req.body.imageObjects : [];
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+      return res.status(400).json({ message: 'rating must be an integer from 1 to 5' });
+    }
+    if (!comment) return res.status(400).json({ message: 'comment is required' });
+    if (comment.length > INPUT_LIMITS.review) {
+      return res.status(400).json({ message: `comment cannot exceed ${INPUT_LIMITS.review} characters` });
+    }
+
+    const previousReview = { ...booking.review };
+    const previousPendingEdit = previousReview.pendingEdit;
+    delete previousReview.pendingEdit;
+    const previousImages = Array.isArray(previousReview.imageUrls) ? previousReview.imageUrls : [];
+    if (
+      new Set(retainedImageUrls).size !== retainedImageUrls.length
+      || retainedImageUrls.some(url => !previousImages.includes(url))
+      || retainedImageUrls.length + imageObjects.length > 5
+    ) {
+      return res.status(400).json({ message: 'Invalid retained review images' });
+    }
+
+    let uploadedImages;
+    try {
+      uploadedImages = await verifyModeratedImageObjects({ type: 'review', userId, objectNames: imageObjects });
+    } catch (error) {
+      return res.status(error.httpStatus || 500).json({ message: error.message });
+    }
+
+    const now = new Date().toISOString();
+    const pendingEdit = {
+      ...previousReview,
+      rating,
+      comment,
+      date: now.slice(0, 10),
+      updatedAt: now,
+      imageUrls: [...retainedImageUrls, ...uploadedImages],
+      reviewStatus: 'pending',
+    };
+    delete pendingEdit.merchantReply;
+    delete pendingEdit.pendingMerchantReply;
+
+    const updatedBooking = await Booking.findOneAndUpdate(
+      { _id: booking._id, 'review.id': previousReview.id },
+      { $set: { reviewed: true, 'review.pendingEdit': pendingEdit, updatedAt: new Date() } },
+      { new: true },
+    );
+    if (!updatedBooking) {
+      await deleteModeratedImages(uploadedImages);
+      return res.status(409).json({ message: 'Review has changed, please refresh and try again' });
+    }
+
+    await deleteModeratedImages(previousPendingEdit?.imageUrls || []);
+    broadcastBookingEvent('booking.updated', updatedBooking);
+    res.json({ review: previousReview, editStatus: 'pending', booking: normalizeBooking(updatedBooking) });
+  });
+
+  app.delete('/api/bookings/:id/review', requireClientAuth, ...rateLimits.booking, async (req, res) => {
+    const booking = await Booking.findOne({ id: req.params.id });
+    if (!booking?.review) return res.status(404).json({ message: 'Review not found' });
+    const { userId } = await resolveRequestUser(req);
+    if (!userIdAliases(userId).includes(normalizeUserId(booking.userId))) {
+      return res.status(403).json({ message: 'Cannot delete another user review' });
+    }
+
+    const review = { ...booking.review };
+    const updatedBooking = await Booking.findOneAndUpdate(
+      { _id: booking._id, 'review.id': review.id },
+      { $unset: { review: '' }, $set: { reviewed: false, updatedAt: new Date() } },
+      { new: true },
+    );
+    if (!updatedBooking) {
+      return res.status(409).json({ message: 'Review has changed, please refresh and try again' });
+    }
+
+    await unpublishStaffReview(booking, review, getStaffById, calculateStaffRating);
+    await deleteModeratedImages([
+      ...(review.imageUrls || []),
+      ...(review.pendingEdit?.imageUrls || []),
+    ]);
+    broadcastBookingEvent('booking.updated', updatedBooking);
+    res.json({ ok: true, booking: normalizeBooking(updatedBooking) });
   });
   
   app.post('/api/bookings/:id/complaint', ...rateLimits.booking, async (req, res) => {

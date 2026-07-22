@@ -345,7 +345,7 @@ module.exports = (app, ctx) => {
     const bookingId = String(req.body.bookingId || '').trim();
     const type = String(req.body.type || '').trim();
     const action = String(req.body.action || '').trim();
-    if (!bookingId || !['review', 'reviewReply', 'complaint'].includes(type) || !['approve', 'reject', 'delete'].includes(action)) {
+    if (!bookingId || !['review', 'reviewEdit', 'reviewReply', 'complaint'].includes(type) || !['approve', 'reject', 'delete'].includes(action)) {
       return res.status(400).json({ message: 'bookingId, type and action are required' });
     }
 
@@ -354,6 +354,19 @@ module.exports = (app, ctx) => {
     if (type === 'reviewReply') {
       const moderated = await moderateReviewReply(booking, action, getStaffById);
       if (!moderated) return res.status(404).json({ message: 'Review reply item not found' });
+      return res.json({ ok: true });
+    }
+    if (type === 'reviewEdit') {
+      const moderated = await moderateReviewEdit(
+        booking,
+        action,
+        getStaffById,
+        calculateStaffRating,
+        publishModeratedImage,
+        deleteModeratedImages,
+        MAX_STAFF_REVIEWS,
+      );
+      if (!moderated) return res.status(404).json({ message: 'Review edit item not found' });
       return res.json({ ok: true });
     }
     if (!booking[type]) return res.status(404).json({ message: 'Image review item not found' });
@@ -440,7 +453,67 @@ function userImageReviewItems(booking, privateImageUrl) {
       createdAt: reply.repliedAt || booking.updatedAt || booking.createdAt || '',
     });
   }
+  const edit = booking.review?.pendingEdit;
+  if (edit) {
+    const imageUrls = (edit.imageUrls || []).map(privateImageUrl).filter(Boolean);
+    items.push({
+      id: `${booking.id}:reviewEdit`,
+      bookingId: booking.id,
+      type: 'reviewEdit',
+      url: imageUrls[0] || '',
+      imageUrls,
+      userId: booking.userId || '',
+      userName: booking.userName || '',
+      salonName: booking.salonName || '',
+      staffName: booking.staffName || '',
+      serviceName: booking.serviceName || '',
+      content: edit.comment || '',
+      rating: edit.rating || null,
+      status: edit.reviewStatus || 'pending',
+      createdAt: edit.updatedAt || booking.updatedAt || '',
+    });
+  }
   return items;
+}
+
+async function moderateReviewEdit(
+  booking,
+  action,
+  getStaffById,
+  calculateStaffRating,
+  publishModeratedImage,
+  deleteModeratedImages,
+  maxReviews,
+) {
+  const edit = booking.review?.pendingEdit;
+  if (!edit) return false;
+
+  if (action === 'approve') {
+    const approved = {
+      ...edit,
+      imageUrls: (await Promise.all((edit.imageUrls || []).map(publishModeratedImage))).filter(Boolean),
+      reviewStatus: 'approved',
+    };
+    delete approved.pendingEdit;
+    booking.review = approved;
+    booking.reviewed = true;
+    booking.markModified('review');
+    booking.updatedAt = new Date().toISOString();
+    await booking.save();
+    await publishStaffReview(booking, approved, getStaffById, calculateStaffRating, maxReviews);
+    return true;
+  }
+
+  await deleteModeratedImages(edit.imageUrls || []);
+  if (action === 'reject') {
+    booking.review.pendingEdit = { ...edit, imageUrls: [], reviewStatus: 'rejected' };
+  } else {
+    delete booking.review.pendingEdit;
+  }
+  booking.markModified('review');
+  booking.updatedAt = new Date().toISOString();
+  await booking.save();
+  return true;
 }
 
 async function moderateReviewReply(booking, action, getStaffById) {

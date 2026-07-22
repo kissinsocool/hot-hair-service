@@ -476,6 +476,7 @@ test('merchant qualification submission stores all required direct-upload docume
   const app = {
     get() {},
     post() {},
+    delete() {},
     use() {},
     patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
   };
@@ -519,6 +520,7 @@ test('merchant upload signing is scoped to the authenticated merchant', async ()
   const app = {
     get() {},
     patch() {},
+    delete() {},
     use() {},
     post(path, ...handlers) { routes.set(path, handlers.at(-1)); },
   };
@@ -550,6 +552,7 @@ test('merchant qualification accepts only verified direct-upload objects', async
   const app = {
     get() {},
     post() {},
+    delete() {},
     use() {},
     patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
   };
@@ -632,6 +635,63 @@ test('approving a review publishes moderated images before making it public', as
   assert.equal(staff.reviews.length, 200);
 });
 
+test('approving a review edit replaces the public review only after approval', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const original = {
+    id: 'review-1',
+    bookingId: 'BK-1',
+    comment: '原评论',
+    rating: 4,
+    reviewStatus: 'approved',
+  };
+  const booking = {
+    id: 'BK-1',
+    staffId: 'staff-1',
+    reviewed: true,
+    review: {
+      ...original,
+      pendingEdit: {
+        ...original,
+        comment: '修改后评论',
+        rating: 5,
+        imageUrls: ['moderation/new.png'],
+        reviewStatus: 'pending',
+      },
+    },
+    markModified() {},
+    async save() {},
+  };
+  const staff = {
+    reviews: [{ ...original }],
+    markModified() {},
+    async save() {},
+  };
+  registerAdminRoutes(app, {
+    Booking: { async findOne() { return booking; } },
+    async publishModeratedImage() { return 'https://public.example/new.png'; },
+    async deleteModeratedImages() {},
+    async getStaffById() { return staff; },
+    calculateStaffRating() { return 5; },
+    MAX_STAFF_REVIEWS: 200,
+    rateLimits: { login: [], upload: [] },
+  });
+
+  assert.equal(staff.reviews[0].comment, '原评论');
+  await routes.get('/api/admin/user-images')(
+    { body: { bookingId: 'BK-1', type: 'reviewEdit', action: 'approve' } },
+    { status() { return this; }, json() {} },
+  );
+
+  assert.equal(booking.review.comment, '修改后评论');
+  assert.equal(booking.review.pendingEdit, undefined);
+  assert.equal(staff.reviews[0].comment, '修改后评论');
+});
+
 test('rejecting a review keeps moderated images for preview and later approval', async () => {
   const routes = new Map();
   const app = {
@@ -708,6 +768,7 @@ test('merchant review replies are scoped to the authenticated merchant salon', a
   const app = {
     get() {},
     post() {},
+    delete() {},
     use() {},
     patch(path, handler) { routes.set(path, handler); },
   };
@@ -751,6 +812,7 @@ test('merchant review replies stay pending without replacing the public reply', 
   const app = {
     get() {},
     post() {},
+    delete() {},
     use() {},
     patch(path, handler) { routes.set(path, handler); },
   };
@@ -887,10 +949,12 @@ test('client booking payloads hide pending merchant replies', () => {
     review: {
       merchantReply: { content: '已通过', reviewStatus: 'approved' },
       pendingMerchantReply: { content: '待审核', reviewStatus: 'pending' },
+      pendingEdit: { comment: '待审核修改', reviewStatus: 'pending' },
     },
   };
 
   assert.equal(normalizeBooking(booking).review.pendingMerchantReply, undefined);
+  assert.equal(normalizeBooking(booking).review.pendingEdit, undefined);
   assert.equal(normalizeBooking(booking).review.merchantReply.content, '已通过');
   assert.equal(normalizeMerchantBooking(booking).review.pendingMerchantReply.content, '待审核');
 });
@@ -975,12 +1039,74 @@ test('client avatar upload signs one public OSS object for the authenticated use
   assert.equal(payload.upload.url, 'https://cdn.example/avatar.jpg');
 });
 
+test('editing a review stores a pending draft without changing the approved review', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    use() {},
+    delete() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const originalReview = {
+    id: 'review-1',
+    bookingId: 'BK-1',
+    comment: '原评论',
+    rating: 4,
+    imageUrls: ['https://public.example/old.jpg'],
+    reviewStatus: 'approved',
+  };
+  const booking = {
+    _id: 'mongo-booking-1',
+    id: 'BK-1',
+    userId: 'user-1',
+    review: { ...originalReview },
+  };
+  let update;
+  registerMerchantRoutes(app, {
+    Booking: {
+      async findOne() { return booking; },
+      async findOneAndUpdate(_query, value) {
+        update = value;
+        return { ...booking, review: { ...booking.review, pendingEdit: value.$set['review.pendingEdit'] } };
+      },
+    },
+    async resolveRequestUser() { return { userId: 'user-1' }; },
+    userIdAliases: id => [id],
+    normalizeUserId: value => value,
+    async verifyModeratedImageObjects() { return ['moderation/new.jpg']; },
+    async deleteModeratedImages() {},
+    normalizeBooking: value => value,
+    broadcastBookingEvent() {},
+    INPUT_LIMITS: { review: 1000 },
+    rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
+  });
+
+  await routes.get('/api/bookings/:id/review')(
+    {
+      params: { id: 'BK-1' },
+      body: {
+        rating: 5,
+        comment: '修改后评论',
+        retainedImageUrls: ['https://public.example/old.jpg'],
+        imageObjects: ['moderation/new.jpg'],
+      },
+    },
+    { status() { return this; }, json() {} },
+  );
+
+  assert.equal(booking.review.comment, '原评论');
+  assert.equal(update.$set['review.pendingEdit'].comment, '修改后评论');
+  assert.equal(update.$set['review.pendingEdit'].reviewStatus, 'pending');
+});
+
 test('concurrent review and complaint submissions only update once', async () => {
   const routes = new Map();
   const app = {
     get() {},
     post(path, ...handlers) { routes.set(path, handlers.at(-1)); },
     patch() {},
+    delete() {},
     use() {},
   };
   const claimed = { review: false, complaint: false };
@@ -1039,6 +1165,7 @@ test('booking cancellation atomically checks state and releases its slot in one 
   const app = {
     get() {},
     post() {},
+    delete() {},
     use() {},
     patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
   };

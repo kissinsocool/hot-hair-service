@@ -856,6 +856,7 @@ const normalizeBookingPayload = (booking, includePendingMerchantReply = false) =
   const normalized = typeof booking.toObject === 'function' ? booking.toObject() : booking;
   const review = normalized.review && { ...normalized.review };
   if (review && !includePendingMerchantReply) delete review.pendingMerchantReply;
+  if (review) delete review.pendingEdit;
   if (review?.merchantReply?.reviewStatus && review.merchantReply.reviewStatus !== 'approved') {
     delete review.merchantReply;
   }
