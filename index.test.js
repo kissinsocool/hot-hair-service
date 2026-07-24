@@ -143,6 +143,53 @@ test('normalizePagination applies defaults and caps page size', () => {
   assert.deepEqual(normalizePagination({ page: 'Infinity' }), { page: 1, limit: 50, skip: 0 });
 });
 
+test('support messages are validated, trimmed and stored with the current user', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    patch() {},
+    post(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  let saved;
+  registerClientRoutes(app, {
+    SupportMessage: {
+      async create(value) {
+        saved = value;
+        return value;
+      },
+    },
+    resolveRequestUser: async () => ({ userId: 'user-1', userName: '测试用户' }),
+    crypto: { randomUUID: () => 'message-1' },
+    rateLimits: {
+      support: [],
+      upload: [],
+      smsRequest: [],
+      smsVerify: [],
+      login: [],
+    },
+  });
+
+  let status;
+  let payload;
+  await routes.get('/api/support-messages')(
+    { body: { problem: '  被强迫充值  ', contact: ' 13800138000 ' } },
+    {
+      status(value) { status = value; return this; },
+      json(value) { payload = value; },
+    },
+  );
+
+  assert.equal(status, 201);
+  assert.deepEqual(saved, {
+    id: 'support-message-1',
+    userId: 'user-1',
+    userName: '测试用户',
+    problem: '被强迫充值',
+    contact: '13800138000',
+  });
+  assert.deepEqual(payload, { id: 'support-message-1' });
+});
+
 test('async password hashing remains verifiable', async () => {
   const password = await hashPassword('correct horse battery staple');
   assert.equal(await verifyPassword('correct horse battery staple', {

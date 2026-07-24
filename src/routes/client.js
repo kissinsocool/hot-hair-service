@@ -31,7 +31,30 @@ module.exports = (app, ctx) => {
     setPaginationHeaders,
     userIdAliases,
     privateImageUrl,
+    SupportMessage,
+    resolveRequestUser,
   } = ctx;
+
+  app.post('/api/support-messages', ...(rateLimits.support || []), async (req, res) => {
+    const problem = String(req.body.problem || '').trim();
+    const contact = String(req.body.contact || '').trim();
+    if (!problem || !contact) {
+      return res.status(400).json({ message: '问题描述和联系方式不能为空' });
+    }
+    if (problem.length > 500 || contact.length > 100) {
+      return res.status(400).json({ message: '问题描述或联系方式过长' });
+    }
+
+    const user = await resolveRequestUser(req);
+    const message = await SupportMessage.create({
+      id: `support-${crypto.randomUUID()}`,
+      userId: user.userId,
+      userName: user.userName,
+      problem,
+      contact,
+    });
+    res.status(201).json({ id: message.id });
+  });
 
   app.post('/api/uploads/moderation/sign', requireClientAuth, ...rateLimits.upload, async (req, res) => {
     try {

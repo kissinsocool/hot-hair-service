@@ -36,6 +36,7 @@ const {
   ClientUser,
   SmsVerification,
   AdConfig,
+  SupportMessage,
 } = require('./src/models');
 const {
   compressedImageMiddleware,
@@ -1495,6 +1496,7 @@ const routeContext = {
   setPaginationHeaders,
   privateImageUrl,
   SmsVerification,
+  SupportMessage,
   publicImageUrl,
   stripSensitiveSalonFields,
   toFiniteNumber,

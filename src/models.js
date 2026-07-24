@@ -179,6 +179,16 @@ const adConfigSchema = new mongoose.Schema({
   enabled: { type: Boolean, default: true },
 }, { timestamps: true });
 
+const supportMessageSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true, index: true },
+  userId: { type: String, default: '', index: true },
+  userName: { type: String, default: '' },
+  problem: { type: String, required: true },
+  contact: { type: String, required: true },
+}, { timestamps: true });
+
+supportMessageSchema.index({ createdAt: -1 });
+
 module.exports = {
   Booking: mongoose.model('Booking', bookingSchema),
   SlotOccupancy: mongoose.model('SlotOccupancy', slotOccupancySchema),
@@ -191,4 +201,5 @@ module.exports = {
   ClientUser: mongoose.model('ClientUser', clientUserSchema),
   SmsVerification: mongoose.model('SmsVerification', smsVerificationSchema),
   AdConfig: mongoose.model('AdConfig', adConfigSchema),
+  SupportMessage: mongoose.model('SupportMessage', supportMessageSchema),
 };

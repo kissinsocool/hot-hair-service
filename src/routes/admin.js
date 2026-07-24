@@ -31,6 +31,7 @@ module.exports = (app, ctx) => {
     logoutSession,
     revokeSessionHash,
     clearPublicSalonDetailCache,
+    SupportMessage,
   } = ctx;
 
   app.post('/api/admin/auth/login', ...rateLimits.login, async (req, res) => {
@@ -87,6 +88,21 @@ module.exports = (app, ctx) => {
       pendingCount,
       acceptedCount,
     });
+  });
+
+  app.get('/api/admin/support-messages', requireAdminAuth, async (req, res) => {
+    const pagination = normalizePagination(req.query);
+    const [messages, total] = await Promise.all([
+      SupportMessage.find({})
+        .select('-_id -__v')
+        .sort({ createdAt: -1 })
+        .skip(pagination.skip)
+        .limit(pagination.limit)
+        .lean(),
+      SupportMessage.countDocuments(),
+    ]);
+    setPaginationHeaders(res, pagination, total);
+    res.json(messages);
   });
 
   app.get('/api/admin/ad', requireAdminAuth, async (_req, res) => {
