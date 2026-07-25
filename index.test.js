@@ -299,6 +299,48 @@ test('booking IDs are six numeric digits', () => {
   assert.equal(registerMerchantRoutes.generateBookingId(() => 999999), '999999');
 });
 
+test('merchant booking list does not hide future orders when no date is requested', async () => {
+  const routes = new Map();
+  const app = {
+    get(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+    post() {},
+    patch() {},
+    delete() {},
+    use() {},
+  };
+  let query;
+  const emptyQuery = {
+    select() { return this; },
+    sort() { return this; },
+    skip() { return this; },
+    limit() { return this; },
+    async lean() { return []; },
+  };
+  registerMerchantRoutes(app, {
+    Salon: {
+      findOne() {
+        return { select() { return this; }, async lean() { return { staffIds: ['staff-1'] }; } };
+      },
+    },
+    Booking: {
+      find(value) { query = value; return emptyQuery; },
+      async countDocuments() { return 0; },
+    },
+    buildMerchantBookingScope,
+    normalizeMerchantBooking: value => value,
+    normalizePagination: () => ({ page: 1, limit: 50, skip: 0 }),
+    setPaginationHeaders() {},
+    rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
+  });
+
+  await routes.get('/api/merchant/bookings')(
+    { query: {}, merchantUser: { salonId: 'salon-1' } },
+    { json() {} },
+  );
+
+  assert.equal(JSON.stringify(query).includes('startTime'), false);
+});
+
 test('merchant active booking scope follows current salon staff ownership', () => {
   assert.deepEqual(buildMerchantBookingScope('1', ['tina']), {
     $or: [

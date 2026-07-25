@@ -1012,11 +1012,12 @@ module.exports = (app, ctx) => {
   
   app.get('/api/merchant/bookings', async (req, res) => {
     const { status, date } = req.query;
-    const day = bookingDayRange(date);
-    if (!day) return res.status(400).json({ message: 'date must use YYYY-MM-DD format' });
+    const day = date ? bookingDayRange(date) : null;
+    if (date && !day) return res.status(400).json({ message: 'date must use YYYY-MM-DD format' });
     const merchantSalon = await Salon.findOne({ id: req.merchantUser.salonId }).select('staffIds').lean();
     const scope = buildMerchantBookingScope(req.merchantUser.salonId, merchantSalon?.staffIds || []);
-    const filters = [scope, { startTime: { $gte: day.start, $lt: day.end } }];
+    const filters = [scope];
+    if (day) filters.push({ startTime: { $gte: day.start, $lt: day.end } });
     if (status) filters.push({ status });
     const query = { $and: filters };
     const pagination = normalizePagination(req.query);
