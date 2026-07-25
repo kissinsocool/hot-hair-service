@@ -294,6 +294,11 @@ test('merchant booking day range defaults to today and accepts an explicit date'
   assert.equal(registerMerchantRoutes.bookingDayRange('2030-02-30'), null);
 });
 
+test('booking IDs are six numeric digits', () => {
+  assert.equal(registerMerchantRoutes.generateBookingId(() => 0), '000000');
+  assert.equal(registerMerchantRoutes.generateBookingId(() => 999999), '999999');
+});
+
 test('merchant active booking scope follows current salon staff ownership', () => {
   assert.deepEqual(buildMerchantBookingScope('1', ['tina']), {
     $or: [

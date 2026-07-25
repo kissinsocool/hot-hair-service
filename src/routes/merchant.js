@@ -15,6 +15,8 @@ const bookingDayRange = (value, now = new Date()) => {
   return { start, end };
 };
 
+const generateBookingId = randomInt => String(randomInt(0, 1000000)).padStart(6, '0');
+
 module.exports = (app, ctx) => {
   const {
     MerchantUser,
@@ -753,7 +755,14 @@ module.exports = (app, ctx) => {
     const serviceBasePrice = parsePriceValue(service.price);
     const staffExtraServiceFee = isNoPreference ? 0 : Number(staffMember.extraServiceFee || 0);
     const totalPrice = serviceBasePrice + staffExtraServiceFee;
-    const bookingId = `BK-${crypto.randomUUID()}`;
+    let bookingId = '';
+    for (let attempts = 0; attempts < 10 && !bookingId; attempts += 1) {
+      const candidate = generateBookingId(crypto.randomInt);
+      if (!await Booking.exists({ id: candidate })) bookingId = candidate;
+    }
+    if (!bookingId) {
+      return res.status(503).json({ message: '订单号生成失败，请重试' });
+    }
     let booking;
     try {
       booking = await runBookingTransaction(async (session) => {
@@ -1106,3 +1115,4 @@ function logReviewCleanupFailures(action, bookingId, results) {
 }
 
 module.exports.bookingDayRange = bookingDayRange;
+module.exports.generateBookingId = generateBookingId;
