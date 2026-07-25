@@ -294,9 +294,9 @@ test('merchant booking day range defaults to today and accepts an explicit date'
   assert.equal(registerMerchantRoutes.bookingDayRange('2030-02-30'), null);
 });
 
-test('booking IDs are six numeric digits', () => {
-  assert.equal(registerMerchantRoutes.generateBookingId(() => 0), '000000');
-  assert.equal(registerMerchantRoutes.generateBookingId(() => 999999), '999999');
+test('booking IDs are eight numeric digits', () => {
+  assert.equal(registerMerchantRoutes.generateBookingId(() => 0), '00000000');
+  assert.equal(registerMerchantRoutes.generateBookingId(() => 99999999), '99999999');
 });
 
 test('merchant booking list does not hide future orders when no date is requested', async () => {

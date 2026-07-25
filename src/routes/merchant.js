@@ -15,7 +15,7 @@ const bookingDayRange = (value, now = new Date()) => {
   return { start, end };
 };
 
-const generateBookingId = randomInt => String(randomInt(0, 1000000)).padStart(6, '0');
+const generateBookingId = randomInt => String(randomInt(0, 100000000)).padStart(8, '0');
 
 module.exports = (app, ctx) => {
   const {
