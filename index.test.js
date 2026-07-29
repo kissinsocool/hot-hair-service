@@ -199,6 +199,10 @@ test('coupon campaigns use activity dates and validate both discount tiers', () 
   };
   assert.equal(couponStatus(coupon, now), 'unclaimed');
   assert.equal(couponStatus({ ...coupon, claimedAt: now }, now), 'available');
+  assert.equal(
+    couponStatus({ ...coupon, claimedAt: now, reservedBookingId: 'BK-1' }, now),
+    'reserved',
+  );
   assert.equal(couponStatus({ ...coupon, claimedAt: now, redeemedAt: now }, now), 'redeemed');
   assert.equal(
     couponPayload({ ...coupon, claimedAt: now }, now).validUntil,
@@ -252,7 +256,66 @@ test('signup coupon validity matches the campaign', async () => {
 
   assert.equal(createdCoupons[0].validFrom, registrationStartAt);
   assert.equal(createdCoupons[0].validUntil, registrationEndAt);
+  assert.equal(createdCoupons[0].claimedAt, undefined);
   assert.equal(createOptions.ordered, true);
+});
+
+test('new-user gift stays hidden until the home promotion claims it', async () => {
+  const routes = new Map();
+  const app = {
+    get(path, ...handlers) { routes.set(`GET ${path}`, handlers.at(-1)); },
+    post(path, ...handlers) { routes.set(`POST ${path}`, handlers.at(-1)); },
+    patch() {},
+    delete() {},
+    use() {},
+  };
+  let couponUpdate;
+  registerClientRoutes(app, {
+    CouponCampaign: {
+      async exists() { return { _id: 'campaign-1' }; },
+    },
+    UserCoupon: {
+      async exists() { return { _id: 'coupon-1' }; },
+      async updateMany(...args) {
+        couponUpdate = args;
+        return { modifiedCount: 2 };
+      },
+      find() {
+        return {
+          sort() { return this; },
+          async lean() {
+            return [
+              { id: 'coupon-1', claimedAt: new Date() },
+              { id: 'coupon-2', claimedAt: new Date() },
+            ];
+          },
+        };
+      },
+    },
+    userIdAliases: id => [id],
+    couponPayload: value => value,
+    requireClientAuth() {},
+    rateLimits: { upload: [], smsRequest: [], smsVerify: [], login: [], booking: [] },
+  });
+
+  let campaignPayload;
+  await routes.get('GET /api/auth/coupon-campaign')(
+    { clientUser: { id: 'user-1' } },
+    { json(value) { campaignPayload = value; } },
+  );
+  assert.deepEqual(campaignPayload, { enabled: true });
+
+  let claimPayload;
+  await routes.get('POST /api/auth/coupon-campaign/claim')(
+    { clientUser: { id: 'user-1' } },
+    {
+      status() { return this; },
+      json(value) { claimPayload = value; },
+    },
+  );
+  assert.equal(couponUpdate[0].claimedAt.$exists, false);
+  assert.equal(couponUpdate[1].$set.claimedAt instanceof Date, true);
+  assert.equal(claimPayload.coupons.length, 2);
 });
 
 test('signup transaction saves a client with its MongoDB session', async () => {
@@ -564,6 +627,7 @@ test('favorite writes are idempotent upserts and deletes', async () => {
   };
   let updateCall;
   let deleteCall;
+  let couponReleaseCall;
   registerPublicRoutes(app, {
     FavoriteSalon: {
       async updateOne(...args) { updateCall = args; },
@@ -1408,7 +1472,14 @@ test('booking cancellation atomically checks state and releases its slot in one 
   let deleteCall;
   let transactionOptions;
   let ended = false;
-  const current = { id: 'BK-1', userId: 'user-1', status: 'pending', startTime: new Date('2030-01-01') };
+  const current = {
+    id: 'BK-1',
+    userId: 'user-1',
+    status: 'pending',
+    startTime: new Date('2030-01-01'),
+    couponId: 'coupon-1',
+    originalAmountFen: 9900,
+  };
   const updated = { ...current, status: 'canceled' };
 
   registerMerchantRoutes(app, {
@@ -1418,6 +1489,9 @@ test('booking cancellation atomically checks state and releases its slot in one 
     },
     SlotOccupancy: {
       async deleteOne(...args) { deleteCall = args; },
+    },
+    UserCoupon: {
+      async updateOne(...args) { couponReleaseCall = args; },
     },
     mongoose: {
       async startSession() {
@@ -1445,10 +1519,221 @@ test('booking cancellation atomically checks state and releases its slot in one 
   assert.equal(updateCall[1].$set.canceledBy, 'user');
   assert.equal(updateCall[2].session, session);
   assert.deepEqual(deleteCall, [{ bookingId: 'BK-1' }, { session }]);
+  assert.equal(couponReleaseCall[0].id, 'coupon-1');
+  assert.deepEqual(couponReleaseCall[0].$or, [
+    { reservedBookingId: 'BK-1' },
+    { redeemedBookingId: 'BK-1' },
+  ]);
+  assert.equal(couponReleaseCall[1].$unset.reservedBookingId, '');
+  assert.equal(updateCall[1].$set.couponId, '');
   assert.deepEqual(transactionOptions, {
     readConcern: { level: 'snapshot' },
     writeConcern: { w: 'majority' },
   });
   assert.equal(response.booking.status, 'canceled');
   assert.equal(ended, true);
+});
+
+test('booking creation atomically reserves an eligible claimed coupon', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    patch() {},
+    delete() {},
+    use() {},
+    post(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const session = {
+    async withTransaction(work) { await work(); },
+    async endSession() {},
+  };
+  let couponQuery;
+  let couponUpdate;
+  let savedBooking;
+  class Booking {
+    constructor(value) { Object.assign(this, value); }
+    async save(options) {
+      assert.equal(options.session, session);
+      savedBooking = this;
+    }
+    static async exists() { return false; }
+  }
+
+  registerMerchantRoutes(app, {
+    Booking,
+    UserCoupon: {
+      async findOneAndUpdate(query, update, options) {
+        couponQuery = query;
+        couponUpdate = update;
+        assert.equal(options.session, session);
+        return {
+          id: 'coupon-1',
+          code: 'ABCD-EFGH-IJKL',
+          title: '满99减20',
+          minimumSpendFen: 9900,
+          discountFen: 2000,
+        };
+      },
+    },
+    SlotOccupancy: {
+      async updateOne() {},
+    },
+    mongoose: {
+      async startSession() { return session; },
+    },
+    crypto: {
+      randomInt() { return 12345678; },
+    },
+    async resolveRequestUser() {
+      return { userId: 'user-1', userName: 'User' };
+    },
+    userIdAliases: value => [value],
+    getStaffById() {
+      return { async lean() { return { id: 'staff-1', name: 'Stylist', extraServiceFee: 0 }; } };
+    },
+    getSalonByStaffId() {
+      return {
+        async lean() {
+          return {
+            id: 'salon-1',
+            name: 'Salon',
+            openingHours: '09:00-22:00',
+            services: [{
+              id: 'service-1',
+              name: 'Cut',
+              price: '¥120',
+              duration: '60分钟',
+            }],
+          };
+        },
+      };
+    },
+    parsePriceValue: () => 120,
+    parseOpeningHours: () => ({ start: 0, end: 24 * 60 }),
+    async findActiveBookingAtTime() { return null; },
+    async isStaffUnavailable() { return false; },
+    isSalonClosedOnDate: () => false,
+    isSameDayBookingBlocked: () => false,
+    async getUserPolicy() { return { isBlacklisted: false }; },
+    couponDiscountForOrder: (amount, coupon) =>
+      amount >= coupon.minimumSpendFen ? coupon.discountFen : null,
+    normalizeBooking: value => value,
+    broadcastBookingEvent() {},
+    INPUT_LIMITS: { note: 500 },
+    rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
+  });
+
+  let status = 200;
+  let response;
+  await routes.get('/api/bookings')(
+    {
+      body: {
+        staffId: 'staff-1',
+        serviceId: 'service-1',
+        startTime: '2030-01-01T10:00:00.000Z',
+        couponId: 'coupon-1',
+      },
+    },
+    {
+      status(value) { status = value; return this; },
+      json(value) { response = value; },
+    },
+  );
+
+  assert.equal(status, 201);
+  assert.equal(couponQuery.id, 'coupon-1');
+  assert.deepEqual(couponQuery.userId, { $in: ['user-1'] });
+  assert.equal(couponQuery.claimedAt.$exists, true);
+  assert.equal(couponUpdate.$set.reservedBookingId, '12345678');
+  assert.equal(savedBooking.couponId, 'coupon-1');
+  assert.equal(savedBooking.couponDiscountFen, 2000);
+  assert.equal(savedBooking.payableAmountFen, 10000);
+  assert.equal(response.booking.id, '12345678');
+});
+
+test('completing a booking atomically redeems its reserved coupon', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    delete() {},
+    use() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const session = { id: 'transaction-session' };
+  const booking = {
+    id: 'BK-1',
+    salonId: 'salon-1',
+    userId: 'user-1',
+    status: 'accepted',
+    couponId: 'coupon-1',
+    couponRedeemedAt: null,
+    startTime: new Date('2030-01-01'),
+  };
+  let couponUpdate;
+  let bookingUpdate;
+
+  registerMerchantRoutes(app, {
+    Salon: {
+      findOne() {
+        return {
+          select() { return this; },
+          async lean() { return { staffIds: [] }; },
+        };
+      },
+    },
+    Booking: {
+      async findOne() { return booking; },
+      async findOneAndUpdate(...args) {
+        bookingUpdate = args;
+        return { ...booking, ...args[1].$set };
+      },
+    },
+    UserCoupon: {
+      async findOneAndUpdate(...args) {
+        couponUpdate = args;
+        return { id: 'coupon-1', redeemedAt: args[1].$set.redeemedAt };
+      },
+    },
+    SlotOccupancy: {
+      async deleteOne() {},
+    },
+    mongoose: {
+      async startSession() {
+        return Object.assign(session, {
+          async withTransaction(work) { await work(); },
+          async endSession() {},
+        });
+      },
+    },
+    buildMerchantBookingScope: () => ({ salonId: 'salon-1' }),
+    normalizeMerchantBooking: value => value,
+    broadcastBookingEvent() {},
+    rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
+  });
+
+  let response;
+  await routes.get('/api/merchant/bookings/:id')(
+    {
+      params: { id: 'BK-1' },
+      body: { action: 'complete' },
+      merchantUser: { id: 'merchant-1', salonId: 'salon-1' },
+    },
+    {
+      status() { return this; },
+      json(value) { response = value; },
+    },
+  );
+
+  assert.deepEqual(couponUpdate[0], {
+    id: 'coupon-1',
+    reservedBookingId: 'BK-1',
+    redeemedAt: { $exists: false },
+  });
+  assert.equal(couponUpdate[1].$set.redeemedBookingId, 'BK-1');
+  assert.equal(couponUpdate[1].$set.redeemedMerchantId, 'merchant-1');
+  assert.equal(couponUpdate[1].$unset.reservedBookingId, '');
+  assert.equal(bookingUpdate[1].$set.status, 'completed');
+  assert.ok(bookingUpdate[1].$set.couponRedeemedAt instanceof Date);
+  assert.equal(response.booking.status, 'completed');
 });

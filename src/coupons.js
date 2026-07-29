@@ -87,6 +87,7 @@ const campaignPayload = campaign => {
 
 const couponStatus = (coupon, now = new Date()) => {
   if (coupon.redeemedAt) return 'redeemed';
+  if (coupon.reservedBookingId) return 'reserved';
   if (new Date(coupon.validUntil) <= now) return 'expired';
   if (!coupon.claimedAt) return 'unclaimed';
   if (new Date(coupon.validFrom) > now) return 'pending';
@@ -107,6 +108,8 @@ const couponPayload = (coupon, now = new Date()) => {
     validUntil: source.validUntil,
     claimedAt: source.claimedAt || null,
     code: source.code || '',
+    reservedAt: source.reservedAt || null,
+    reservedBookingId: source.reservedBookingId || '',
     redeemedAt: source.redeemedAt || null,
     redeemedBookingId: source.redeemedBookingId || '',
     status: couponStatus(source, now),

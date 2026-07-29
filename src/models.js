@@ -217,6 +217,8 @@ const userCouponSchema = new mongoose.Schema({
   validUntil: { type: Date, required: true, index: true },
   claimedAt: Date,
   code: { type: String, unique: true, sparse: true },
+  reservedAt: Date,
+  reservedBookingId: { type: String, default: '', index: true },
   redeemedAt: Date,
   redeemedBookingId: { type: String, default: '', index: true },
   redeemedSalonId: { type: String, default: '' },

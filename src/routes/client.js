@@ -12,6 +12,7 @@ module.exports = (app, ctx) => {
     decryptWechatPhoneNumber,
     normalizeClientAccount,
     ClientUser,
+    CouponCampaign,
     UserCoupon,
     hashPassword,
     newClientUserId,
@@ -198,6 +199,7 @@ module.exports = (app, ctx) => {
   app.get('/api/auth/coupons', requireClientAuth, async (req, res) => {
     const coupons = await UserCoupon.find({
       userId: { $in: userIdAliases(req.clientUser.id) },
+      claimedAt: { $exists: true },
     })
       .sort({ validUntil: 1, discountFen: -1 })
       .lean();
@@ -205,42 +207,57 @@ module.exports = (app, ctx) => {
     res.json(coupons.map(coupon => couponPayload(coupon, now)));
   });
 
-  app.post('/api/auth/coupons/:id/claim', requireClientAuth, ...(rateLimits.booking || []), async (req, res) => {
-    const couponId = String(req.params.id || '').trim();
+  app.get('/api/auth/coupon-campaign', requireClientAuth, async (req, res) => {
+    const now = new Date();
+    const [campaign, claimableCoupon] = await Promise.all([
+      CouponCampaign.exists({
+        key: 'new-user-registration',
+        enabled: true,
+        registrationStartAt: { $lte: now },
+        registrationEndAt: { $gt: now },
+      }),
+      UserCoupon.exists({
+        campaignKey: 'new-user-registration',
+        userId: { $in: userIdAliases(req.clientUser.id) },
+        claimedAt: { $exists: false },
+        validUntil: { $gt: now },
+      }),
+    ]);
+    res.json({ enabled: Boolean(campaign && claimableCoupon) });
+  });
+
+  app.post('/api/auth/coupon-campaign/claim', requireClientAuth, ...(rateLimits.booking || []), async (req, res) => {
+    const now = new Date();
+    const campaign = await CouponCampaign.exists({
+      key: 'new-user-registration',
+      enabled: true,
+      registrationStartAt: { $lte: now },
+      registrationEndAt: { $gt: now },
+    });
+    if (!campaign) return res.status(409).json({ message: '新人礼包活动未开启或已结束' });
+
     const ownerFilter = {
-      id: couponId,
+      campaignKey: 'new-user-registration',
       userId: { $in: userIdAliases(req.clientUser.id) },
+      claimedAt: { $exists: false },
+      validUntil: { $gt: now },
     };
-    let coupon = await UserCoupon.findOne(ownerFilter);
-    if (!coupon) return res.status(404).json({ message: '优惠券不存在' });
-    if (coupon.claimedAt) return res.json({ coupon: couponPayload(coupon) });
-    if (coupon.validUntil <= new Date()) {
-      return res.status(409).json({ message: '优惠券已过期，无法领取' });
+    const result = await UserCoupon.updateMany(
+      ownerFilter,
+      { $set: { claimedAt: now } },
+    );
+    if (!result.modifiedCount) {
+      return res.status(409).json({ message: '新人礼包已领取或不可领取' });
     }
 
-    for (let attempts = 0; attempts < 10; attempts += 1) {
-      const raw = crypto.randomBytes(6).toString('hex').toUpperCase();
-      const code = `${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8)}`;
-      try {
-        coupon = await UserCoupon.findOneAndUpdate(
-          {
-            ...ownerFilter,
-            claimedAt: { $exists: false },
-            validUntil: { $gt: new Date() },
-          },
-          { $set: { claimedAt: new Date(), code } },
-          { new: true },
-        );
-        if (coupon) return res.json({ coupon: couponPayload(coupon) });
-
-        coupon = await UserCoupon.findOne(ownerFilter);
-        if (coupon?.claimedAt) return res.json({ coupon: couponPayload(coupon) });
-        return res.status(409).json({ message: '优惠券已过期，无法领取' });
-      } catch (error) {
-        if (error?.code !== 11000) throw error;
-      }
-    }
-    return res.status(503).json({ message: '券码生成失败，请重试' });
+    const coupons = await UserCoupon.find({
+      campaignKey: 'new-user-registration',
+      userId: { $in: userIdAliases(req.clientUser.id) },
+      claimedAt: { $exists: true },
+    })
+      .sort({ discountFen: -1 })
+      .lean();
+    res.json({ coupons: coupons.map(coupon => couponPayload(coupon, now)) });
   });
   
   app.post('/api/auth/login', ...rateLimits.login, async (req, res) => {
