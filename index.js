@@ -36,8 +36,18 @@ const {
   ClientUser,
   SmsVerification,
   AdConfig,
+  CouponCampaign,
+  UserCoupon,
   SupportMessage,
 } = require('./src/models');
+const {
+  campaignPayload,
+  couponDiscountForOrder,
+  couponPayload,
+  couponStatus,
+  issueSignupCoupons,
+  validateCampaignInput,
+} = require('./src/coupons');
 const {
   compressedImageMiddleware,
   deleteModeratedImages,
@@ -326,12 +336,32 @@ const decryptWechatPhoneNumber = async ({ encryptedData, iv, loginCode }) => {
   return phone;
 };
 
+const createClientUserWithSignupCoupons = async (fields) => {
+  const mongoSession = await mongoose.startSession();
+  try {
+    let user;
+    await mongoSession.withTransaction(async () => {
+      [user] = await ClientUser.create([fields], { session: mongoSession });
+      await issueSignupCoupons({
+        CouponCampaign,
+        UserCoupon,
+        crypto,
+        userId: normalizeUserId(user.id),
+        session: mongoSession,
+      });
+    }, { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } });
+    return user;
+  } finally {
+    await mongoSession.endSession();
+  }
+};
+
 const loginClientByPhone = async (phone) => {
   let user = await ClientUser.findOne({ $or: [{ account: phone }, { phone }] });
   if (!user) {
     const password = crypto.randomBytes(16).toString('hex');
     const { salt, hash } = await hashPassword(password);
-    user = await ClientUser.create({
+    user = await createClientUserWithSignupCoupons({
       id: newClientUserId(),
       account: phone,
       displayName: maskPhone(phone),
@@ -1425,6 +1455,13 @@ const routeContext = {
   calculateDistanceKm,
   clearPublicSalonDetailCache,
   ClientUser,
+  CouponCampaign,
+  UserCoupon,
+  campaignPayload,
+  couponDiscountForOrder,
+  couponPayload,
+  couponStatus,
+  createClientUserWithSignupCoupons,
   createSession,
   createModeratedUploadPolicies,
   createMerchantUploadPolicies,
@@ -1503,6 +1540,7 @@ const routeContext = {
   USER_CANCEL_WINDOW_MS,
   userIdAliases,
   verifyPassword,
+  validateCampaignInput,
   verifyModeratedImageObjects,
   verifyMerchantQualificationObjects,
   INPUT_LIMITS,
@@ -1549,6 +1587,8 @@ const startServer = async () => {
     MerchantUser.createIndexes(),
     Salon.createIndexes(),
     SmsVerification.createIndexes(),
+    CouponCampaign.createIndexes(),
+    UserCoupon.createIndexes(),
   ]);
   console.log('MongoDB connected');
 
@@ -1572,7 +1612,11 @@ module.exports = {
   buildStaffPayload,
   clearPublicSalonDetailCache,
   buildMerchantBookingScope,
+  campaignPayload,
   calculateDistanceKm,
+  couponDiscountForOrder,
+  couponPayload,
+  couponStatus,
   getApprovedReviewsByStaffIds,
   getNearbySalons,
   getCoordinates,
@@ -1598,4 +1642,5 @@ module.exports = {
   normalizeMerchantBooking,
   stripSensitiveSalonFields,
   verifyPassword,
+  validateCampaignInput,
 };

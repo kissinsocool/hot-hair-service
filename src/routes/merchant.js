@@ -80,6 +80,8 @@ module.exports = (app, ctx) => {
     logoutSession,
     sessionTokenFromRequest,
     clearPublicSalonDetailCache,
+    UserCoupon,
+    couponDiscountForOrder,
   } = ctx;
 
   const reserveBookingSlot = (bookingId, staffId, startTime, session) => {
@@ -411,6 +413,29 @@ module.exports = (app, ctx) => {
           throw transactionError(409, '预约开始前3小时内不能直接取消，请电话联系商家协商取消。直接爽约3次账号将被拉黑。');
         }
 
+        const couponReset = current.couponId ? {
+          couponId: '',
+          couponCode: '',
+          couponTitle: '',
+          couponDiscountFen: 0,
+          payableAmountFen: current.originalAmountFen
+            || Math.round(Number(current.totalPrice || parsePriceValue(current.servicePrice)) * 100),
+          couponRedeemedAt: null,
+        } : {};
+        if (current.couponId) {
+          await UserCoupon.updateOne(
+            { id: current.couponId, redeemedBookingId: current.id },
+            {
+              $unset: {
+                redeemedAt: '',
+                redeemedBookingId: '',
+                redeemedSalonId: '',
+                redeemedMerchantId: '',
+              },
+            },
+            { session },
+          );
+        }
         const updated = await Booking.findOneAndUpdate(
           { ...ownerFilter, status: current.status },
           { $set: {
@@ -420,6 +445,7 @@ module.exports = (app, ctx) => {
             userMessage: '您已取消本次预约。',
             rejectReason: '',
             canceledBy: 'user',
+            ...couponReset,
           } },
           { new: true, session },
         );
@@ -755,6 +781,7 @@ module.exports = (app, ctx) => {
     const serviceBasePrice = parsePriceValue(service.price);
     const staffExtraServiceFee = isNoPreference ? 0 : Number(staffMember.extraServiceFee || 0);
     const totalPrice = serviceBasePrice + staffExtraServiceFee;
+    const originalAmountFen = Math.round(totalPrice * 100);
     let bookingId = '';
     for (let attempts = 0; attempts < 10 && !bookingId; attempts += 1) {
       const candidate = generateBookingId(crypto.randomInt);
@@ -789,6 +816,8 @@ module.exports = (app, ctx) => {
           serviceBasePrice,
           staffExtraServiceFee,
           totalPrice,
+          originalAmountFen,
+          payableAmountFen: originalAmountFen,
           startTime,
           note,
           status: 'pending',
@@ -812,6 +841,89 @@ module.exports = (app, ctx) => {
       message: 'Booking request submitted and waiting for merchant confirmation.',
       booking: normalizeBooking(booking),
     });
+  });
+
+  app.post('/api/merchant/bookings/:id/coupon-redemptions', ...rateLimits.merchantBooking, async (req, res) => {
+    const rawCode = String(req.body.code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (rawCode.length !== 12) return res.status(400).json({ message: '请输入有效的优惠券编号' });
+    const code = `${rawCode.slice(0, 4)}-${rawCode.slice(4, 8)}-${rawCode.slice(8)}`;
+    const merchantSalon = await Salon.findOne({ id: req.merchantUser.salonId }).select('staffIds').lean();
+    const merchantScope = buildMerchantBookingScope(req.merchantUser.salonId, merchantSalon?.staffIds || []);
+
+    let booking;
+    try {
+      booking = await runBookingTransaction(async (session) => {
+        const current = await Booking.findOne({ id: req.params.id, ...merchantScope }).session(session);
+        if (!current) throw transactionError(404, 'Booking not found');
+        if (current.status !== 'accepted') throw transactionError(409, '只有待完成订单可以核销优惠券');
+        if (current.couponId) {
+          if (current.couponCode === code) return current;
+          throw transactionError(409, '该订单已经核销过优惠券');
+        }
+
+        const now = new Date();
+        const coupon = await UserCoupon.findOne({
+          code,
+          userId: normalizeUserId(current.userId),
+          claimedAt: { $exists: true },
+          redeemedAt: { $exists: false },
+          validFrom: { $lte: now },
+          validUntil: { $gt: now },
+        }).session(session);
+        if (!coupon) throw transactionError(409, '优惠券无效或不可使用');
+
+        const originalAmountFen = current.originalAmountFen > 0
+          ? current.originalAmountFen
+          : Math.round(Number(current.totalPrice || parsePriceValue(current.servicePrice)) * 100);
+        const discountFen = couponDiscountForOrder(originalAmountFen, coupon);
+        if (discountFen === null) {
+          throw transactionError(409, `订单金额未满${(coupon.minimumSpendFen / 100).toFixed(0)}元`);
+        }
+        const redeemed = await UserCoupon.findOneAndUpdate(
+          {
+            id: coupon.id,
+            redeemedAt: { $exists: false },
+            validFrom: { $lte: now },
+            validUntil: { $gt: now },
+          },
+          {
+            $set: {
+              redeemedAt: now,
+              redeemedBookingId: current.id,
+              redeemedSalonId: current.salonId,
+              redeemedMerchantId: req.merchantUser.id,
+            },
+          },
+          { new: true, session },
+        );
+        if (!redeemed) throw transactionError(409, '优惠券已被使用，请刷新后重试');
+
+        const updated = await Booking.findOneAndUpdate(
+          { id: current.id, status: 'accepted', couponId: { $in: ['', null] } },
+          {
+            $set: {
+              originalAmountFen,
+              couponId: redeemed.id,
+              couponCode: redeemed.code,
+              couponTitle: redeemed.title,
+              couponDiscountFen: discountFen,
+              payableAmountFen: originalAmountFen - discountFen,
+              couponRedeemedAt: now,
+              updatedAt: now,
+            },
+          },
+          { new: true, session },
+        );
+        if (!updated) throw transactionError(409, '订单状态已变更，请刷新后重试');
+        return updated;
+      });
+    } catch (error) {
+      if (error.httpStatus) return res.status(error.httpStatus).json({ message: error.message });
+      throw error;
+    }
+
+    broadcastBookingEvent('booking.updated', booking);
+    res.json({ booking: normalizeMerchantBooking(booking) });
   });
   
   app.patch('/api/merchant/bookings/:id', ...rateLimits.merchantBooking, async (req, res) => {
@@ -929,6 +1041,29 @@ module.exports = (app, ctx) => {
     let userPolicy = null;
     try {
       const result = await runBookingTransaction(async (session) => {
+        if (['cancel', 'no_show'].includes(action) && booking.couponId) {
+          await UserCoupon.updateOne(
+            { id: booking.couponId, redeemedBookingId: booking.id },
+            {
+              $unset: {
+                redeemedAt: '',
+                redeemedBookingId: '',
+                redeemedSalonId: '',
+                redeemedMerchantId: '',
+              },
+            },
+            { session },
+          );
+          Object.assign(update, {
+            couponId: '',
+            couponCode: '',
+            couponTitle: '',
+            couponDiscountFen: 0,
+            payableAmountFen: booking.originalAmountFen
+              || Math.round(Number(booking.totalPrice || parsePriceValue(booking.servicePrice)) * 100),
+            couponRedeemedAt: null,
+          });
+        }
         if (action === 'reschedule' && changed && booking.staffId) {
           await SlotOccupancy.updateOne(
             { bookingId: booking.id },

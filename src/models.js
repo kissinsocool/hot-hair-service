@@ -18,6 +18,13 @@ const bookingSchema = new mongoose.Schema({
   serviceBasePrice: { type: Number, default: 0 },
   staffExtraServiceFee: { type: Number, default: 0 },
   totalPrice: { type: Number, default: 0 },
+  originalAmountFen: { type: Number, default: 0 },
+  couponId: { type: String, default: '' },
+  couponCode: { type: String, default: '' },
+  couponTitle: { type: String, default: '' },
+  couponDiscountFen: { type: Number, default: 0 },
+  payableAmountFen: { type: Number, default: 0 },
+  couponRedeemedAt: Date,
   startTime: { type: Date, required: true, index: true },
   note: { type: String, default: '' },
   status: { type: String, default: 'pending', index: true },
@@ -179,6 +186,47 @@ const adConfigSchema = new mongoose.Schema({
   enabled: { type: Boolean, default: true },
 }, { timestamps: true });
 
+const couponTemplateSchema = new mongoose.Schema({
+  key: { type: String, required: true },
+  minimumSpendFen: { type: Number, required: true },
+  discountFen: { type: Number, required: true },
+  title: { type: String, required: true },
+  description: { type: String, default: '' },
+}, { _id: false });
+
+const couponCampaignSchema = new mongoose.Schema({
+  key: { type: String, required: true, unique: true, default: 'new-user-registration' },
+  enabled: { type: Boolean, default: false },
+  registrationStartAt: Date,
+  registrationEndAt: Date,
+  validFrom: Date,
+  validUntil: Date,
+  coupons: { type: [couponTemplateSchema], default: [] },
+  updatedBy: { type: String, default: '' },
+}, { timestamps: true });
+
+const userCouponSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true, index: true },
+  campaignKey: { type: String, required: true, index: true },
+  couponType: { type: String, required: true },
+  userId: { type: String, required: true, index: true },
+  minimumSpendFen: { type: Number, required: true },
+  discountFen: { type: Number, required: true },
+  title: { type: String, required: true },
+  description: { type: String, default: '' },
+  grantedAt: { type: Date, required: true },
+  validFrom: { type: Date, required: true },
+  validUntil: { type: Date, required: true, index: true },
+  claimedAt: Date,
+  code: { type: String, unique: true, sparse: true },
+  redeemedAt: Date,
+  redeemedBookingId: { type: String, default: '', index: true },
+  redeemedSalonId: { type: String, default: '' },
+  redeemedMerchantId: { type: String, default: '' },
+}, { timestamps: true });
+
+userCouponSchema.index({ userId: 1, campaignKey: 1, couponType: 1 }, { unique: true });
+
 const supportMessageSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
   userId: { type: String, default: '', index: true },
@@ -201,5 +249,7 @@ module.exports = {
   ClientUser: mongoose.model('ClientUser', clientUserSchema),
   SmsVerification: mongoose.model('SmsVerification', smsVerificationSchema),
   AdConfig: mongoose.model('AdConfig', adConfigSchema),
+  CouponCampaign: mongoose.model('CouponCampaign', couponCampaignSchema),
+  UserCoupon: mongoose.model('UserCoupon', userCouponSchema),
   SupportMessage: mongoose.model('SupportMessage', supportMessageSchema),
 };

@@ -12,6 +12,7 @@ module.exports = (app, ctx) => {
     decryptWechatPhoneNumber,
     normalizeClientAccount,
     ClientUser,
+    UserCoupon,
     hashPassword,
     newClientUserId,
     verifyPassword,
@@ -33,6 +34,8 @@ module.exports = (app, ctx) => {
     privateImageUrl,
     SupportMessage,
     resolveRequestUser,
+    couponPayload,
+    createClientUserWithSignupCoupons,
   } = ctx;
 
   app.post('/api/support-messages', ...(rateLimits.support || []), async (req, res) => {
@@ -174,7 +177,7 @@ module.exports = (app, ctx) => {
   
     const { salt, hash } = await hashPassword(password);
     const session = createSession();
-    const user = await ClientUser.create({
+    const user = await createClientUserWithSignupCoupons({
       id: newClientUserId(),
       account,
       displayName,
@@ -190,6 +193,54 @@ module.exports = (app, ctx) => {
       expiresAt: user.sessionExpiresAt,
       user: buildClientUserPayload(user),
     });
+  });
+
+  app.get('/api/auth/coupons', requireClientAuth, async (req, res) => {
+    const coupons = await UserCoupon.find({
+      userId: { $in: userIdAliases(req.clientUser.id) },
+    })
+      .sort({ validUntil: 1, discountFen: -1 })
+      .lean();
+    const now = new Date();
+    res.json(coupons.map(coupon => couponPayload(coupon, now)));
+  });
+
+  app.post('/api/auth/coupons/:id/claim', requireClientAuth, ...(rateLimits.booking || []), async (req, res) => {
+    const couponId = String(req.params.id || '').trim();
+    const ownerFilter = {
+      id: couponId,
+      userId: { $in: userIdAliases(req.clientUser.id) },
+    };
+    let coupon = await UserCoupon.findOne(ownerFilter);
+    if (!coupon) return res.status(404).json({ message: '优惠券不存在' });
+    if (coupon.claimedAt) return res.json({ coupon: couponPayload(coupon) });
+    if (coupon.validUntil <= new Date()) {
+      return res.status(409).json({ message: '优惠券已过期，无法领取' });
+    }
+
+    for (let attempts = 0; attempts < 10; attempts += 1) {
+      const raw = crypto.randomBytes(6).toString('hex').toUpperCase();
+      const code = `${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8)}`;
+      try {
+        coupon = await UserCoupon.findOneAndUpdate(
+          {
+            ...ownerFilter,
+            claimedAt: { $exists: false },
+            validUntil: { $gt: new Date() },
+          },
+          { $set: { claimedAt: new Date(), code } },
+          { new: true },
+        );
+        if (coupon) return res.json({ coupon: couponPayload(coupon) });
+
+        coupon = await UserCoupon.findOne(ownerFilter);
+        if (coupon?.claimedAt) return res.json({ coupon: couponPayload(coupon) });
+        return res.status(409).json({ message: '优惠券已过期，无法领取' });
+      } catch (error) {
+        if (error?.code !== 11000) throw error;
+      }
+    }
+    return res.status(503).json({ message: '券码生成失败，请重试' });
   });
   
   app.post('/api/auth/login', ...rateLimits.login, async (req, res) => {

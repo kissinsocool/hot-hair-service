@@ -32,7 +32,47 @@ module.exports = (app, ctx) => {
     revokeSessionHash,
     clearPublicSalonDetailCache,
     SupportMessage,
+    CouponCampaign,
+    UserCoupon,
+    campaignPayload,
+    validateCampaignInput,
   } = ctx;
+
+  const buildCampaignResponse = async (campaign) => {
+    const [grantedCouponCount, claimedCouponCount, typeStats] = await Promise.all([
+      UserCoupon.countDocuments({ campaignKey: 'new-user-registration' }),
+      UserCoupon.countDocuments({
+        campaignKey: 'new-user-registration',
+        claimedAt: { $exists: true },
+      }),
+      UserCoupon.aggregate([
+        { $match: { campaignKey: 'new-user-registration' } },
+        {
+          $group: {
+            _id: '$couponType',
+            grantedCount: { $sum: 1 },
+            claimedCount: {
+              $sum: { $cond: [{ $eq: [{ $type: '$claimedAt' }, 'date'] }, 1, 0] },
+            },
+          },
+        },
+      ]),
+    ]);
+    const statsByType = Object.fromEntries(typeStats.map(item => [item._id, item]));
+    return {
+      campaign: campaignPayload(campaign),
+      stats: {
+        eligibleUserCount: Math.floor(grantedCouponCount / 2),
+        grantedCouponCount,
+        claimedCouponCount,
+        coupons: ['99-20', '199-30'].map(type => ({
+          type,
+          grantedCount: statsByType[type]?.grantedCount || 0,
+          claimedCount: statsByType[type]?.claimedCount || 0,
+        })),
+      },
+    };
+  };
 
   app.post('/api/admin/auth/login', ...rateLimits.login, async (req, res) => {
     const username = String(req.body.username || '').trim();
@@ -107,6 +147,23 @@ module.exports = (app, ctx) => {
 
   app.get('/api/admin/ad', requireAdminAuth, async (_req, res) => {
     res.json(buildAdPayload(await AdConfig.findOne({ key: 'main' }).lean()));
+  });
+
+  app.get('/api/admin/campaigns/new-user-registration', requireAdminAuth, async (_req, res) => {
+    res.json(await buildCampaignResponse(
+      await CouponCampaign.findOne({ key: 'new-user-registration' }).lean(),
+    ));
+  });
+
+  app.patch('/api/admin/campaigns/new-user-registration', requireAdminAuth, async (req, res) => {
+    const parsed = validateCampaignInput(req.body);
+    if (parsed.error) return res.status(400).json({ message: parsed.error });
+    const campaign = await CouponCampaign.findOneAndUpdate(
+      { key: 'new-user-registration' },
+      { ...parsed.value, updatedBy: req.adminUser.id },
+      { upsert: true, new: true, runValidators: true },
+    ).lean();
+    res.json(await buildCampaignResponse(campaign));
   });
 
   app.patch('/api/admin/ad', requireAdminAuth, ...rateLimits.upload, async (req, res) => {
