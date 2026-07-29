@@ -3,6 +3,7 @@ const CAMPAIGN_KEY = 'new-user-registration';
 const defaultCampaign = () => ({
   key: CAMPAIGN_KEY,
   enabled: false,
+  promotionImageUrl: '',
   registrationStartAt: null,
   registrationEndAt: null,
   coupons: [
@@ -29,6 +30,7 @@ const parseDate = value => {
 };
 
 const validateCampaignInput = (body = {}) => {
+  const promotionImageUrl = String(body.promotionImageUrl || '').trim();
   const registrationStartAt = parseDate(body.registrationStartAt);
   const registrationEndAt = parseDate(body.registrationEndAt);
   if (
@@ -39,6 +41,8 @@ const validateCampaignInput = (body = {}) => {
     return { error: '请填写有效的活动时间' };
   }
   if (typeof body.enabled !== 'boolean') return { error: '活动开关必须是布尔值' };
+  if (body.enabled && !promotionImageUrl) return { error: '请上传首页推广图' };
+  if (promotionImageUrl.length > 2000) return { error: '首页推广图地址过长' };
 
   const sourceCoupons = Array.isArray(body.coupons) ? body.coupons : [];
   const expectedKeys = ['99-20', '199-30'];
@@ -70,6 +74,7 @@ const validateCampaignInput = (body = {}) => {
     value: {
       key: CAMPAIGN_KEY,
       enabled: body.enabled,
+      promotionImageUrl,
       registrationStartAt,
       registrationEndAt,
       coupons,

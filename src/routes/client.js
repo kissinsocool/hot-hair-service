@@ -210,12 +210,12 @@ module.exports = (app, ctx) => {
   app.get('/api/auth/coupon-campaign', requireClientAuth, async (req, res) => {
     const now = new Date();
     const [campaign, claimableCoupon] = await Promise.all([
-      CouponCampaign.exists({
+      CouponCampaign.findOne({
         key: 'new-user-registration',
         enabled: true,
         registrationStartAt: { $lte: now },
         registrationEndAt: { $gt: now },
-      }),
+      }).select('promotionImageUrl').lean(),
       UserCoupon.exists({
         campaignKey: 'new-user-registration',
         userId: { $in: userIdAliases(req.clientUser.id) },
@@ -223,7 +223,11 @@ module.exports = (app, ctx) => {
         validUntil: { $gt: now },
       }),
     ]);
-    res.json({ enabled: Boolean(campaign && claimableCoupon) });
+    const promotionImageUrl = String(campaign?.promotionImageUrl || '').trim();
+    res.json({
+      enabled: Boolean(promotionImageUrl && claimableCoupon),
+      promotionImageUrl,
+    });
   });
 
   app.post('/api/auth/coupon-campaign/claim', requireClientAuth, ...(rateLimits.booking || []), async (req, res) => {

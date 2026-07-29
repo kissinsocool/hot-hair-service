@@ -155,9 +155,22 @@ module.exports = (app, ctx) => {
     ));
   });
 
-  app.patch('/api/admin/campaigns/new-user-registration', requireAdminAuth, async (req, res) => {
-    const parsed = validateCampaignInput(req.body);
+  app.patch('/api/admin/campaigns/new-user-registration', requireAdminAuth, ...rateLimits.upload, async (req, res) => {
+    const hasNewImage = Boolean(req.body.promotionImageData);
+    const parsed = validateCampaignInput({
+      ...req.body,
+      promotionImageUrl: req.body.promotionImageUrl || (hasNewImage ? 'pending-upload' : ''),
+    });
     if (parsed.error) return res.status(400).json({ message: parsed.error });
+    if (hasNewImage) {
+      const imageUrl = await saveBase64Image(
+        'coupon-promotion',
+        req.body.promotionImageFileName || 'coupon-promotion.jpeg',
+        req.body.promotionImageData,
+      );
+      if (!imageUrl) return res.status(400).json({ message: '图片无效或超过 5MB' });
+      parsed.value.promotionImageUrl = imageUrl;
+    }
     const campaign = await CouponCampaign.findOneAndUpdate(
       { key: 'new-user-registration' },
       { ...parsed.value, updatedBy: req.adminUser.id },

@@ -197,6 +197,7 @@ const couponTemplateSchema = new mongoose.Schema({
 const couponCampaignSchema = new mongoose.Schema({
   key: { type: String, required: true, unique: true, default: 'new-user-registration' },
   enabled: { type: Boolean, default: false },
+  promotionImageUrl: { type: String, default: '' },
   registrationStartAt: Date,
   registrationEndAt: Date,
   coupons: { type: [couponTemplateSchema], default: [] },

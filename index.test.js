@@ -162,6 +162,7 @@ test('normalizePagination applies defaults and caps page size', () => {
 test('coupon campaigns use activity dates and validate both discount tiers', () => {
   const parsed = validateCampaignInput({
     enabled: true,
+    promotionImageUrl: 'https://example.com/new-user-gift.jpg',
     registrationStartAt: '2030-01-01T00:00:00.000Z',
     registrationEndAt: '2030-02-01T00:00:00.000Z',
     coupons: [
@@ -180,6 +181,7 @@ test('coupon campaigns use activity dates and validate both discount tiers', () 
     ],
   });
   assert.equal(parsed.error, undefined);
+  assert.equal(parsed.value.promotionImageUrl, 'https://example.com/new-user-gift.jpg');
   assert.equal(parsed.value.coupons.length, 2);
   assert.equal(Object.hasOwn(parsed.value, 'validFrom'), false);
   assert.equal(Object.hasOwn(parsed.value, 'validUntil'), false);
@@ -272,6 +274,17 @@ test('new-user gift stays hidden until the home promotion claims it', async () =
   let couponUpdate;
   registerClientRoutes(app, {
     CouponCampaign: {
+      findOne() {
+        return {
+          select() { return this; },
+          async lean() {
+            return {
+              _id: 'campaign-1',
+              promotionImageUrl: 'https://example.com/new-user-gift.jpg',
+            };
+          },
+        };
+      },
       async exists() { return { _id: 'campaign-1' }; },
     },
     UserCoupon: {
@@ -303,7 +316,10 @@ test('new-user gift stays hidden until the home promotion claims it', async () =
     { clientUser: { id: 'user-1' } },
     { json(value) { campaignPayload = value; } },
   );
-  assert.deepEqual(campaignPayload, { enabled: true });
+  assert.deepEqual(campaignPayload, {
+    enabled: true,
+    promotionImageUrl: 'https://example.com/new-user-gift.jpg',
+  });
 
   let claimPayload;
   await routes.get('POST /api/auth/coupon-campaign/claim')(
