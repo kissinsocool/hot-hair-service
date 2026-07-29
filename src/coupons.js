@@ -155,7 +155,7 @@ const issueSignupCoupons = async ({
     validFrom: campaign.registrationStartAt,
     validUntil: campaign.registrationEndAt,
   }));
-  return UserCoupon.create(coupons, { session });
+  return UserCoupon.create(coupons, { session, ordered: true });
 };
 
 module.exports = {

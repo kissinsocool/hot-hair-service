@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
+const mongoose = require('mongoose');
 const test = require('node:test');
 const {
   activeSessionQuery,
@@ -13,6 +14,7 @@ const {
   couponDiscountForOrder,
   couponStatus,
   clearPublicSalonDetailCache,
+  createClientUserWithSignupCoupons,
   createSession,
   ensureSalonForMerchant,
   getNearbySalons,
@@ -41,7 +43,15 @@ const {
 } = require('./index');
 const { issueSignupCoupons } = require('./src/coupons');
 const { isAllowedOrigin } = require('./src/config');
-const { Booking, ClientUser, FavoriteSalon, Salon, SlotOccupancy, StaffProfile } = require('./src/models');
+const {
+  Booking,
+  ClientUser,
+  CouponCampaign,
+  FavoriteSalon,
+  Salon,
+  SlotOccupancy,
+  StaffProfile,
+} = require('./src/models');
 const registerAdminRoutes = require('./src/routes/admin');
 const registerClientRoutes = require('./src/routes/client');
 const registerMerchantRoutes = require('./src/routes/merchant');
@@ -208,6 +218,7 @@ test('signup coupon validity matches the campaign', async () => {
   const registrationStartAt = new Date('2030-01-01T00:00:00.000Z');
   const registrationEndAt = new Date('2030-03-01T00:00:00.000Z');
   let createdCoupons;
+  let createOptions;
   await issueSignupCoupons({
     CouponCampaign: {
       findOne() {
@@ -229,8 +240,9 @@ test('signup coupon validity matches the campaign', async () => {
       },
     },
     UserCoupon: {
-      create(coupons) {
+      create(coupons, options) {
         createdCoupons = coupons;
+        createOptions = options;
         return coupons;
       },
     },
@@ -240,6 +252,34 @@ test('signup coupon validity matches the campaign', async () => {
 
   assert.equal(createdCoupons[0].validFrom, registrationStartAt);
   assert.equal(createdCoupons[0].validUntil, registrationEndAt);
+  assert.equal(createOptions.ordered, true);
+});
+
+test('signup transaction saves a client with its MongoDB session', async () => {
+  const originalStartSession = mongoose.startSession;
+  const originalClientSave = ClientUser.prototype.save;
+  const originalCampaignFindOne = CouponCampaign.findOne;
+  const session = {
+    async withTransaction(work) { await work(); },
+    async endSession() {},
+  };
+  let saveOptions;
+  mongoose.startSession = async () => session;
+  ClientUser.prototype.save = async function save(options) {
+    saveOptions = options;
+    return this;
+  };
+  CouponCampaign.findOne = () => ({ session: async () => null });
+
+  try {
+    const user = await createClientUserWithSignupCoupons({ id: 'user-1' });
+    assert.equal(user.id, 'user-1');
+    assert.equal(saveOptions.session, session);
+  } finally {
+    mongoose.startSession = originalStartSession;
+    ClientUser.prototype.save = originalClientSave;
+    CouponCampaign.findOne = originalCampaignFindOne;
+  }
 });
 
 test('support messages are validated, trimmed and stored with the current user', async () => {

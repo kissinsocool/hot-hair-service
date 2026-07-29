@@ -341,7 +341,8 @@ const createClientUserWithSignupCoupons = async (fields) => {
   try {
     let user;
     await mongoSession.withTransaction(async () => {
-      [user] = await ClientUser.create([fields], { session: mongoSession });
+      user = new ClientUser(fields);
+      await user.save({ session: mongoSession });
       await issueSignupCoupons({
         CouponCampaign,
         UserCoupon,
@@ -1630,6 +1631,7 @@ module.exports = {
   normalizeAdLink,
   normalizePagination,
   normalizeRadiusKm,
+  createClientUserWithSignupCoupons,
   createSession,
   parseMerchantRescheduleTime,
   readFavoriteSalons,

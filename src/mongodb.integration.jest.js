@@ -35,12 +35,17 @@ describeWithMongo('MongoDB replica set booking integration', () => {
 
     try {
       await session.withTransaction(async () => {
-        await SlotOccupancy.create([
-          { bookingId: 'BK-1', staffId: 'staff-1', startTime },
-        ], { session });
-        await Booking.create([
-          { id: 'BK-1', serviceId: 'service-1', staffId: 'staff-1', startTime },
-        ], { session });
+        await new SlotOccupancy({
+          bookingId: 'BK-1',
+          staffId: 'staff-1',
+          startTime,
+        }).save({ session });
+        await new Booking({
+          id: 'BK-1',
+          serviceId: 'service-1',
+          staffId: 'staff-1',
+          startTime,
+        }).save({ session });
       });
     } finally {
       await session.endSession();

@@ -800,7 +800,7 @@ module.exports = (app, ctx) => {
         if (!isNoPreference) {
           await reserveBookingSlot(bookingId, bookingStaffId, startTime, session);
         }
-        const [created] = await Booking.create([{
+        const created = new Booking({
           id: bookingId,
           userId,
           userName,
@@ -825,7 +825,8 @@ module.exports = (app, ctx) => {
           userMessage: '预约申请已提交，正在等待商家确认。',
           createdAt: now,
           updatedAt: now,
-        }], { session });
+        });
+        await created.save({ session });
         return created;
       });
     } catch (error) {
