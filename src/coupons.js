@@ -5,8 +5,6 @@ const defaultCampaign = () => ({
   enabled: false,
   registrationStartAt: null,
   registrationEndAt: null,
-  validFrom: null,
-  validUntil: null,
   coupons: [
     {
       key: '99-20',
@@ -33,18 +31,12 @@ const parseDate = value => {
 const validateCampaignInput = (body = {}) => {
   const registrationStartAt = parseDate(body.registrationStartAt);
   const registrationEndAt = parseDate(body.registrationEndAt);
-  const validFrom = parseDate(body.validFrom);
-  const validUntil = parseDate(body.validUntil);
   if (
     !registrationStartAt
     || !registrationEndAt
-    || !validFrom
-    || !validUntil
     || registrationStartAt >= registrationEndAt
-    || validFrom >= validUntil
-    || registrationEndAt > validUntil
   ) {
-    return { error: '请填写有效的活动时间和优惠券统一有效期' };
+    return { error: '请填写有效的活动时间' };
   }
   if (typeof body.enabled !== 'boolean') return { error: '活动开关必须是布尔值' };
 
@@ -80,8 +72,6 @@ const validateCampaignInput = (body = {}) => {
       enabled: body.enabled,
       registrationStartAt,
       registrationEndAt,
-      validFrom,
-      validUntil,
       coupons,
     },
   };
@@ -89,7 +79,10 @@ const validateCampaignInput = (body = {}) => {
 
 const campaignPayload = campaign => {
   const source = campaign?.toObject ? campaign.toObject() : campaign;
-  return { ...defaultCampaign(), ...(source || {}), key: CAMPAIGN_KEY };
+  const payload = { ...defaultCampaign(), ...(source || {}), key: CAMPAIGN_KEY };
+  delete payload.validFrom;
+  delete payload.validUntil;
+  return payload;
 };
 
 const couponStatus = (coupon, now = new Date()) => {
@@ -146,7 +139,6 @@ const issueSignupCoupons = async ({
     enabled: true,
     registrationStartAt: { $lte: now },
     registrationEndAt: { $gt: now },
-    validUntil: { $gt: now },
   }).session(session);
   if (!campaign) return [];
 
@@ -160,8 +152,8 @@ const issueSignupCoupons = async ({
     title: template.title,
     description: template.description,
     grantedAt: now,
-    validFrom: campaign.validFrom,
-    validUntil: campaign.validUntil,
+    validFrom: campaign.registrationStartAt,
+    validUntil: campaign.registrationEndAt,
   }));
   return UserCoupon.create(coupons, { session });
 };

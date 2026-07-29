@@ -199,8 +199,6 @@ const couponCampaignSchema = new mongoose.Schema({
   enabled: { type: Boolean, default: false },
   registrationStartAt: Date,
   registrationEndAt: Date,
-  validFrom: Date,
-  validUntil: Date,
   coupons: { type: [couponTemplateSchema], default: [] },
   updatedBy: { type: String, default: '' },
 }, { timestamps: true });

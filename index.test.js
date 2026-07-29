@@ -8,6 +8,7 @@ const {
   buildPublicSalonDetail,
   buildStaffPayload,
   buildMerchantBookingScope,
+  campaignPayload,
   couponPayload,
   couponDiscountForOrder,
   couponStatus,
@@ -38,6 +39,7 @@ const {
   verifyPassword,
   validateCampaignInput,
 } = require('./index');
+const { issueSignupCoupons } = require('./src/coupons');
 const { isAllowedOrigin } = require('./src/config');
 const { Booking, ClientUser, FavoriteSalon, Salon, SlotOccupancy, StaffProfile } = require('./src/models');
 const registerAdminRoutes = require('./src/routes/admin');
@@ -147,13 +149,11 @@ test('normalizePagination applies defaults and caps page size', () => {
   assert.deepEqual(normalizePagination({ page: 'Infinity' }), { page: 1, limit: 50, skip: 0 });
 });
 
-test('coupon campaigns use fixed validity dates and validate both discount tiers', () => {
+test('coupon campaigns use activity dates and validate both discount tiers', () => {
   const parsed = validateCampaignInput({
     enabled: true,
     registrationStartAt: '2030-01-01T00:00:00.000Z',
     registrationEndAt: '2030-02-01T00:00:00.000Z',
-    validFrom: '2030-01-01T00:00:00.000Z',
-    validUntil: '2030-03-01T00:00:00.000Z',
     coupons: [
       {
         key: '99-20',
@@ -171,18 +171,29 @@ test('coupon campaigns use fixed validity dates and validate both discount tiers
   });
   assert.equal(parsed.error, undefined);
   assert.equal(parsed.value.coupons.length, 2);
-  assert.equal(parsed.value.validUntil.toISOString(), '2030-03-01T00:00:00.000Z');
+  assert.equal(Object.hasOwn(parsed.value, 'validFrom'), false);
+  assert.equal(Object.hasOwn(parsed.value, 'validUntil'), false);
+  const payload = campaignPayload({
+    ...parsed.value,
+    validFrom: new Date(),
+    validUntil: new Date(),
+  });
+  assert.equal(Object.hasOwn(payload, 'validFrom'), false);
+  assert.equal(Object.hasOwn(payload, 'validUntil'), false);
 
   const now = new Date('2030-01-15T00:00:00.000Z');
   const coupon = {
     id: 'coupon-1',
-    validFrom: parsed.value.validFrom,
-    validUntil: parsed.value.validUntil,
+    validFrom: parsed.value.registrationStartAt,
+    validUntil: parsed.value.registrationEndAt,
   };
   assert.equal(couponStatus(coupon, now), 'unclaimed');
   assert.equal(couponStatus({ ...coupon, claimedAt: now }, now), 'available');
   assert.equal(couponStatus({ ...coupon, claimedAt: now, redeemedAt: now }, now), 'redeemed');
-  assert.equal(couponPayload({ ...coupon, claimedAt: now }, now).validUntil, parsed.value.validUntil);
+  assert.equal(
+    couponPayload({ ...coupon, claimedAt: now }, now).validUntil,
+    parsed.value.registrationEndAt,
+  );
   assert.equal(
     couponDiscountForOrder(9899, { minimumSpendFen: 9900, discountFen: 2000 }),
     null,
@@ -191,6 +202,44 @@ test('coupon campaigns use fixed validity dates and validate both discount tiers
     couponDiscountForOrder(9900, { minimumSpendFen: 9900, discountFen: 2000 }),
     2000,
   );
+});
+
+test('signup coupon validity matches the campaign', async () => {
+  const registrationStartAt = new Date('2030-01-01T00:00:00.000Z');
+  const registrationEndAt = new Date('2030-03-01T00:00:00.000Z');
+  let createdCoupons;
+  await issueSignupCoupons({
+    CouponCampaign: {
+      findOne() {
+        return {
+          session() {
+            return {
+              registrationStartAt,
+              registrationEndAt,
+              coupons: [{
+                key: '99-20',
+                minimumSpendFen: 9900,
+                discountFen: 2000,
+                title: '满99减20',
+                description: '',
+              }],
+            };
+          },
+        };
+      },
+    },
+    UserCoupon: {
+      create(coupons) {
+        createdCoupons = coupons;
+        return coupons;
+      },
+    },
+    crypto: { randomUUID: () => 'coupon-1' },
+    userId: 'user-1',
+  });
+
+  assert.equal(createdCoupons[0].validFrom, registrationStartAt);
+  assert.equal(createdCoupons[0].validUntil, registrationEndAt);
 });
 
 test('support messages are validated, trimmed and stored with the current user', async () => {
