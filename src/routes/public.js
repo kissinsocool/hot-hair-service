@@ -12,6 +12,7 @@ module.exports = (app, ctx) => {
     stripSensitiveSalonFields,
     AdConfig,
     buildAdPayload,
+    CouponCampaign,
     rateLimits,
     getStaffById,
     getSalonByStaffId,
@@ -25,6 +26,19 @@ module.exports = (app, ctx) => {
 
   app.get('/api/ad', async (_req, res) => {
     res.json(buildAdPayload(await AdConfig.findOne({ key: 'main' }).lean()));
+  });
+
+  app.get('/api/coupon-campaign', ...rateLimits.publicRead, async (_req, res) => {
+    const now = new Date();
+    const campaign = await CouponCampaign.findOne({
+      key: 'new-user-registration',
+      enabled: true,
+      registrationStartAt: { $lte: now },
+      registrationEndAt: { $gt: now },
+    }).select('promotionImageUrl').lean();
+    const promotionImageUrl = String(campaign?.promotionImageUrl || '').trim();
+    res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
+    res.json({ enabled: Boolean(promotionImageUrl), promotionImageUrl });
   });
 
   app.get('/api/salons', ...rateLimits.publicRead, async (req, res) => {

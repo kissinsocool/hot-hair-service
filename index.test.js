@@ -93,7 +93,8 @@ test('route modules stay inside their trust boundaries', () => {
   assert.ok(clientBookings.every(path => path.startsWith('/api/bookings')));
   assert.ok(merchant.every(path => path.startsWith('/api/merchant')));
   assert.ok(admin.every(path => path.startsWith('/api/admin')));
-  assert.ok(publicPaths.every(path => /^\/api\/(ad|salons|staff)/.test(path)));
+  assert.ok(publicPaths.every(path => /^\/api\/(ad|coupon-campaign|salons|staff)/.test(path)));
+  assert.ok(publicPaths.some(path => path === '/api/coupon-campaign'));
   assert.ok(publicPaths.some(path => path === '/api/salons'));
   assert.ok(publicPaths.some(path => path === '/api/staff/:id/slots'));
 });
@@ -477,6 +478,44 @@ test('new-user gift stays hidden until the home promotion claims it', async () =
   assert.equal(couponUpdate[0].claimedAt.$exists, false);
   assert.equal(couponUpdate[1].$set.claimedAt instanceof Date, true);
   assert.equal(claimPayload.coupons.length, 2);
+});
+
+test('public coupon campaign exposes only the active promotion image', async () => {
+  const routes = new Map();
+  const app = {
+    get(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+    post() {},
+    put() {},
+    patch() {},
+    delete() {},
+    use() {},
+  };
+  registerPublicRoutes(app, {
+    CouponCampaign: {
+      findOne() {
+        return {
+          select() { return this; },
+          async lean() {
+            return { promotionImageUrl: 'https://example.com/new-user-gift.jpg' };
+          },
+        };
+      },
+    },
+    rateLimits: { publicRead: [] },
+  });
+
+  let payload;
+  await routes.get('/api/coupon-campaign')(
+    {},
+    {
+      set() {},
+      json(value) { payload = value; },
+    },
+  );
+  assert.deepEqual(payload, {
+    enabled: true,
+    promotionImageUrl: 'https://example.com/new-user-gift.jpg',
+  });
 });
 
 test('signup transaction saves a client with its MongoDB session', async () => {
@@ -1596,19 +1635,20 @@ test('editing a review stores a pending draft without changing the approved revi
     imageUrls: ['https://public.example/old.jpg'],
     reviewStatus: 'approved',
   };
-  const booking = {
-    _id: 'mongo-booking-1',
+  const booking = new Booking({
     id: 'BK-1',
     userId: 'user-1',
     review: { ...originalReview },
-  };
+  });
+  let updateQuery;
   let update;
   registerClientBookingRoutes(app, {
     Booking: {
       async findOne() { return booking; },
-      async findOneAndUpdate(_query, value) {
+      async findOneAndUpdate(query, value) {
+        updateQuery = query;
         update = value;
-        return { ...booking, review: { ...booking.review, pendingEdit: value.$set['review.pendingEdit'] } };
+        return { ...booking.toObject(), review: { ...originalReview, pendingEdit: value.$set['review.pendingEdit'] } };
       },
     },
     userIdAliases: id => [id],
@@ -1636,6 +1676,7 @@ test('editing a review stores a pending draft without changing the approved revi
   );
 
   assert.equal(booking.review.comment, '原评论');
+  assert.equal(updateQuery['review.id'], 'review-1');
   assert.equal(update.$set['review.pendingEdit'].comment, '修改后评论');
   assert.equal(update.$set['review.pendingEdit'].reviewStatus, 'pending');
 });
@@ -1649,12 +1690,19 @@ test('deleting a review returns success even when post-delete cleanup fails', as
     use() {},
     delete(path, ...handlers) { routes.set(path, handlers.at(-1)); },
   };
-  const review = { id: 'review-1', imageUrls: ['https://public.example/old.jpg'] };
-  const booking = { _id: 'mongo-booking-1', id: 'BK-1', userId: 'user-1', review };
+  const booking = new Booking({
+    id: 'BK-1',
+    userId: 'user-1',
+    review: { id: 'review-1', imageUrls: ['https://public.example/old.jpg'] },
+  });
+  let updateQuery;
   registerClientBookingRoutes(app, {
     Booking: {
       async findOne() { return booking; },
-      async findOneAndUpdate() { return { ...booking, review: undefined }; },
+      async findOneAndUpdate(query) {
+        updateQuery = query;
+        return { ...booking.toObject(), review: undefined };
+      },
     },
     userIdAliases: id => [id],
     normalizeUserId: value => value,
@@ -1677,6 +1725,7 @@ test('deleting a review returns success even when post-delete cleanup fails', as
   }
 
   assert.deepEqual(payload, { ok: true });
+  assert.equal(updateQuery['review.id'], 'review-1');
 });
 
 test('concurrent review and complaint submissions only update once', async () => {

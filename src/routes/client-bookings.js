@@ -225,7 +225,9 @@ module.exports = (app, ctx) => {
       return res.status(400).json({ message: `comment cannot exceed ${INPUT_LIMITS.review} characters` });
     }
 
-    const previousReview = { ...booking.review };
+    const previousReview = booking.review.toObject
+      ? booking.review.toObject()
+      : { ...booking.review };
     const previousPendingEdit = previousReview.pendingEdit;
     delete previousReview.pendingEdit;
     const previousImages = Array.isArray(previousReview.imageUrls) ? previousReview.imageUrls : [];
@@ -286,7 +288,9 @@ module.exports = (app, ctx) => {
       return res.status(403).json({ message: 'Cannot delete another user review' });
     }
 
-    const review = { ...booking.review };
+    const review = booking.review.toObject
+      ? booking.review.toObject()
+      : { ...booking.review };
     const updatedBooking = await Booking.findOneAndUpdate(
       { _id: booking._id, 'review.id': review.id },
       { $unset: { review: '' }, $set: { reviewed: false, updatedAt: new Date() } },
