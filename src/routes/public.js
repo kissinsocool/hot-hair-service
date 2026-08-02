@@ -4,20 +4,23 @@ module.exports = (app, ctx) => {
     normalizeLimit,
     normalizeRadiusKm,
     buildPublicSalonDetail,
-    resolveRequestUser,
-    readFavoriteSalons,
-    FavoriteSalon,
-    DEMO_USER_ID,
     getCoordinates,
     salonCoverImage,
     existingSalonImages,
     Salon,
     calculateDistanceKm,
-    userIdAliases,
     stripSensitiveSalonFields,
     AdConfig,
     buildAdPayload,
     rateLimits,
+    getStaffById,
+    getSalonByStaffId,
+    getStaffMapByIds,
+    getApprovedReviewsByStaffIds,
+    buildStaffPayload,
+    generateSlotsForNoPreferenceAndDate,
+    generateSlotsForStaffAndDate,
+    servicePayload,
   } = ctx;
 
   app.get('/api/ad', async (_req, res) => {
@@ -76,33 +79,42 @@ module.exports = (app, ctx) => {
     res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
     res.json(await buildPublicSalonDetail(salon));
   });
-  
-  app.get('/api/favorites', async (req, res) => {
-    const { userId } = await resolveRequestUser(req);
-    res.json(await readFavoriteSalons(userId));
-  });
-  
-  app.put('/api/favorites/:id', async (req, res) => {
-    const { userId } = await resolveRequestUser(req);
-    const salonId = String(req.params.id || '').trim();
-    if (!salonId) return res.status(400).json({ message: 'Salon id is required' });
-    try {
-      await FavoriteSalon.updateOne(
-        { userId, salonId },
-        { $setOnInsert: { userId, salonId } },
-        { upsert: true },
-      );
-    } catch (error) {
-      if (error?.code !== 11000) throw error;
-    }
-    res.json(await readFavoriteSalons(userId));
+
+  app.get('/api/staff/:id', ...rateLimits.publicRead, async (req, res) => {
+    const person = await getStaffById(req.params.id).lean();
+    if (!person) return res.status(404).json({ message: 'Staff not found' });
+    const salon = await getSalonByStaffId(req.params.id).lean();
+    const staffMap = salon ? await getStaffMapByIds(salon.staffIds) : {};
+    const [reviews, salonReviews] = await Promise.all([
+      getApprovedReviewsByStaffIds([req.params.id], 50),
+      salon ? getApprovedReviewsByStaffIds(salon.staffIds, 150) : [],
+    ]);
+    const reviewsByStaff = salonReviews.reduce((grouped, review) => {
+      (grouped[review.staffId] ||= []).push(review);
+      return grouped;
+    }, {});
+    res.json({
+      ...buildStaffPayload(person, reviews),
+      salonId: salon?.id || '',
+      salonServices: (salon?.services || []).map(servicePayload),
+      salonStaff: salon ? salon.staffIds.map(id => staffMap[id]).filter(Boolean)
+        .map(profile => buildStaffPayload(profile, reviewsByStaff[profile.id] || [])) : [],
+      salonClosedDates: salon?.closedDates || [],
+      salonAcceptsSameDayBooking: salon?.acceptsSameDayBooking !== false,
+    });
   });
 
-  app.delete('/api/favorites/:id', async (req, res) => {
-    const { userId } = await resolveRequestUser(req);
-    const salonId = String(req.params.id || '').trim();
-    if (!salonId) return res.status(400).json({ message: 'Salon id is required' });
-    await FavoriteSalon.deleteMany({ userId: { $in: userIdAliases(userId) }, salonId });
-    res.json(await readFavoriteSalons(userId));
+  app.get('/api/staff/:id/slots', ...rateLimits.publicRead, async (req, res) => {
+    const staffId = req.params.id;
+    const date = req.query.date || '2026-06-01';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ message: 'date must use YYYY-MM-DD format' });
+    }
+    if (staffId === '__no_preference__') {
+      const salon = await Salon.findOne({ id: String(req.query.salonId || '').trim() }).lean();
+      if (!salon) return res.status(404).json({ message: 'Salon not found' });
+      return res.json(await generateSlotsForNoPreferenceAndDate(salon, date));
+    }
+    res.json(await generateSlotsForStaffAndDate(staffId, date));
   });
 };

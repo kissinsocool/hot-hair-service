@@ -4,7 +4,6 @@ const dotenv = require('dotenv');
 const mongoose = require('mongoose');
 const { sessionTtlSeconds } = require('../src/config');
 const { ClientUser } = require('../src/models');
-const { hashPassword } = require('../src/passwords');
 
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
@@ -30,7 +29,6 @@ const createLoadTestUsers = async () => {
   const { mongoUri, count, prefix } = readLoadTestConfig();
   await mongoose.connect(mongoUri);
 
-  const { salt, hash } = await hashPassword(crypto.randomBytes(32).toString('hex'));
   const expiresAt = new Date(Date.now() + sessionTtlSeconds * 1000);
   const tokens = [];
 
@@ -46,13 +44,12 @@ const createLoadTestUsers = async () => {
           sessionTokenHash: crypto.createHash('sha256').update(token).digest('hex'),
           sessionExpiresAt: expiresAt,
           lastLoginAt: new Date(),
+          authProvider: 'wechat',
         },
         $setOnInsert: {
           id: account,
           account,
           displayName: `K6 Load User ${suffix}`,
-          passwordSalt: salt,
-          passwordHash: hash,
         },
       },
       { upsert: true },

@@ -2,12 +2,10 @@ module.exports = (app, ctx) => {
   const {
     AdminUser,
     AdConfig,
-    verifyPassword,
     crypto,
     buildAdminUserPayload,
     buildClientUserPayload,
     buildMerchantUserPayload,
-    requireAdminAuth,
     MerchantUser,
     ClientUser,
     Salon,
@@ -27,7 +25,6 @@ module.exports = (app, ctx) => {
     normalizePagination,
     setPaginationHeaders,
     rateLimits,
-    rotateSession,
     logoutSession,
     revokeSessionHash,
     clearPublicSalonDetailCache,
@@ -74,43 +71,16 @@ module.exports = (app, ctx) => {
     };
   };
 
-  app.post('/api/admin/auth/login', ...rateLimits.login, async (req, res) => {
-    const username = String(req.body.username || '').trim();
-    const password = String(req.body.password || '');
-  
-    if (!username || !password) {
-      return res.status(400).json({ message: 'username and password are required' });
-    }
-    if (username.length > 100 || password.length > 128) {
-      return res.status(400).json({ message: 'username or password is too long' });
-    }
-  
-    const user = await AdminUser.findOne({ username });
-    if (!user) return res.status(401).json({ message: '账号或密码错误' });
-  
-    if (!await verifyPassword(password, user)) {
-      return res.status(401).json({ message: '账号或密码错误' });
-    }
-  
-    const session = await rotateSession(user);
-
-    res.json({
-      token: session.token,
-      expiresAt: session.expiresAt,
-      user: buildAdminUserPayload(user),
-    });
-  });
-  
-  app.get('/api/admin/auth/me', requireAdminAuth, async (req, res) => {
+  app.get('/api/admin/auth/me', async (req, res) => {
     res.json({ user: buildAdminUserPayload(req.adminUser) });
   });
 
-  app.post('/api/admin/auth/logout', requireAdminAuth, async (req, res) => {
+  app.post('/api/admin/auth/logout', async (req, res) => {
     await logoutSession(AdminUser, req.adminUser, req);
     res.json({ ok: true });
   });
   
-  app.get('/api/admin/overview', requireAdminAuth, async (req, res) => {
+  app.get('/api/admin/overview', async (req, res) => {
     const [merchantCount, clientCount, salonCount, bookingCount, pendingCount, acceptedCount] = await Promise.all([
       MerchantUser.countDocuments(),
       ClientUser.countDocuments(),
@@ -130,7 +100,7 @@ module.exports = (app, ctx) => {
     });
   });
 
-  app.get('/api/admin/support-messages', requireAdminAuth, async (req, res) => {
+  app.get('/api/admin/support-messages', async (req, res) => {
     const pagination = normalizePagination(req.query);
     const [messages, total] = await Promise.all([
       SupportMessage.find({})
@@ -145,17 +115,17 @@ module.exports = (app, ctx) => {
     res.json(messages);
   });
 
-  app.get('/api/admin/ad', requireAdminAuth, async (_req, res) => {
+  app.get('/api/admin/ad', async (_req, res) => {
     res.json(buildAdPayload(await AdConfig.findOne({ key: 'main' }).lean()));
   });
 
-  app.get('/api/admin/campaigns/new-user-registration', requireAdminAuth, async (_req, res) => {
+  app.get('/api/admin/campaigns/new-user-registration', async (_req, res) => {
     res.json(await buildCampaignResponse(
       await CouponCampaign.findOne({ key: 'new-user-registration' }).lean(),
     ));
   });
 
-  app.patch('/api/admin/campaigns/new-user-registration', requireAdminAuth, ...rateLimits.upload, async (req, res) => {
+  app.patch('/api/admin/campaigns/new-user-registration', ...rateLimits.upload, async (req, res) => {
     const hasNewImage = Boolean(req.body.promotionImageData);
     const parsed = validateCampaignInput({
       ...req.body,
@@ -179,7 +149,7 @@ module.exports = (app, ctx) => {
     res.json(await buildCampaignResponse(campaign));
   });
 
-  app.patch('/api/admin/ad', requireAdminAuth, ...rateLimits.upload, async (req, res) => {
+  app.patch('/api/admin/ad', ...rateLimits.upload, async (req, res) => {
     const link = normalizeAdLink(req.body.link);
     if (!link) return res.status(400).json({ message: '跳转链接必须是 /pages/... 小程序页面路径' });
     if (typeof req.body.enabled !== 'boolean') return res.status(400).json({ message: '是否显示必须是布尔值' });
@@ -199,7 +169,7 @@ module.exports = (app, ctx) => {
     res.json(buildAdPayload(config));
   });
   
-  app.get('/api/admin/merchants', requireAdminAuth, async (req, res) => {
+  app.get('/api/admin/merchants', async (req, res) => {
     const pagination = normalizePagination(req.query);
     const [merchants, total] = await Promise.all([
       MerchantUser.find({})
@@ -221,7 +191,7 @@ module.exports = (app, ctx) => {
     ));
   });
   
-  app.post('/api/admin/merchants', requireAdminAuth, async (req, res) => {
+  app.post('/api/admin/merchants', async (req, res) => {
     const username = String(req.body.username || '').trim();
     const password = String(req.body.password || '');
     const displayName = String(req.body.displayName || '').trim();
@@ -256,7 +226,7 @@ module.exports = (app, ctx) => {
     res.status(201).json({ user: buildMerchantUserPayload(user) });
   });
   
-  app.patch('/api/admin/merchants/:id', requireAdminAuth, async (req, res) => {
+  app.patch('/api/admin/merchants/:id', async (req, res) => {
     const user = await MerchantUser.findOne({ id: req.params.id });
     if (!user) return res.status(404).json({ message: 'Merchant user not found' });
   
@@ -303,7 +273,7 @@ module.exports = (app, ctx) => {
     res.json({ user: buildMerchantUserPayload(user) });
   });
   
-  app.patch('/api/admin/merchants/:id/license', requireAdminAuth, async (req, res) => {
+  app.patch('/api/admin/merchants/:id/license', async (req, res) => {
     const action = String(req.body.action || '').trim();
     const reason = String(req.body.reason || '').trim();
     if (!['approve', 'reject'].includes(action)) {
@@ -331,7 +301,7 @@ module.exports = (app, ctx) => {
     res.json({ merchant: await buildAdminMerchantPayload(user, salon) });
   });
   
-  app.patch('/api/admin/merchants/:id/content', requireAdminAuth, async (req, res) => {
+  app.patch('/api/admin/merchants/:id/content', async (req, res) => {
     const action = String(req.body.action || '').trim();
     const reason = String(req.body.reason || '').trim();
     if (!['approve', 'reject'].includes(action)) {
@@ -353,7 +323,7 @@ module.exports = (app, ctx) => {
     res.json({ merchant: await buildAdminMerchantPayload(user, salon) });
   });
   
-  app.patch('/api/admin/merchants/:id/publish', requireAdminAuth, async (req, res) => {
+  app.patch('/api/admin/merchants/:id/publish', async (req, res) => {
     const action = String(req.body.action || '').trim();
     if (!['online', 'offline'].includes(action)) {
       return res.status(400).json({ message: 'action must be online or offline' });
@@ -376,7 +346,7 @@ module.exports = (app, ctx) => {
     res.json({ merchant: await buildAdminMerchantPayload(user, salon) });
   });
   
-  app.get('/api/admin/users', requireAdminAuth, async (req, res) => {
+  app.get('/api/admin/users', async (req, res) => {
     const pagination = normalizePagination(req.query);
     const [users, total] = await Promise.all([
       ClientUser.find({})
@@ -397,7 +367,7 @@ module.exports = (app, ctx) => {
     })));
   });
   
-  app.get('/api/admin/bookings', requireAdminAuth, async (req, res) => {
+  app.get('/api/admin/bookings', async (req, res) => {
     const pagination = normalizePagination(req.query);
     const [bookings, total] = await Promise.all([
       Booking.find({}).select('-_id -__v').sort({ createdAt: -1 }).skip(pagination.skip).limit(pagination.limit).lean(),
@@ -407,7 +377,7 @@ module.exports = (app, ctx) => {
     res.json(bookings.map(normalizeBooking));
   });
 
-  app.get('/api/admin/user-images', requireAdminAuth, async (_req, res) => {
+  app.get('/api/admin/user-images', async (_req, res) => {
     const query = {
       $or: [
         { review: { $exists: true, $ne: null } },
@@ -425,7 +395,7 @@ module.exports = (app, ctx) => {
     res.json(bookings.flatMap(booking => userImageReviewItems(booking, privateImageUrl)));
   });
 
-  app.patch('/api/admin/user-images', requireAdminAuth, async (req, res) => {
+  app.patch('/api/admin/user-images', async (req, res) => {
     const bookingId = String(req.body.bookingId || '').trim();
     const type = String(req.body.type || '').trim();
     const action = String(req.body.action || '').trim();

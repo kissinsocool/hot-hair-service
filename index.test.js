@@ -53,9 +53,134 @@ const {
   StaffProfile,
 } = require('./src/models');
 const registerAdminRoutes = require('./src/routes/admin');
+const registerAuthEntryRoutes = require('./src/routes/auth-entry');
+const registerClientBookingRoutes = require('./src/routes/client-bookings');
 const registerClientRoutes = require('./src/routes/client');
 const registerMerchantRoutes = require('./src/routes/merchant');
 const registerPublicRoutes = require('./src/routes/public');
+const bookingDomain = require('./src/services/booking');
+const salonDomain = require('./src/services/salon');
+const { bookingPatch, serviceForMigration } = require('./scripts/migrate-booking-domain');
+
+const collectRoutePaths = (register, context = {}) => {
+  const paths = [];
+  const app = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map(method => [
+    method,
+    path => paths.push(path),
+  ]));
+  app.use = () => {};
+  register(app, {
+    rateLimits: new Proxy({}, { get: () => [] }),
+    ...context,
+  });
+  return paths;
+};
+
+test('route modules stay inside their trust boundaries', () => {
+  const authEntry = collectRoutePaths(registerAuthEntryRoutes);
+  const client = collectRoutePaths(registerClientRoutes);
+  const clientBookings = collectRoutePaths(registerClientBookingRoutes);
+  const merchant = collectRoutePaths(registerMerchantRoutes);
+  const admin = collectRoutePaths(registerAdminRoutes);
+  const publicPaths = collectRoutePaths(registerPublicRoutes);
+
+  assert.deepEqual(authEntry.sort(), [
+    '/api/admin/auth/login',
+    '/api/auth/wechat/phone',
+    '/api/merchant/auth/login',
+  ]);
+  assert.ok(client.every(path => /^\/api\/(auth|favorites|support-messages|uploads)/.test(path)));
+  assert.ok(clientBookings.every(path => path.startsWith('/api/bookings')));
+  assert.ok(merchant.every(path => path.startsWith('/api/merchant')));
+  assert.ok(admin.every(path => path.startsWith('/api/admin')));
+  assert.ok(publicPaths.every(path => /^\/api\/(ad|salons|staff)/.test(path)));
+  assert.ok(publicPaths.some(path => path === '/api/salons'));
+  assert.ok(publicPaths.some(path => path === '/api/staff/:id/slots'));
+});
+
+test('booking domain stores fen, minutes and an explicit Shanghai timezone', () => {
+  const service = salonDomain.serviceForStorage({
+    id: 'service-1',
+    name: '剪发',
+    price: '¥88.50',
+    duration: '45分钟',
+  });
+  assert.equal(service.priceFen, 8850);
+  assert.equal(service.durationMinutes, 45);
+  assert.equal(Object.hasOwn(service, 'price'), false);
+  assert.equal(bookingDomain.slotStartTime('2030-01-02', '10:30'), '2030-01-02T10:30:00+08:00');
+  assert.equal(
+    bookingDomain.parseBookingTime('2030-01-02T10:30:00').toISOString(),
+    '2030-01-02T02:30:00.000Z',
+  );
+  assert.equal(bookingDomain.localBookingDateKey('2030-01-02T16:30:00Z'), '2030-01-03');
+
+  const normalized = bookingDomain.normalizeBookingPayload({
+    status: 'completed',
+    serviceBasePrice: 80,
+    serviceDuration: '60分钟',
+    payableAmountFen: 0,
+  });
+  assert.equal(normalized.servicePriceFen, 8000);
+  assert.equal(normalized.serviceDurationMinutes, 60);
+  assert.equal(normalized.payableAmountFen, 0);
+  assert.equal(normalized.timeZone, 'Asia/Shanghai');
+});
+
+test('booking migration derives canonical fields without deleting legacy data', () => {
+  assert.deepEqual(bookingPatch({
+    servicePrice: '¥68',
+    serviceDuration: '30分钟',
+    staffExtraServiceFee: 20,
+    totalPrice: 88,
+    couponDiscountFen: 1000,
+  }), {
+    servicePriceFen: 6800,
+    serviceDurationMinutes: 30,
+    staffExtraServiceFeeFen: 2000,
+    originalAmountFen: 8800,
+    payableAmountFen: 7800,
+    timeZone: 'Asia/Shanghai',
+  });
+  assert.deepEqual(serviceForMigration({
+    id: 'service-legacy',
+    name: '旧服务',
+    price: '¥68',
+    duration: '30分钟',
+  }), {
+    id: 'service-legacy',
+    name: '旧服务',
+    tags: [],
+    priceFen: 6800,
+    durationMinutes: 30,
+    note: '',
+    imageUrl: '',
+    price: '¥68',
+    duration: '30分钟',
+  });
+});
+
+test('service, review, complaint and pending content use child schemas instead of Mixed', async () => {
+  assert.ok(Salon.schema.path('services').schema);
+  assert.ok(Salon.schema.path('pendingContent').schema);
+  assert.ok(Booking.schema.path('review').schema);
+  assert.ok(Booking.schema.path('complaint').schema);
+  assert.equal(Salon.schema.path('services').schema.path('priceFen').instance, 'Number');
+  assert.equal(Booking.schema.path('serviceDurationMinutes').instance, 'Number');
+
+  const invalid = new Booking({
+    id: 'booking-invalid-domain',
+    serviceId: 'service-1',
+    servicePriceFen: 10.5,
+    serviceDurationMinutes: 30.5,
+    startTime: new Date('2030-01-02T02:30:00Z'),
+  });
+  await assert.rejects(invalid.validate(), (error) => {
+    assert.ok(error.errors.servicePriceFen);
+    assert.ok(error.errors.serviceDurationMinutes);
+    return true;
+  });
+});
 
 test('getCoordinates accepts common location shapes', () => {
   assert.deepEqual(getCoordinates('121.4737,31.2304'), { latitude: 31.2304, longitude: 121.4737 });
@@ -94,16 +219,35 @@ test('public staff payloads use supplied booking reviews and ignore legacy profi
   assert.equal(payload.rating, 5);
 });
 
-test('health and readiness endpoints expose process and dependency state', async () => {
+test('health, readiness and centralized auth boundaries work without database access', async () => {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   try {
     const address = server.address();
-    const health = await fetch(`http://127.0.0.1:${address.port}/health`);
-    const ready = await fetch(`http://127.0.0.1:${address.port}/ready`);
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const [health, ready, client, merchant, admin] = await Promise.all([
+      fetch(`${baseUrl}/health`),
+      fetch(`${baseUrl}/ready`),
+      fetch(`${baseUrl}/api/auth/me`),
+      fetch(`${baseUrl}/api/merchant/auth/me`),
+      fetch(`${baseUrl}/api/admin/auth/me`),
+    ]);
     assert.equal(health.status, 200);
     assert.equal((await health.json()).status, 'ok');
     assert.equal(ready.status, 503);
     assert.equal((await ready.json()).mongodb, 'down');
+    assert.equal(client.status, 401);
+    assert.equal(merchant.status, 401);
+    assert.equal(admin.status, 401);
+
+    const emptyLogin = { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' };
+    const [wechatLogin, merchantLogin, adminLogin] = await Promise.all([
+      fetch(`${baseUrl}/api/auth/wechat/phone`, emptyLogin),
+      fetch(`${baseUrl}/api/merchant/auth/login`, emptyLogin),
+      fetch(`${baseUrl}/api/admin/auth/login`, emptyLogin),
+    ]);
+    assert.equal(wechatLogin.status, 400);
+    assert.equal(merchantLogin.status, 400);
+    assert.equal(adminLogin.status, 400);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
@@ -267,6 +411,7 @@ test('new-user gift stays hidden until the home promotion claims it', async () =
   const app = {
     get(path, ...handlers) { routes.set(`GET ${path}`, handlers.at(-1)); },
     post(path, ...handlers) { routes.set(`POST ${path}`, handlers.at(-1)); },
+    put() {},
     patch() {},
     delete() {},
     use() {},
@@ -308,7 +453,7 @@ test('new-user gift stays hidden until the home promotion claims it', async () =
     userIdAliases: id => [id],
     couponPayload: value => value,
     requireClientAuth() {},
-    rateLimits: { upload: [], smsRequest: [], smsVerify: [], login: [], booking: [] },
+    rateLimits: { upload: [], login: [], booking: [] },
   });
 
   let campaignPayload;
@@ -366,6 +511,8 @@ test('support messages are validated, trimmed and stored with the current user',
   const app = {
     get() {},
     patch() {},
+    put() {},
+    delete() {},
     post(path, ...handlers) { routes.set(path, handlers.at(-1)); },
   };
   let saved;
@@ -376,13 +523,12 @@ test('support messages are validated, trimmed and stored with the current user',
         return value;
       },
     },
-    resolveRequestUser: async () => ({ userId: 'user-1', userName: '测试用户' }),
+    normalizeUserId: value => value.replace(/^user-/, ''),
+    requireClientAuth() {},
     crypto: { randomUUID: () => 'message-1' },
     rateLimits: {
       support: [],
       upload: [],
-      smsRequest: [],
-      smsVerify: [],
       login: [],
     },
   });
@@ -390,7 +536,10 @@ test('support messages are validated, trimmed and stored with the current user',
   let status;
   let payload;
   await routes.get('/api/support-messages')(
-    { body: { problem: '  被强迫充值  ', contact: ' 13800138000 ' } },
+    {
+      clientUser: { id: 'user-1', displayName: '测试用户' },
+      body: { problem: '  被强迫充值  ', contact: ' 13800138000 ' },
+    },
     {
       status(value) { status = value; return this; },
       json(value) { payload = value; },
@@ -400,12 +549,80 @@ test('support messages are validated, trimmed and stored with the current user',
   assert.equal(status, 201);
   assert.deepEqual(saved, {
     id: 'support-message-1',
-    userId: 'user-1',
+    userId: '1',
     userName: '测试用户',
     problem: '被强迫充值',
     contact: '13800138000',
   });
   assert.deepEqual(payload, { id: 'support-message-1' });
+});
+
+test('client authentication exposes only the WeChat phone login entry', () => {
+  const routes = new Map();
+  const app = {
+    get(path) { routes.set(`GET ${path}`, true); },
+    patch(path) { routes.set(`PATCH ${path}`, true); },
+    post(path) { routes.set(`POST ${path}`, true); },
+    put(path) { routes.set(`PUT ${path}`, true); },
+    delete(path) { routes.set(`DELETE ${path}`, true); },
+  };
+  registerClientRoutes(app, {
+    requireClientAuth() {},
+    rateLimits: {
+      support: [],
+      upload: [],
+      login: [],
+      booking: [],
+    },
+  });
+  registerAuthEntryRoutes(app, {
+    rateLimits: { login: [] },
+  });
+
+  assert.equal(routes.has('POST /api/auth/wechat/phone'), true);
+  assert.equal(routes.has('POST /api/auth/sms/request'), false);
+  assert.equal(routes.has('POST /api/auth/sms/verify'), false);
+  assert.equal(routes.has('POST /api/auth/register'), false);
+  assert.equal(routes.has('POST /api/auth/login'), false);
+  assert.equal(ClientUser.schema.path('passwordHash'), undefined);
+  assert.equal(ClientUser.schema.path('passwordSalt'), undefined);
+  assert.equal(ClientUser.schema.path('authProvider').isRequired, true);
+});
+
+test('client profile rejects attempts to change the WeChat-bound phone', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    put() {},
+    delete() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  let databaseRead = false;
+  registerClientRoutes(app, {
+    ClientUser: {
+      async findOne() { databaseRead = true; },
+    },
+    requireClientAuth() {},
+    rateLimits: { support: [], upload: [], login: [], booking: [] },
+  });
+
+  let status;
+  let payload;
+  await routes.get('/api/auth/profile')(
+    {
+      clientUser: { id: 'user-1', account: '13800138000', phone: '13800138000' },
+      body: { displayName: '测试用户', phone: '13900139000' },
+    },
+    {
+      status(value) { status = value; return this; },
+      json(value) { payload = value; },
+    },
+  );
+
+  assert.equal(status, 400);
+  assert.equal(payload.message, '手机号只能通过微信授权绑定，不能在资料中修改');
+  assert.equal(databaseRead, false);
 });
 
 test('async password hashing remains verifiable', async () => {
@@ -638,24 +855,25 @@ test('favorite writes are idempotent upserts and deletes', async () => {
   const app = {
     get() {},
     post() {},
+    patch() {},
     put(path, handler) { routes.set(`PUT ${path}`, handler); },
     delete(path, handler) { routes.set(`DELETE ${path}`, handler); },
   };
   let updateCall;
   let deleteCall;
   let couponReleaseCall;
-  registerPublicRoutes(app, {
+  registerClientRoutes(app, {
     FavoriteSalon: {
       async updateOne(...args) { updateCall = args; },
       async deleteMany(query) { deleteCall = query; },
     },
-    async resolveRequestUser() { return { userId: 'user-1' }; },
+    normalizeUserId: value => value,
     async readFavoriteSalons() { return []; },
     userIdAliases: userId => [userId, 'legacy-user-1'],
-    rateLimits: { publicRead: [] },
+    rateLimits: { support: [], upload: [], booking: [] },
   });
   const response = { json() {}, status() { return this; } };
-  const request = { params: { id: 'salon-1' } };
+  const request = { clientUser: { id: 'user-1' }, params: { id: 'salon-1' } };
 
   await routes.get('PUT /api/favorites/:id')(request, response);
   await routes.get('PUT /api/favorites/:id')(request, response);
@@ -669,6 +887,50 @@ test('favorite writes are idempotent upserts and deletes', async () => {
   assert.deepEqual(deleteCall, {
     userId: { $in: ['user-1', 'legacy-user-1'] },
     salonId: 'salon-1',
+  });
+});
+
+test('client booking reads require authentication and ignore claimed user ids', async () => {
+  const routes = new Map();
+  const app = {
+    get(path, ...handlers) { routes.set(`GET ${path}`, handlers.at(-1)); },
+    post() {},
+    patch() {},
+    delete() {},
+    use() {},
+  };
+  let bookingQuery;
+  const cursor = {
+    select() { return this; },
+    sort() { return this; },
+    skip() { return this; },
+    limit() { return this; },
+    async lean() { return []; },
+  };
+  registerClientBookingRoutes(app, {
+    Booking: {
+      find(query) { bookingQuery = query; return cursor; },
+      async countDocuments() { return 0; },
+    },
+    normalizeUserId: value => value,
+    userIdAliases: value => [value, `legacy-${value}`],
+    normalizePagination: () => ({ page: 1, limit: 20, skip: 0 }),
+    setPaginationHeaders() {},
+    normalizeBooking: value => value,
+    rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
+  });
+
+  await routes.get('GET /api/bookings')(
+    {
+      clientUser: { id: 'owner-1' },
+      query: { userId: 'victim-1', status: 'pending' },
+    },
+    { json() {} },
+  );
+
+  assert.deepEqual(bookingQuery, {
+    userId: { $in: ['owner-1', 'legacy-owner-1'] },
+    status: 'pending',
   });
 });
 
@@ -1239,6 +1501,8 @@ test('client reviews are scoped to the authenticated user and include booking co
     get(path, ...handlers) { routes.set(`GET ${path}`, handlers.at(-1)); },
     post(path, ...handlers) { routes.set(`POST ${path}`, handlers.at(-1)); },
     patch(path, ...handlers) { routes.set(`PATCH ${path}`, handlers.at(-1)); },
+    put() {},
+    delete() {},
   };
   let reviewQuery;
   const cursor = {
@@ -1268,7 +1532,7 @@ test('client reviews are scoped to the authenticated user and include booking co
     userIdAliases: id => [id],
     privateImageUrl: value => `signed:${value}`,
     requireClientAuth() {},
-    rateLimits: { upload: [], smsRequest: [], smsVerify: [], login: [] },
+    rateLimits: { upload: [], login: [] },
   });
   let payload;
   await routes.get('GET /api/auth/reviews')(
@@ -1287,6 +1551,8 @@ test('client avatar upload signs one public OSS object for the authenticated use
   const app = {
     get() {},
     patch() {},
+    put() {},
+    delete() {},
     post(path, ...handlers) { routes.set(path, handlers.at(-1)); },
   };
   let signRequest;
@@ -1296,7 +1562,7 @@ test('client avatar upload signs one public OSS object for the authenticated use
       return [{ url: 'https://cdn.example/avatar.jpg' }];
     },
     requireClientAuth() {},
-    rateLimits: { upload: [], smsRequest: [], smsVerify: [], login: [] },
+    rateLimits: { upload: [], login: [] },
   });
   let payload;
   await routes.get('/api/uploads/avatar/sign')(
@@ -1337,7 +1603,7 @@ test('editing a review stores a pending draft without changing the approved revi
     review: { ...originalReview },
   };
   let update;
-  registerMerchantRoutes(app, {
+  registerClientBookingRoutes(app, {
     Booking: {
       async findOne() { return booking; },
       async findOneAndUpdate(_query, value) {
@@ -1345,7 +1611,6 @@ test('editing a review stores a pending draft without changing the approved revi
         return { ...booking, review: { ...booking.review, pendingEdit: value.$set['review.pendingEdit'] } };
       },
     },
-    async resolveRequestUser() { return { userId: 'user-1' }; },
     userIdAliases: id => [id],
     normalizeUserId: value => value,
     async verifyModeratedImageObjects() { return ['moderation/new.jpg']; },
@@ -1358,6 +1623,7 @@ test('editing a review stores a pending draft without changing the approved revi
 
   await routes.get('/api/bookings/:id/review')(
     {
+      clientUser: { id: 'user-1' },
       params: { id: 'BK-1' },
       body: {
         rating: 5,
@@ -1385,12 +1651,11 @@ test('deleting a review returns success even when post-delete cleanup fails', as
   };
   const review = { id: 'review-1', imageUrls: ['https://public.example/old.jpg'] };
   const booking = { _id: 'mongo-booking-1', id: 'BK-1', userId: 'user-1', review };
-  registerMerchantRoutes(app, {
+  registerClientBookingRoutes(app, {
     Booking: {
       async findOne() { return booking; },
       async findOneAndUpdate() { return { ...booking, review: undefined }; },
     },
-    async resolveRequestUser() { return { userId: 'user-1' }; },
     userIdAliases: id => [id],
     normalizeUserId: value => value,
     async deleteModeratedImages() { throw new Error('image cleanup failed'); },
@@ -1403,7 +1668,7 @@ test('deleting a review returns success even when post-delete cleanup fails', as
   console.error = () => {};
   try {
     await routes.get('/api/bookings/:id/review')(
-      { params: { id: 'BK-1' } },
+      { clientUser: { id: 'user-1' }, params: { id: 'BK-1' } },
       { json(value) { payload = value; } },
     );
     await Promise.resolve();
@@ -1434,7 +1699,7 @@ test('concurrent review and complaint submissions only update once', async () =>
     complained: false,
     staffId: 'staff-1',
   };
-  registerMerchantRoutes(app, {
+  registerClientBookingRoutes(app, {
     Booking: {
       async findOne() { return booking; },
       async findOneAndUpdate(query, update) {
@@ -1444,7 +1709,6 @@ test('concurrent review and complaint submissions only update once', async () =>
         return { ...booking, ...update.$set };
       },
     },
-    async resolveRequestUser() { return { userId: 'user-1' }; },
     userIdAliases: userId => [userId],
     normalizeUserId: value => value,
     normalizeBooking: value => value,
@@ -1458,7 +1722,7 @@ test('concurrent review and complaint submissions only update once', async () =>
   const invokeTwice = (path, body) => Promise.all([1, 2].map(async () => {
     const result = { status: 200 };
     await routes.get(path)(
-      { params: { id: 'BK-1' }, body },
+      { clientUser: { id: 'user-1' }, params: { id: 'BK-1' }, body },
       {
         status(value) { result.status = value; return this; },
         json() {},
@@ -1498,7 +1762,7 @@ test('booking cancellation atomically checks state and releases its slot in one 
   };
   const updated = { ...current, status: 'canceled' };
 
-  registerMerchantRoutes(app, {
+  registerClientBookingRoutes(app, {
     Booking: {
       findOne() { return { session: async () => current }; },
       async findOneAndUpdate(...args) { updateCall = args; return updated; },
@@ -1517,7 +1781,7 @@ test('booking cancellation atomically checks state and releases its slot in one 
         });
       },
     },
-    resolveRequestUser: async () => ({ userId: 'user-1' }),
+    normalizeUserId: value => value,
     userIdAliases: id => [id],
     normalizeBooking: value => value,
     broadcastBookingEvent() {},
@@ -1527,7 +1791,7 @@ test('booking cancellation atomically checks state and releases its slot in one 
 
   let response;
   await routes.get('/api/bookings/:id/cancel')(
-    { params: { id: 'BK-1' } },
+    { clientUser: { id: 'user-1' }, params: { id: 'BK-1' } },
     { json(value) { response = value; } },
   );
 
@@ -1575,7 +1839,7 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
     static async exists() { return false; }
   }
 
-  registerMerchantRoutes(app, {
+  registerClientBookingRoutes(app, {
     Booking,
     UserCoupon: {
       async findOneAndUpdate(query, update, options) {
@@ -1600,9 +1864,7 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
     crypto: {
       randomInt() { return 12345678; },
     },
-    async resolveRequestUser() {
-      return { userId: 'user-1', userName: 'User' };
-    },
+    normalizeUserId: value => value,
     userIdAliases: value => [value],
     getStaffById() {
       return { async lean() { return { id: 'staff-1', name: 'Stylist', extraServiceFee: 0 }; } };
@@ -1624,7 +1886,6 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
         },
       };
     },
-    parsePriceValue: () => 120,
     parseOpeningHours: () => ({ start: 0, end: 24 * 60 }),
     async findActiveBookingAtTime() { return null; },
     async isStaffUnavailable() { return false; },
@@ -1643,6 +1904,7 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
   let response;
   await routes.get('/api/bookings')(
     {
+      clientUser: { id: 'user-1', displayName: 'User' },
       body: {
         staffId: 'staff-1',
         serviceId: 'service-1',

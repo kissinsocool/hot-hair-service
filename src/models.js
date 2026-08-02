@@ -1,6 +1,126 @@
 const mongoose = require('mongoose');
 const { DEMO_USER_ID } = require('./config');
 
+const integer = (minimum = 0) => ({
+  type: Number,
+  min: minimum,
+  validate: Number.isSafeInteger,
+});
+
+const locationSchema = new mongoose.Schema({
+  latitude: Number,
+  longitude: Number,
+}, { _id: false });
+
+const addressRegionSchema = new mongoose.Schema({
+  province: String,
+  city: String,
+  district: String,
+  street: String,
+  adcode: String,
+}, { _id: false });
+
+const serviceSchema = new mongoose.Schema({
+  id: { type: String, required: true },
+  name: { type: String, required: true },
+  tags: [String],
+  priceFen: integer(),
+  durationMinutes: integer(1),
+  note: { type: String, default: '' },
+  imageUrl: { type: String, default: '' },
+  // Transitional read fields; new writes use priceFen and durationMinutes only.
+  price: String,
+  duration: String,
+}, { _id: false });
+
+const merchantReplySchema = new mongoose.Schema({
+  content: { type: String, required: true },
+  repliedAt: Date,
+  reviewedAt: Date,
+  reviewStatus: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+}, { _id: false });
+
+const reviewContentSchema = new mongoose.Schema({
+  id: String,
+  bookingId: String,
+  userName: String,
+  user: String,
+  rating: { type: Number, min: 1, max: 5 },
+  comment: String,
+  date: String,
+  createdAt: Date,
+  updatedAt: Date,
+  serviceName: String,
+  imageUrls: [String],
+  reviewStatus: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+}, { _id: false });
+
+const reviewSchema = new mongoose.Schema({
+  id: String,
+  bookingId: String,
+  userName: String,
+  user: String,
+  rating: { type: Number, min: 1, max: 5 },
+  comment: String,
+  date: String,
+  createdAt: Date,
+  updatedAt: Date,
+  serviceName: String,
+  imageUrls: [String],
+  reviewStatus: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+  pendingEdit: { type: reviewContentSchema, default: undefined },
+  merchantReply: { type: merchantReplySchema, default: undefined },
+  pendingMerchantReply: { type: merchantReplySchema, default: undefined },
+}, { _id: false });
+
+const complaintSchema = new mongoose.Schema({
+  id: String,
+  bookingId: String,
+  userId: String,
+  userName: String,
+  salonId: String,
+  salonName: String,
+  staffId: String,
+  staffName: String,
+  serviceName: String,
+  description: String,
+  imageUrls: [String],
+  reviewStatus: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+  date: String,
+  createdAt: Date,
+  status: { type: String, enum: ['submitted'], default: 'submitted' },
+}, { _id: false });
+
+const staffDraftSchema = new mongoose.Schema({
+  id: String,
+  name: String,
+  role: String,
+  experience: String,
+  extraServiceFeeFen: integer(),
+  imageUrl: String,
+  bio: String,
+  unavailableSlots: [String],
+}, { _id: false });
+
+const pendingContentSchema = new mongoose.Schema({
+  name: String,
+  address: String,
+  addressRegion: { type: addressRegionSchema, default: undefined },
+  addressDetail: String,
+  location: { type: locationSchema, default: undefined },
+  description: String,
+  fullDescription: String,
+  image: String,
+  images: [String],
+  promoImages: [String],
+  openingHours: String,
+  acceptsSameDayBooking: Boolean,
+  closedDates: [String],
+  phone: String,
+  services: [serviceSchema],
+  staff: [staffDraftSchema],
+}, { _id: false });
+
 const bookingSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
   userId: { type: String, default: DEMO_USER_ID },
@@ -13,17 +133,22 @@ const bookingSchema = new mongoose.Schema({
   isNoPreference: { type: Boolean, default: false },
   serviceId: { type: String, required: true },
   serviceName: String,
+  servicePriceFen: integer(),
+  serviceDurationMinutes: integer(1),
+  staffExtraServiceFeeFen: integer(),
+  timeZone: { type: String, enum: ['Asia/Shanghai'], default: 'Asia/Shanghai' },
+  // Migration-only legacy fields; new bookings never write these.
   servicePrice: String,
   serviceDuration: String,
   serviceBasePrice: { type: Number, default: 0 },
   staffExtraServiceFee: { type: Number, default: 0 },
   totalPrice: { type: Number, default: 0 },
-  originalAmountFen: { type: Number, default: 0 },
+  originalAmountFen: integer(),
   couponId: { type: String, default: '' },
   couponCode: { type: String, default: '' },
   couponTitle: { type: String, default: '' },
-  couponDiscountFen: { type: Number, default: 0 },
-  payableAmountFen: { type: Number, default: 0 },
+  couponDiscountFen: integer(),
+  payableAmountFen: integer(),
   couponRedeemedAt: Date,
   startTime: { type: Date, required: true, index: true },
   note: { type: String, default: '' },
@@ -33,9 +158,9 @@ const bookingSchema = new mongoose.Schema({
   rejectReason: { type: String, default: '' },
   canceledBy: { type: String, default: '' },
   reviewed: { type: Boolean, default: false },
-  review: mongoose.Schema.Types.Mixed,
+  review: { type: reviewSchema, default: undefined },
   complained: { type: Boolean, default: false },
-  complaint: mongoose.Schema.Types.Mixed,
+  complaint: { type: complaintSchema, default: undefined },
   createdAt: Date,
   updatedAt: Date,
 }, { id: false });
@@ -77,9 +202,9 @@ const salonSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
   name: String,
   address: String,
-  addressRegion: mongoose.Schema.Types.Mixed,
+  addressRegion: { type: addressRegionSchema, default: undefined },
   addressDetail: String,
-  location: mongoose.Schema.Types.Mixed,
+  location: { type: locationSchema, default: undefined },
   geoLocation: {
     type: { type: String, enum: ['Point'] },
     coordinates: [Number],
@@ -95,7 +220,7 @@ const salonSchema = new mongoose.Schema({
   closedDates: [String],
   phone: String,
   staffIds: [String],
-  services: [mongoose.Schema.Types.Mixed],
+  services: [serviceSchema],
   publishStatus: { type: String, default: 'online', index: true },
   licenseUrl: { type: String, default: '' },
   legalPersonIdFrontUrl: { type: String, default: '' },
@@ -108,7 +233,7 @@ const salonSchema = new mongoose.Schema({
   contentReviewStatus: { type: String, default: 'pending', index: true },
   contentRejectReason: { type: String, default: '' },
   contentReviewedAt: Date,
-  pendingContent: mongoose.Schema.Types.Mixed,
+  pendingContent: { type: pendingContentSchema, default: undefined },
 }, { timestamps: true });
 
 salonSchema.index({ geoLocation: '2dsphere', publishStatus: 1 });
@@ -120,6 +245,8 @@ const staffProfileSchema = new mongoose.Schema({
   name: String,
   role: String,
   experience: String,
+  extraServiceFeeFen: integer(),
+  // Migration-only legacy field.
   extraServiceFee: { type: Number, default: 0 },
   imageUrl: String,
   bio: String,
@@ -161,23 +288,13 @@ const clientUserSchema = new mongoose.Schema({
   gender: { type: String, default: '保密' },
   avatarUrl: { type: String, default: '' },
   phone: { type: String, default: '' },
-  passwordHash: { type: String, required: true },
-  passwordSalt: { type: String, required: true },
+  authProvider: { type: String, enum: ['wechat'], required: true },
   sessionTokenHash: { type: String, default: '', index: true },
   sessionExpiresAt: Date,
   lastLoginAt: Date,
 }, { timestamps: true });
 
 clientUserSchema.index({ createdAt: -1 });
-
-const smsVerificationSchema = new mongoose.Schema({
-  phone: { type: String, required: true, index: true },
-  codeHash: { type: String, required: true },
-  expiresAt: { type: Date, required: true, index: true },
-  consumedAt: Date,
-}, { timestamps: true });
-
-smsVerificationSchema.index({ phone: 1, codeHash: 1, expiresAt: -1 });
 
 const adConfigSchema = new mongoose.Schema({
   key: { type: String, required: true, unique: true, default: 'main' },
@@ -188,8 +305,8 @@ const adConfigSchema = new mongoose.Schema({
 
 const couponTemplateSchema = new mongoose.Schema({
   key: { type: String, required: true },
-  minimumSpendFen: { type: Number, required: true },
-  discountFen: { type: Number, required: true },
+  minimumSpendFen: { ...integer(), required: true },
+  discountFen: { ...integer(), required: true },
   title: { type: String, required: true },
   description: { type: String, default: '' },
 }, { _id: false });
@@ -209,8 +326,8 @@ const userCouponSchema = new mongoose.Schema({
   campaignKey: { type: String, required: true, index: true },
   couponType: { type: String, required: true },
   userId: { type: String, required: true, index: true },
-  minimumSpendFen: { type: Number, required: true },
-  discountFen: { type: Number, required: true },
+  minimumSpendFen: { ...integer(), required: true },
+  discountFen: { ...integer(), required: true },
   title: { type: String, required: true },
   description: { type: String, default: '' },
   grantedAt: { type: Date, required: true },
@@ -248,7 +365,6 @@ module.exports = {
   MerchantUser: mongoose.model('MerchantUser', merchantUserSchema),
   AdminUser: mongoose.model('AdminUser', adminUserSchema),
   ClientUser: mongoose.model('ClientUser', clientUserSchema),
-  SmsVerification: mongoose.model('SmsVerification', smsVerificationSchema),
   AdConfig: mongoose.model('AdConfig', adConfigSchema),
   CouponCampaign: mongoose.model('CouponCampaign', couponCampaignSchema),
   UserCoupon: mongoose.model('UserCoupon', userCouponSchema),
