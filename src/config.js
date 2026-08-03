@@ -27,19 +27,11 @@ const wsMaxConnectionsPerIp = positiveInteger(process.env.WS_MAX_CONNECTIONS_PER
 const sessionTtlSeconds = Math.min(positiveInteger(process.env.SESSION_TTL_SECONDS, 7 * 24 * 60 * 60), 30 * 24 * 60 * 60);
 const businessTimeZone = 'Asia/Shanghai';
 const businessUtcOffset = '+08:00';
-const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173,http://oss.hothair.top')
+const allowedOrigins = (process.env.CORS_ORIGIN || 'https://oss.hothaircc.cn')
   .split(',')
   .map(origin => origin.trim())
   .filter(Boolean);
-const isAllowedOrigin = (origin) => {
-  if (!origin || allowedOrigins.includes(origin)) return true;
-  try {
-    const { hostname } = new URL(origin);
-    return hostname === 'localhost' || hostname === '127.0.0.1';
-  } catch {
-    return false;
-  }
-};
+const isAllowedOrigin = origin => !origin || allowedOrigins.includes(origin);
 
 module.exports = {
   PORT,
