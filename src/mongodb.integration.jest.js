@@ -1,4 +1,6 @@
 const crypto = require('node:crypto');
+const path = require('node:path');
+require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true });
 const mongoose = require('mongoose');
 const { Booking, SlotOccupancy } = require('./models');
 
