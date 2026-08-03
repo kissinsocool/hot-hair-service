@@ -22,6 +22,7 @@ module.exports = (app, ctx) => {
     generateSlotsForNoPreferenceAndDate,
     generateSlotsForStaffAndDate,
     servicePayload,
+    publicImageUrl,
   } = ctx;
 
   app.get('/api/ad', async (_req, res) => {
@@ -36,7 +37,7 @@ module.exports = (app, ctx) => {
       registrationStartAt: { $lte: now },
       registrationEndAt: { $gt: now },
     }).select('promotionImageUrl').lean();
-    const promotionImageUrl = String(campaign?.promotionImageUrl || '').trim();
+    const promotionImageUrl = publicImageUrl(campaign?.promotionImageUrl || '');
     res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
     res.json({ enabled: Boolean(promotionImageUrl), promotionImageUrl });
   });
@@ -52,10 +53,12 @@ module.exports = (app, ctx) => {
     const salonList = await getNearbySalons(userLocation, radiusKm, limit, minResults, maxRadiusKm);
     res.json(await Promise.all(salonList.map(async (s) => {
       const { fullDescription, openingHours, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(s);
+      const images = await existingSalonImages(s);
       return {
         ...basic,
         image: await salonCoverImage(s),
-        images: await existingSalonImages(s),
+        images,
+        promoImages: images,
       };
     })));
   });
@@ -76,10 +79,12 @@ module.exports = (app, ctx) => {
         ? Number(calculateDistanceKm(userLocation, coordinates).toFixed(2))
         : undefined;
       const { fullDescription, openingHours, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(salon);
+      const images = await existingSalonImages(salon);
       return {
         ...basic,
         image: await salonCoverImage(salon),
-        images: await existingSalonImages(salon),
+        images,
+        promoImages: images,
         ...(distanceKm === undefined ? {} : { distanceKm }),
       };
     })));

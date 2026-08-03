@@ -123,7 +123,13 @@ const imageExists = async (url) => {
   }
 };
 
-const publicImageUrl = url => url;
+const publicOssOrigin = `https://${ossBucket}.${ossRegion}.aliyuncs.com`;
+const publicImageUrl = (url) => {
+  const value = String(url || '').trim();
+  return value === publicOssOrigin || value.startsWith(`${publicOssOrigin}/`)
+    ? `${ossPublicBaseUrl}${value.slice(publicOssOrigin.length)}`
+    : value;
+};
 
 const saveBase64Image = async (prefix, fileName, data, index = 0) => {
   const { buffer, imageName } = decodeBase64Image(prefix, fileName, data, index);

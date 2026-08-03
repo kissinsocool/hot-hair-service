@@ -21,6 +21,7 @@ module.exports = (app, ctx) => {
     couponPayload,
     readFavoriteSalons,
     FavoriteSalon,
+    publicImageUrl,
   } = ctx;
 
   app.get('/api/favorites', async (req, res) => {
@@ -128,7 +129,7 @@ module.exports = (app, ctx) => {
         validUntil: { $gt: now },
       }),
     ]);
-    const promotionImageUrl = String(campaign?.promotionImageUrl || '').trim();
+    const promotionImageUrl = publicImageUrl(campaign?.promotionImageUrl || '');
     res.json({
       enabled: Boolean(promotionImageUrl && claimableCoupon),
       promotionImageUrl,

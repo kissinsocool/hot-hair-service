@@ -43,6 +43,7 @@ const {
 } = require('./index');
 const { issueSignupCoupons } = require('./src/coupons');
 const { isAllowedOrigin } = require('./src/config');
+const { publicImageUrl } = require('./src/images');
 const {
   Booking,
   ClientUser,
@@ -61,6 +62,13 @@ const registerPublicRoutes = require('./src/routes/public');
 const bookingDomain = require('./src/services/booking');
 const salonDomain = require('./src/services/salon');
 const { bookingPatch, serviceForMigration } = require('./scripts/migrate-booking-domain');
+
+test('public image URLs use the custom OSS domain', () => {
+  assert.equal(
+    publicImageUrl('https://hothairapp.oss-cn-beijing.aliyuncs.com/uploads/image.jpg'),
+    'https://oss.hothaircc.cn/uploads/image.jpg',
+  );
+});
 
 const collectRoutePaths = (register, context = {}) => {
   const paths = [];
@@ -453,6 +461,7 @@ test('new-user gift stays hidden until the home promotion claims it', async () =
     },
     userIdAliases: id => [id],
     couponPayload: value => value,
+    publicImageUrl,
     requireClientAuth() {},
     rateLimits: { upload: [], login: [], booking: [] },
   });
@@ -501,6 +510,7 @@ test('public coupon campaign exposes only the active promotion image', async () 
         };
       },
     },
+    publicImageUrl,
     rateLimits: { publicRead: [] },
   });
 

@@ -14,6 +14,7 @@ const {
   UserCoupon,
 } = require('../models');
 const { issueSignupCoupons } = require('../coupons');
+const { publicImageUrl } = require('../images');
 
 const normalizePhone = phone => String(phone || '').replace(/\D/g, '');
 const isValidPhone = phone => /^1\d{10}$/.test(phone);
@@ -48,7 +49,7 @@ const buildClientUserPayload = user => ({
   account: user.account,
   displayName: user.displayName,
   gender: user.gender || '保密',
-  avatarUrl: user.avatarUrl || '',
+  avatarUrl: publicImageUrl(user.avatarUrl || ''),
   phone: user.phone || user.account,
 });
 

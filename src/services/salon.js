@@ -1,4 +1,5 @@
 const booking = require('./booking');
+const { publicImageUrl } = require('../images');
 
 const PUBLIC_STAFF_REVIEWS_LIMIT = 50;
 const PUBLIC_SALON_CACHE_TTL_MS = 15_000;
@@ -75,6 +76,7 @@ const servicePayload = (service = {}) => {
   const amount = normalized.priceFen / 100;
   return {
     ...normalized,
+    imageUrl: publicImageUrl(normalized.imageUrl),
     price: `¥${Number.isInteger(amount) ? amount : amount.toFixed(2)}`,
     duration: `${normalized.durationMinutes}分钟`,
   };
@@ -86,6 +88,7 @@ const staffExtraServiceFeeFen = (profile = {}) => Number.isSafeInteger(profile.e
 
 const staffPayload = (profile = {}) => ({
   ...profile,
+  imageUrl: publicImageUrl(profile.imageUrl || ''),
   extraServiceFeeFen: staffExtraServiceFeeFen(profile),
   extraServiceFee: staffExtraServiceFeeFen(profile) / 100,
 });
@@ -114,6 +117,8 @@ const publicReviewFromBooking = (bookingDocument) => {
   }
   return {
     ...review,
+    imageUrl: publicImageUrl(review.imageUrl || ''),
+    imageUrls: (review.imageUrls || []).map(publicImageUrl),
     bookingId: review.bookingId || bookingValue.id,
     staffId: bookingValue.staffId,
     staffName: bookingValue.staffName,
