@@ -17,7 +17,13 @@ const ossEnabled = Boolean(process.env.OSS_ACCESS_KEY_ID && process.env.OSS_ACCE
 const amapWebServiceKey = process.env.AMAP_WEB_SERVICE_KEY || process.env.AMAP_WEB_KEY || '';
 const wechatAppId = process.env.WECHAT_APP_ID || process.env.WX_APP_ID || '';
 const wechatAppSecret = process.env.WECHAT_APP_SECRET || process.env.WX_APP_SECRET || '';
-const trustProxyHops = Math.max(0, Math.floor(Number(process.env.TRUST_PROXY_HOPS || 0)) || 0);
+const resolveTrustProxyHops = (value, nodeEnv = process.env.NODE_ENV) => {
+  const fallback = String(nodeEnv || '').toLowerCase() === 'production' ? 1 : 0;
+  if (value === undefined || value === '') return fallback;
+  const hops = Math.floor(Number(value));
+  return Number.isFinite(hops) && hops >= 0 ? hops : fallback;
+};
+const trustProxyHops = resolveTrustProxyHops(process.env.TRUST_PROXY_HOPS);
 const positiveInteger = (value, fallback) => {
   const number = Math.floor(Number(value));
   return Number.isFinite(number) && number > 0 ? number : fallback;
@@ -51,6 +57,7 @@ module.exports = {
   amapWebServiceKey,
   wechatAppId,
   wechatAppSecret,
+  resolveTrustProxyHops,
   trustProxyHops,
   wsMaxConnections,
   wsMaxConnectionsPerIp,

@@ -519,7 +519,7 @@ module.exports = (app, ctx) => {
       reviewStatus: 'pending',
     };
     booking.review = {
-      ...(booking.review || {}),
+      ...(salonService.normalizeDocument(booking.review) || {}),
       pendingMerchantReply: replyPayload,
     };
     booking.markModified('review');

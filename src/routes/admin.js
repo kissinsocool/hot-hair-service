@@ -1,3 +1,5 @@
+const { normalizeDocument } = require('../services/salon');
+
 module.exports = (app, ctx) => {
   const {
     AdminUser,
@@ -528,7 +530,7 @@ async function moderateReviewEdit(
   publishModeratedImage,
   deleteModeratedImages,
 ) {
-  const edit = booking.review?.pendingEdit;
+  const edit = normalizeDocument(booking.review?.pendingEdit);
   if (!edit) return false;
 
   if (action === 'approve') {
@@ -559,7 +561,7 @@ async function moderateReviewEdit(
 }
 
 async function moderateReviewReply(booking, action) {
-  const review = booking.review || {};
+  const review = normalizeDocument(booking.review) || {};
   const pendingReply = review.pendingMerchantReply;
   const publicReply = review.merchantReply;
   const approvableReply = pendingReply || (publicReply?.reviewStatus === 'rejected' ? publicReply : null);

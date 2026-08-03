@@ -1,6 +1,7 @@
 node_modules/
 uploads/
 image-cache/
+.playwright-cli/
 .env
 *.log
 .DS_Store

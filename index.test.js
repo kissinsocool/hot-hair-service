@@ -6,6 +6,7 @@ const {
   activeSessionQuery,
   acceptedBookingAtTimeQuery,
   buildGeoLocation,
+  buildMerchantSalonPayload,
   buildPublicSalonDetail,
   buildStaffPayload,
   buildMerchantBookingScope,
@@ -42,7 +43,7 @@ const {
   validateCampaignInput,
 } = require('./index');
 const { issueSignupCoupons } = require('./src/coupons');
-const { isAllowedOrigin } = require('./src/config');
+const { isAllowedOrigin, resolveTrustProxyHops } = require('./src/config');
 const { publicImageUrl } = require('./src/images');
 const {
   Booking,
@@ -1054,6 +1055,41 @@ test('isAllowedOrigin only allows the production frontend', () => {
   assert.equal(isAllowedOrigin('http://example.com'), false);
 });
 
+test('production trusts one proxy hop by default while explicit topology wins', () => {
+  assert.equal(resolveTrustProxyHops(undefined, 'production'), 1);
+  assert.equal(resolveTrustProxyHops(undefined, 'development'), 0);
+  assert.equal(resolveTrustProxyHops('2', 'production'), 2);
+  assert.equal(resolveTrustProxyHops('invalid', 'production'), 1);
+});
+
+test('merchant salon payload merges pending content from a real Mongoose document', async () => {
+  const originalSalonFindOne = Salon.findOne;
+  const originalStaffFind = StaffProfile.find;
+  const salon = new Salon({
+    id: 'salon-pending',
+    name: '已发布店名',
+    staffIds: [],
+    services: [],
+    pendingContent: {
+      name: '待审核店名',
+      fullDescription: '待审核详情',
+    },
+  });
+  Salon.findOne = async () => salon;
+  StaffProfile.find = () => ({ lean: async () => [] });
+
+  try {
+    const payload = await buildMerchantSalonPayload(salon.id);
+    assert.equal(payload.name, '待审核店名');
+    assert.equal(payload.fullDescription, '待审核详情');
+    assert.equal(Object.hasOwn(payload, '$__parent'), false);
+    assert.equal(Object.hasOwn(payload, '_doc'), false);
+  } finally {
+    Salon.findOne = originalSalonFindOne;
+    StaffProfile.find = originalStaffFind;
+  }
+});
+
 test('stripSensitiveSalonFields removes license fields from public salon payloads', () => {
   const payload = stripSensitiveSalonFields({
     id: '1',
@@ -1417,16 +1453,22 @@ test('merchant review replies stay pending without replacing the public reply', 
     use() {},
     patch(path, handler) { routes.set(path, handler); },
   };
-  const oldReply = { content: '旧回复', reviewStatus: 'approved' };
-  const booking = {
+  const booking = new Booking({
     id: 'BK-1',
     salonId: 'salon-7',
     staffId: 'staff-1',
+    serviceId: 'service-1',
+    startTime: new Date('2030-01-01T10:00:00Z'),
     reviewed: true,
-    review: { id: 'review-1', merchantReply: oldReply },
-    markModified() {},
-    async save() {},
-  };
+    review: {
+      id: 'review-1',
+      comment: '原评价',
+      rating: 5,
+      reviewStatus: 'approved',
+      merchantReply: { content: '旧回复', reviewStatus: 'approved' },
+    },
+  });
+  booking.save = async () => booking;
   registerMerchantRoutes(app, {
     Booking: { async findOne() { return booking; } },
     INPUT_LIMITS: { reviewReply: 1000 },
@@ -1446,7 +1488,8 @@ test('merchant review replies stay pending without replacing the public reply', 
     { json() {} },
   );
 
-  assert.equal(booking.review.merchantReply, oldReply);
+  assert.equal(booking.review.comment, '原评价');
+  assert.equal(booking.review.merchantReply.content, '旧回复');
   assert.equal(booking.review.pendingMerchantReply.content, '新回复');
   assert.equal(booking.review.pendingMerchantReply.reviewStatus, 'pending');
 });

@@ -675,7 +675,7 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
       const previous = currentServices.get(id);
       if (!previous) return [];
       return [salonDomain.serviceForStorage({
-        ...previous,
+        ...normalizeDocument(previous),
         ...service,
         id,
       })];
@@ -700,7 +700,7 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
 };
 
 const buildContentDraft = async (salon, payload) => {
-  const draft = salon.pendingContent || await buildSalonDetail(salon);
+  const draft = normalizeDocument(salon.pendingContent) || await buildSalonDetail(salon);
   const set = (key, value) => {
     if (value !== undefined) draft[key] = value;
   };
@@ -763,7 +763,7 @@ const buildContentDraft = async (salon, payload) => {
 };
 
 const applyPendingContent = async (salon) => {
-  const draft = salon.pendingContent || {};
+  const draft = normalizeDocument(salon.pendingContent) || {};
   contentFields
     .filter(key => key !== 'staff')
     .forEach(key => {
@@ -790,7 +790,7 @@ const buildMerchantSalonPayload = async (salonId = '1') => {
   const payload = await buildSalonDetail(salon);
   const merged = {
     ...payload,
-    ...salon.pendingContent,
+    ...(normalizeDocument(salon.pendingContent) || {}),
     contentReviewStatus: salon.contentReviewStatus || 'pending',
     contentRejectReason: salon.contentRejectReason || '',
     contentReviewedAt: salon.contentReviewedAt,
@@ -1137,6 +1137,7 @@ module.exports = {
   activeSessionQuery,
   acceptedBookingAtTimeQuery,
   buildGeoLocation,
+  buildMerchantSalonPayload,
   buildPublicSalonDetail,
   buildStaffPayload,
   clearPublicSalonDetailCache,
