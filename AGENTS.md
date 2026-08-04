@@ -1,0 +1,28 @@
+## 代码修改原则
+
+每次修改代码时，必须从项目整体出发，而不是只解决眼前的局部问题。
+
+- 修改前先理解相关架构、上下文、调用链、数据流和现有设计意图。
+- 评估修改对其他功能、接口兼容性、性能、安全性、可维护性和测试的影响。
+- 优先解决根因，不使用掩盖问题的临时补丁。
+- 选择符合项目整体设计、复杂度合理、长期可维护的方案。
+- 不得为了修复一个问题而破坏已有功能或整体架构。
+- 修改范围应尽量克制，但不能因为追求最小改动而保留明显不合理的设计。
+- 修改后运行相关测试、类型检查或构建，并检查可能受到影响的关联功能。
+- 如果快速修复与长期合理方案存在明显冲突，先说明两者的影响和取舍，不得擅自采用高风险方案。
+- 如果尚未充分理解问题或影响范围，先继续调查，不要病急乱投医。
+
+## Mongoose 文档处理
+
+- 必须区分 Mongoose `Document`/`Subdocument` 与普通 JavaScript 对象；不得使用对象展开或 `Object.assign` 将文档转换为普通对象，因为 Schema 字段可能存放在内部状态中而不会被复制。
+- 只读查询优先使用 `.lean()`；已加载文档需要转为普通对象时使用 `.toObject()`；只读取单个字段时直接访问文档字段。
+- 使用文档或子文档字段构造更新、删除或并发保护条件时，必须确认关键字段来自直接访问、`.lean()` 结果或 `.toObject()` 结果，且不可为 `undefined`。
+- 涉及 Document/Subdocument 行为的回归测试必须使用真实 Mongoose 文档，或准确模拟其非普通对象特性，不能只用普通对象替身。
+
+## 线上服务器网络
+
+- 对 `182.92.129.180` / `api.hothaircc.cn` 的 SSH、SCP、curl、k6 等运维和测试请求必须绕过 VPN，绑定当前物理网络接口，不得使用 `utun*`。
+- 每次操作前使用 `networksetup -listallhardwareports`、`scutil --nwi` 和 `ifconfig` 确认当前活动的 Wi-Fi 或有线物理接口；不得假设接口名或硬编码 DHCP 地址。
+- 将确认后的接口名和 IPv4 地址分别保存到 `HOT_HAIR_NETWORK_INTERFACE` 与 `HOT_HAIR_SOURCE_IP`，并检查两者均非空且接口不是 `utun*`。
+- SSH 使用 `ssh -b "$HOT_HAIR_SOURCE_IP"`，SCP 使用 `scp -o BindAddress="$HOT_HAIR_SOURCE_IP"`，curl 使用 `curl --interface "$HOT_HAIR_NETWORK_INTERFACE"`，k6 使用 `k6 run --local-ips="$HOT_HAIR_SOURCE_IP"`。
+- 如果无法确认活动物理接口，停止并说明原因；不得静默回退到 VPN，也不要为此修改系统全局默认路由。
