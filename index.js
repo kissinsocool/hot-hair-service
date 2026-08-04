@@ -10,6 +10,7 @@ const mongoose = require('mongoose');
 const { WebSocket, WebSocketServer } = require('ws');
 const {
   PORT,
+  listenHost,
   uploadDir,
   imageCacheDir,
   picturesDir,
@@ -1121,7 +1122,7 @@ const startServer = async () => {
   ]);
   console.log('MongoDB connected');
 
-  server.listen(PORT, "0.0.0.0", () => {
+  server.listen(PORT, listenHost, () => {
     console.log(`Backend running at http://localhost:${PORT}`);
   });
 };

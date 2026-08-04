@@ -1,6 +1,7 @@
 const path = require('path');
 
 const PORT = Number(process.env.PORT || 3000);
+const listenHost = process.env.LISTEN_HOST || '0.0.0.0';
 const publicBaseUrl = (process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
 const DEMO_USER_ID = 'demo';
 const uploadDir = path.join(__dirname, '..', 'uploads');
@@ -41,6 +42,7 @@ const isAllowedOrigin = origin => !origin || allowedOrigins.includes(origin);
 
 module.exports = {
   PORT,
+  listenHost,
   publicBaseUrl,
   DEMO_USER_ID,
   uploadDir,

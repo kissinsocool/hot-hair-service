@@ -10,6 +10,7 @@
     "test:integration": "jest --runInBand --testMatch '**/mongodb.integration.jest.js'",
     "test:load": "node scripts/load-test.js",
     "load:tokens": "node scripts/create-load-test-users.js",
+    "load:cleanup": "node scripts/cleanup-load-test-data.js",
     "migrate:booking-domain": "node scripts/migrate-booking-domain.js",
     "test:performance": "k6 run scripts/k6-booking-flow.js"
   },

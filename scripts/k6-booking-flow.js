@@ -6,6 +6,7 @@ const baseUrl = (__ENV.K6_BASE_URL || 'http://127.0.0.1:3000').replace(/\/+$/, '
 const latitude = __ENV.K6_LATITUDE || '31.2304';
 const longitude = __ENV.K6_LONGITUDE || '121.4737';
 const writeEnabled = String(__ENV.K6_ENABLE_WRITES || '').toLowerCase() === 'true';
+const runId = String(__ENV.K6_RUN_ID || '').trim().toLowerCase();
 const configuredSalonId = String(__ENV.K6_SALON_ID || '').trim();
 const rateLimitBypassToken = String(__ENV.K6_RATE_LIMIT_BYPASS_TOKEN || '').trim();
 const clientTokens = String(__ENV.K6_CLIENT_TOKENS || '')
@@ -71,6 +72,9 @@ export function setup() {
   }
   if (writeEnabled && !configuredSalonId) {
     throw new Error('K6_SALON_ID is required when K6_ENABLE_WRITES=true');
+  }
+  if (writeEnabled && !/^[a-z0-9][a-z0-9_-]{0,39}$/.test(runId)) {
+    throw new Error('K6_RUN_ID is required for writes and may contain only a-z, 0-9, _ and -');
   }
   if (rateLimitBypassToken && rateLimitBypassToken.length < 32) {
     throw new Error('K6_RATE_LIMIT_BYPASS_TOKEN must contain at least 32 characters');
@@ -139,7 +143,7 @@ const runFlow = () => {
     salonId,
     serviceId: service.id,
     startTime: slot.startTime,
-    note: 'k6 performance test',
+    note: `k6:${runId}`,
   }), {
     ...requestParams(token),
     tags: { name: 'POST /api/bookings' },
