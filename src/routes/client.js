@@ -25,6 +25,11 @@ module.exports = (app, ctx) => {
     publicImageUrl,
   } = ctx;
 
+  const clientUserPayload = user => ({
+    ...buildClientUserPayload(user),
+    pendingAvatarUrl: privateImageUrl(user.pendingAvatarUrl || ''),
+  });
+
   app.get('/api/favorites', async (req, res) => {
     const userId = normalizeUserId(req.clientUser.id);
     res.json(await readFavoriteSalons(userId));
@@ -172,7 +177,7 @@ module.exports = (app, ctx) => {
   });
   
   app.get('/api/auth/me', async (req, res) => {
-    res.json({ user: buildClientUserPayload(req.clientUser) });
+    res.json({ user: clientUserPayload(req.clientUser) });
   });
 
   app.get('/api/auth/reviews', async (req, res) => {
@@ -275,7 +280,7 @@ module.exports = (app, ctx) => {
   
     res.json({
       token: sessionTokenFromRequest(req),
-      user: buildClientUserPayload(user),
+      user: clientUserPayload(user),
     });
   });
 };

@@ -1699,6 +1699,7 @@ test('client profile keeps the approved avatar while a real Mongoose document st
       avatarUrl: value.avatarUrl,
       avatarReviewStatus: value.avatarReviewStatus,
     }),
+    privateImageUrl: value => value ? `signed:${value}` : '',
     sessionTokenFromRequest: () => 'token',
     rateLimits: { upload: [] },
   });
@@ -1718,6 +1719,7 @@ test('client profile keeps the approved avatar while a real Mongoose document st
   assert.equal(user.pendingAvatarUrl, 'moderation/avatar/user-1/new.jpg');
   assert.equal(user.avatarReviewStatus, 'pending');
   assert.equal(payload.user.avatarUrl, 'https://cdn.example/approved.jpg');
+  assert.equal(payload.user.pendingAvatarUrl, 'signed:moderation/avatar/user-1/new.jpg');
 });
 
 test('admin approval publishes a pending avatar before replacing the approved avatar', async () => {
