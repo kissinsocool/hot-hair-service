@@ -14,6 +14,7 @@ module.exports = (app, ctx) => {
     Booking,
     buildAdminMerchantPayload,
     normalizeDeposit,
+    normalizeSalonTags,
     ensureSalonForMerchant,
     hashPassword,
     applyPendingContent,
@@ -199,6 +200,7 @@ module.exports = (app, ctx) => {
     const displayName = String(req.body.displayName || '').trim();
     const salonId = String(req.body.salonId || '1').trim();
     const deposit = normalizeDeposit(req.body.deposit);
+    const tagsError = validateSalonTags(req.body.tags);
   
     if (!username || !password || !displayName) {
       return res.status(400).json({ message: 'username, password and displayName are required' });
@@ -207,12 +209,18 @@ module.exports = (app, ctx) => {
       return res.status(400).json({ message: 'Merchant field is too long' });
     }
     if (deposit === null) return res.status(400).json({ message: '保证金必须是非负数字' });
+    if (tagsError) return res.status(400).json({ message: tagsError });
     if (password.length < 6) return res.status(400).json({ message: '密码至少 6 位' });
     if (await MerchantUser.findOne({ username })) {
       return res.status(409).json({ message: '该商家账号已存在' });
     }
   
     const salon = await ensureSalonForMerchant({ salonId, displayName });
+    if (req.body.tags !== undefined) {
+      salon.tags = normalizeSalonTags(req.body.tags);
+      await salon.save();
+      clearPublicSalonDetailCache();
+    }
     const { salt, hash } = await hashPassword(password);
     const user = await MerchantUser.create({
       id: `merchant-${Date.now()}`,
@@ -237,12 +245,15 @@ module.exports = (app, ctx) => {
     const salonId = String(req.body.salonId || '').trim();
     const password = String(req.body.password || '');
     const deposit = req.body.deposit === undefined ? undefined : normalizeDeposit(req.body.deposit);
+    const tagsError = validateSalonTags(req.body.tags);
 
     if (username.length > 100 || displayName.length > 100 || salonId.length > 100 || password.length > 128) {
       return res.status(400).json({ message: 'Merchant field is too long' });
     }
   
     if (deposit === null) return res.status(400).json({ message: '保证金必须是非负数字' });
+    if (tagsError) return res.status(400).json({ message: tagsError });
+    if (password && password.length < 6) return res.status(400).json({ message: '密码至少 6 位' });
   
     if (username && username !== user.username) {
       if (await MerchantUser.findOne({ username })) {
@@ -251,16 +262,23 @@ module.exports = (app, ctx) => {
       user.username = username;
     }
     if (displayName) user.displayName = displayName;
+    let salon;
     if (salonId) {
-      const salon = await ensureSalonForMerchant({
+      salon = await ensureSalonForMerchant({
         salonId,
         displayName: displayName || user.displayName,
       });
       user.salonId = salon.id;
     }
+    if (req.body.tags !== undefined) {
+      salon ||= await Salon.findOne({ id: user.salonId });
+      if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
+      salon.tags = normalizeSalonTags(req.body.tags);
+      await salon.save();
+      clearPublicSalonDetailCache();
+    }
     let revokedSessionHash = '';
     if (password) {
-      if (password.length < 6) return res.status(400).json({ message: '密码至少 6 位' });
       const { salt, hash } = await hashPassword(password);
       user.passwordSalt = salt;
       user.passwordHash = hash;
@@ -521,6 +539,16 @@ module.exports = (app, ctx) => {
     res.json({ ok: true });
   });
 };
+
+function validateSalonTags(tags) {
+  if (tags === undefined) return '';
+  if (!Array.isArray(tags)) return '店铺标签必须是数组';
+  if (tags.length > 5) return '店铺标签最多 5 个';
+  if (tags.some(tag => typeof tag !== 'string' || [...tag.trim()].length > 20)) {
+    return '每个店铺标签不能超过 20 个字';
+  }
+  return '';
+}
 
 function userImageReviewItems(booking, privateImageUrl) {
   const items = ['review', 'complaint'].flatMap(type => {

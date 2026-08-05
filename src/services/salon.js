@@ -57,6 +57,10 @@ const normalizeServiceTags = (tags) => {
   return [...new Set(values.map(tag => String(tag || '').trim()).filter(Boolean))].slice(0, 6);
 };
 
+const normalizeSalonTags = (tags) => Array.isArray(tags)
+  ? [...new Set(tags.map(tag => String(tag || '').trim()).filter(Boolean))].slice(0, 5)
+  : [];
+
 const serviceForStorage = (service = {}, fallbackId = '') => ({
   id: String(service.id || fallbackId).trim(),
   name: String(service.name || '').trim(),
@@ -192,6 +196,7 @@ module.exports = {
   clearPublicSalonDetailCache,
   getCoordinates,
   groupReviewsByStaff,
+  normalizeSalonTags,
   normalizeServiceTags,
   normalizeDocument,
   publicReviewFromBooking,

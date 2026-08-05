@@ -35,6 +35,7 @@ const {
   normalizeAdLink,
   normalizePagination,
   normalizeRadiusKm,
+  normalizeSalonTags,
   parseMerchantRescheduleTime,
   readFavoriteSalons,
   server,
@@ -51,6 +52,7 @@ const {
   ClientUser,
   CouponCampaign,
   FavoriteSalon,
+  MerchantUser,
   Salon,
   SlotOccupancy,
   StaffProfile,
@@ -70,6 +72,70 @@ test('public image URLs use the custom OSS domain', () => {
     publicImageUrl('https://hothairapp.oss-cn-beijing.aliyuncs.com/uploads/image.jpg'),
     'https://oss.hothaircc.cn/uploads/image.jpg',
   );
+});
+
+test('salon tags are trimmed, deduplicated and capped for homepage cards', () => {
+  assert.deepEqual(
+    normalizeSalonTags([' 人气店铺 ', '好评No.1', '人气店铺', '回头客No.1', '新客优选', '附近热门', '不应保留']),
+    ['人气店铺', '好评No.1', '回头客No.1', '新客优选', '附近热门'],
+  );
+
+  const salon = new Salon({ id: 'tagged-salon', tags: ['人气店铺', '好评No.1'] });
+  assert.deepEqual(salon.toObject().tags, ['人气店铺', '好评No.1']);
+});
+
+test('admin merchant updates persist selected tags on the real salon document', async () => {
+  const routes = new Map();
+  const app = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map(method => [
+    method,
+    (path, ...handlers) => routes.set(`${method}:${path}`, handlers.at(-1)),
+  ]));
+  const salon = new Salon({ id: 'salon-tags-route', tags: [] });
+  const user = new MerchantUser({
+    id: 'merchant-tags-route',
+    username: 'tag-editor',
+    displayName: '标签测试',
+    salonId: salon.id,
+    passwordHash: 'hash',
+    passwordSalt: 'salt',
+  });
+  let salonSaved = false;
+  salon.save = async () => { salonSaved = true; return salon; };
+  user.save = async () => user;
+
+  registerAdminRoutes(app, {
+    rateLimits: { upload: [] },
+    MerchantUser: { findOne: async () => user },
+    Salon: { findOne: async () => salon },
+    normalizeDeposit: value => Number(value),
+    normalizeSalonTags,
+    ensureSalonForMerchant: async () => salon,
+    buildMerchantUserPayload: value => ({ id: value.id }),
+    hashPassword: async () => ({ salt: 'salt', hash: 'hash' }),
+    revokeSessionHash: async () => {},
+    clearPublicSalonDetailCache: () => {},
+  });
+
+  const response = {
+    statusCode: 200,
+    body: null,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return body; },
+  };
+  await routes.get('patch:/api/admin/merchants/:id')({
+    params: { id: user.id },
+    body: {
+      username: user.username,
+      displayName: user.displayName,
+      salonId: salon.id,
+      deposit: '100',
+      tags: ['人气店铺', '好评No.1'],
+    },
+  }, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(salonSaved, true);
+  assert.deepEqual(salon.toObject().tags, ['人气店铺', '好评No.1']);
 });
 
 const collectRoutePaths = (register, context = {}) => {

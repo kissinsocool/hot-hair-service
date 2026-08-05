@@ -69,7 +69,7 @@ module.exports = (app, ctx) => {
     const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const salons = await Salon
       .find({ publishStatus: 'online', name: { $regex: escaped, $options: 'i' } })
-      .select('id name address location geoLocation rating image images promoImages description publishStatus')
+      .select('id name address location geoLocation rating image images promoImages description tags publishStatus')
       .limit(8)
       .lean();
     const userLocation = getCoordinates(req.query);

@@ -636,6 +636,7 @@ const contentFields = [
 ];
 
 const normalizeServiceTags = salonDomain.normalizeServiceTags;
+const normalizeSalonTags = salonDomain.normalizeSalonTags;
 
 const hasReviewableContentChanges = (current = {}, payload = {}) => {
   const changed = (field, normalize = value => value) =>
@@ -829,6 +830,7 @@ const ensureSalonForMerchant = async ({ salonId, displayName }) => {
     image: '',
     images: [],
     promoImages: [],
+    tags: [],
     description: '',
     fullDescription: '',
     openingHours: '10:00 - 20:00',
@@ -1045,6 +1047,7 @@ const routeContext = {
   normalizeLimit,
   normalizePagination,
   normalizeRadiusKm,
+  normalizeSalonTags,
   normalizeUserId,
   parseAmapReverseAddress,
   parseMerchantRescheduleTime,
@@ -1164,6 +1167,7 @@ module.exports = {
   hasReviewableContentChanges,
   INPUT_LIMITS,
   normalizeServiceTags,
+  normalizeSalonTags,
   normalizeClosedDates,
   ensureSalonForMerchant,
   normalizeAdLink,

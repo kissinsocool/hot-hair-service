@@ -215,6 +215,7 @@ const salonSchema = new mongoose.Schema({
   promoImages: [String],
   description: String,
   fullDescription: String,
+  tags: { type: [String], default: [] },
   openingHours: String,
   acceptsSameDayBooking: { type: Boolean, default: true },
   closedDates: [String],
