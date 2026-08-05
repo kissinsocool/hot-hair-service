@@ -8,7 +8,8 @@ module.exports = (app, ctx) => {
     rateLimits,
     logoutSession,
     createModeratedUploadPolicies,
-    createMerchantUploadPolicies,
+    verifyModeratedImageObjects,
+    deleteModeratedImages,
     sessionTokenFromRequest,
     Booking,
     normalizeBooking,
@@ -88,15 +89,15 @@ module.exports = (app, ctx) => {
 
   app.post('/api/uploads/avatar/sign', ...rateLimits.upload, async (req, res) => {
     try {
-      const uploads = createMerchantUploadPolicies({
-        type: 'public',
+      const uploads = createModeratedUploadPolicies({
+        type: 'avatar',
         userId: req.clientUser.id,
         files: req.body.files,
       });
       if (uploads.length !== 1) {
         return res.status(400).json({ message: '请选择一张头像图片' });
       }
-      res.json({ upload: uploads[0] });
+      res.json({ upload: { ...uploads[0], url: uploads[0].objectName } });
     } catch (error) {
       res.status(error.httpStatus || 500).json({ message: error.message });
     }
@@ -235,10 +236,42 @@ module.exports = (app, ctx) => {
       return res.status(404).json({ message: '用户不存在' });
     }
   
+    const avatarChanged = avatarUrl !== String(user.avatarUrl || '')
+      && avatarUrl !== String(user.pendingAvatarUrl || '');
+    if (avatarChanged && avatarUrl) {
+      try {
+        await verifyModeratedImageObjects({
+          type: 'avatar',
+          userId: req.clientUser.id,
+          objectNames: [avatarUrl],
+        });
+      } catch (error) {
+        return res.status(error.httpStatus || 500).json({ message: error.message });
+      }
+    }
+
+    const replacedPendingAvatar = avatarChanged ? String(user.pendingAvatarUrl || '') : '';
     user.displayName = displayName;
     user.gender = allowedGenders.has(gender) ? gender : '保密';
-    user.avatarUrl = avatarUrl;
+    if (avatarChanged) {
+      if (avatarUrl) {
+        user.pendingAvatarUrl = avatarUrl;
+        user.avatarReviewStatus = 'pending';
+        user.avatarRejectReason = '';
+        user.avatarSubmittedAt = new Date();
+      } else {
+        user.avatarUrl = '';
+        user.pendingAvatarUrl = '';
+        user.avatarReviewStatus = 'none';
+        user.avatarRejectReason = '';
+        user.avatarSubmittedAt = undefined;
+        user.avatarReviewedAt = undefined;
+      }
+    }
     await user.save();
+    if (replacedPendingAvatar) {
+      await deleteModeratedImages([replacedPendingAvatar]).catch(() => {});
+    }
   
     res.json({
       token: sessionTokenFromRequest(req),

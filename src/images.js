@@ -273,7 +273,8 @@ const createModeratedUploadPolicies = ({ type, userId, files }) => {
     error.httpStatus = 503;
     throw error;
   }
-  if (!['review', 'complaint'].includes(type) || !Array.isArray(files) || files.length < 1 || files.length > 5) {
+  const maximumFiles = type === 'avatar' ? 1 : 5;
+  if (!['avatar', 'review', 'complaint'].includes(type) || !Array.isArray(files) || files.length < 1 || files.length > maximumFiles) {
     const error = new Error('Invalid image upload request');
     error.httpStatus = 400;
     throw error;

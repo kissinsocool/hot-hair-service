@@ -50,6 +50,8 @@ const buildClientUserPayload = user => ({
   displayName: user.displayName,
   gender: user.gender || '保密',
   avatarUrl: publicImageUrl(user.avatarUrl || ''),
+  avatarReviewStatus: user.avatarReviewStatus || 'none',
+  avatarRejectReason: user.avatarRejectReason || '',
   phone: user.phone || user.account,
 });
 

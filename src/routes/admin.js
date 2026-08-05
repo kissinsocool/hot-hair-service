@@ -281,7 +281,6 @@ module.exports = (app, ctx) => {
     if (!['approve', 'reject'].includes(action)) {
       return res.status(400).json({ message: 'action must be approve or reject' });
     }
-  
     const user = await MerchantUser.findOne({ id: req.params.id }).lean();
     if (!user) return res.status(404).json({ message: 'Merchant user not found' });
     const salon = await Salon.findOne({ id: user.salonId });
@@ -350,23 +349,90 @@ module.exports = (app, ctx) => {
   
   app.get('/api/admin/users', async (req, res) => {
     const pagination = normalizePagination(req.query);
+    const avatarReviewStatus = String(req.query.avatarReviewStatus || '').trim();
+    if (avatarReviewStatus && !['none', 'pending', 'approved', 'rejected'].includes(avatarReviewStatus)) {
+      return res.status(400).json({ message: 'Invalid avatar review status' });
+    }
+    const query = avatarReviewStatus
+      ? { avatarReviewStatus: avatarReviewStatus === 'none' ? { $in: ['none', null] } : avatarReviewStatus }
+      : {};
     const [users, total] = await Promise.all([
-      ClientUser.find({})
-        .select('id account displayName gender avatarUrl phone createdAt updatedAt lastLoginAt')
+      ClientUser.find(query)
+        .select('id account displayName gender avatarUrl pendingAvatarUrl avatarReviewStatus avatarRejectReason avatarSubmittedAt avatarReviewedAt phone createdAt updatedAt lastLoginAt')
         .sort({ createdAt: -1 })
         .skip(pagination.skip)
         .limit(pagination.limit)
         .lean(),
-      ClientUser.countDocuments(),
+      ClientUser.countDocuments(query),
     ]);
     setPaginationHeaders(res, pagination, total);
   
     res.json(users.map(user => ({
       ...buildClientUserPayload(user),
+      pendingAvatarUrl: privateImageUrl(user.pendingAvatarUrl || ''),
+      avatarSubmittedAt: user.avatarSubmittedAt,
+      avatarReviewedAt: user.avatarReviewedAt,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
       lastLoginAt: user.lastLoginAt,
     })));
+  });
+
+  app.patch('/api/admin/users/:id/avatar', async (req, res) => {
+    const action = String(req.body.action || '').trim();
+    const reason = String(req.body.reason || '').trim();
+    if (!['approve', 'reject'].includes(action)) {
+      return res.status(400).json({ message: 'action must be approve or reject' });
+    }
+    if (reason.length > 500) {
+      return res.status(400).json({ message: '驳回原因不能超过 500 个字符' });
+    }
+
+    const user = await ClientUser.findOne({ id: req.params.id });
+    if (!user) return res.status(404).json({ message: '用户不存在' });
+    const pendingAvatarUrl = String(user.pendingAvatarUrl || '');
+    if (!pendingAvatarUrl || user.avatarReviewStatus !== 'pending') {
+      return res.status(409).json({ message: '用户没有待审核头像' });
+    }
+
+    let approvedAvatarUrl = '';
+    if (action === 'approve') {
+      approvedAvatarUrl = await publishModeratedImage(pendingAvatarUrl);
+      if (!approvedAvatarUrl) {
+        return res.status(500).json({ message: '头像发布失败' });
+      }
+    } else {
+      await deleteModeratedImages([pendingAvatarUrl]);
+    }
+
+    const reviewedAt = new Date();
+    const update = action === 'approve'
+      ? {
+          $set: {
+            avatarUrl: approvedAvatarUrl,
+            pendingAvatarUrl: '',
+            avatarReviewStatus: 'approved',
+            avatarRejectReason: '',
+            avatarReviewedAt: reviewedAt,
+          },
+        }
+      : {
+          $set: {
+            pendingAvatarUrl: '',
+            avatarReviewStatus: 'rejected',
+            avatarRejectReason: reason,
+            avatarReviewedAt: reviewedAt,
+          },
+        };
+    const updatedUser = await ClientUser.findOneAndUpdate(
+      { _id: user._id, pendingAvatarUrl, avatarReviewStatus: 'pending' },
+      update,
+      { new: true },
+    );
+    if (!updatedUser) {
+      return res.status(409).json({ message: '头像审核状态已变更' });
+    }
+    res.json({ user: buildClientUserPayload(updatedUser) });
   });
   
   app.get('/api/admin/bookings', async (req, res) => {

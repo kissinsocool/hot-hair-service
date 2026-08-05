@@ -1639,7 +1639,7 @@ test('client reviews are scoped to the authenticated user and include booking co
   assert.deepEqual(payload[0].imageUrls, ['signed:moderation/review/a.jpg']);
 });
 
-test('client avatar upload signs one public OSS object for the authenticated user', async () => {
+test('client avatar upload signs one private moderated object for the authenticated user', async () => {
   const routes = new Map();
   const app = {
     get() {},
@@ -1650,9 +1650,9 @@ test('client avatar upload signs one public OSS object for the authenticated use
   };
   let signRequest;
   registerClientRoutes(app, {
-    createMerchantUploadPolicies(request) {
+    createModeratedUploadPolicies(request) {
       signRequest = request;
-      return [{ url: 'https://cdn.example/avatar.jpg' }];
+      return [{ objectName: 'moderation/avatar/user-1/avatar.jpg', uploadUrl: 'https://private.example' }];
     },
     requireClientAuth() {},
     rateLimits: { upload: [], login: [] },
@@ -1666,10 +1666,112 @@ test('client avatar upload signs one public OSS object for the authenticated use
     { json(value) { payload = value; } },
   );
 
-  assert.equal(signRequest.type, 'public');
+  assert.equal(signRequest.type, 'avatar');
   assert.equal(signRequest.userId, 'user-1');
   assert.equal(signRequest.files.length, 1);
-  assert.equal(payload.upload.url, 'https://cdn.example/avatar.jpg');
+  assert.equal(payload.upload.url, 'moderation/avatar/user-1/avatar.jpg');
+  assert.equal(payload.upload.uploadUrl, 'https://private.example');
+});
+
+test('client profile keeps the approved avatar while a real Mongoose document stores the pending avatar', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    put() {},
+    delete() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const user = new ClientUser({
+    id: 'user-1',
+    account: '13800138000',
+    displayName: '旧昵称',
+    avatarUrl: 'https://cdn.example/approved.jpg',
+    authProvider: 'wechat',
+  });
+  user.save = async () => user;
+  let verified;
+  registerClientRoutes(app, {
+    ClientUser: { async findOne() { return user; } },
+    async verifyModeratedImageObjects(request) { verified = request; return request.objectNames; },
+    async deleteModeratedImages() {},
+    buildClientUserPayload: value => ({
+      avatarUrl: value.avatarUrl,
+      avatarReviewStatus: value.avatarReviewStatus,
+    }),
+    sessionTokenFromRequest: () => 'token',
+    rateLimits: { upload: [] },
+  });
+
+  let payload;
+  await routes.get('/api/auth/profile')(
+    {
+      clientUser: { id: 'user-1' },
+      body: { displayName: '新昵称', avatarUrl: 'moderation/avatar/user-1/new.jpg' },
+    },
+    { status() { return this; }, json(value) { payload = value; } },
+  );
+
+  assert.equal(verified.type, 'avatar');
+  assert.deepEqual(verified.objectNames, ['moderation/avatar/user-1/new.jpg']);
+  assert.equal(user.avatarUrl, 'https://cdn.example/approved.jpg');
+  assert.equal(user.pendingAvatarUrl, 'moderation/avatar/user-1/new.jpg');
+  assert.equal(user.avatarReviewStatus, 'pending');
+  assert.equal(payload.user.avatarUrl, 'https://cdn.example/approved.jpg');
+});
+
+test('admin approval publishes a pending avatar before replacing the approved avatar', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    put() {},
+    delete() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const user = new ClientUser({
+    id: 'user-1',
+    account: '13800138000',
+    displayName: '用户',
+    avatarUrl: 'https://cdn.example/old.jpg',
+    pendingAvatarUrl: 'moderation/avatar/user-1/new.jpg',
+    avatarReviewStatus: 'pending',
+    authProvider: 'wechat',
+  });
+  let updateQuery;
+  registerAdminRoutes(app, {
+    ClientUser: {
+      async findOne() { return user; },
+      async findOneAndUpdate(query, update) {
+        updateQuery = query;
+        user.set(update.$set);
+        return user;
+      },
+    },
+    async publishModeratedImage(objectName) {
+      assert.equal(objectName, 'moderation/avatar/user-1/new.jpg');
+      return 'https://cdn.example/new.jpg';
+    },
+    async deleteModeratedImages() {},
+    buildClientUserPayload: value => ({
+      avatarUrl: value.avatarUrl,
+      avatarReviewStatus: value.avatarReviewStatus,
+    }),
+    rateLimits: { upload: [] },
+  });
+
+  let payload;
+  await routes.get('/api/admin/users/:id/avatar')(
+    { params: { id: 'user-1' }, body: { action: 'approve' } },
+    { status() { return this; }, json(value) { payload = value; } },
+  );
+
+  assert.equal(updateQuery.pendingAvatarUrl, 'moderation/avatar/user-1/new.jpg');
+  assert.equal(updateQuery.avatarReviewStatus, 'pending');
+  assert.equal(user.avatarUrl, 'https://cdn.example/new.jpg');
+  assert.equal(user.pendingAvatarUrl, '');
+  assert.equal(user.avatarReviewStatus, 'approved');
+  assert.equal(payload.user.avatarUrl, 'https://cdn.example/new.jpg');
 });
 
 test('editing a review stores a pending draft without changing the approved review', async () => {
