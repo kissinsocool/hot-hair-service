@@ -36,3 +36,11 @@
 - 将确认后的接口名和 IPv4 地址分别保存到 `HOT_HAIR_NETWORK_INTERFACE` 与 `HOT_HAIR_SOURCE_IP`，并检查两者均非空且接口不是 `utun*`。
 - SSH 使用 `ssh -b "$HOT_HAIR_SOURCE_IP"`，SCP 使用 `scp -o BindAddress="$HOT_HAIR_SOURCE_IP"`，curl 使用 `curl --interface "$HOT_HAIR_NETWORK_INTERFACE"`，k6 使用 `k6 run --local-ips="$HOT_HAIR_SOURCE_IP"`。
 - 如果无法确认活动物理接口，停止并说明原因；不得静默回退到 VPN，也不要为此修改系统全局默认路由。
+
+## 线上部署流程
+
+- 不得使用 SCP、rsync、编辑器或其他方式直接覆盖线上代码文件。
+- 部署前必须先确认修改范围，运行相关测试或构建，然后在本地创建内容明确的 Git 提交。
+- 本地提交推送到线上仓库后，线上服务器必须通过 Git 拉取指定分支或提交进行部署，保证线上代码可追溯。
+- 拉取前必须检查线上工作树和当前分支；如果存在未提交修改、手工覆盖或与目标提交不一致的文件，必须停止并先处理差异，不得强制覆盖。
+- 拉取后先运行必要的依赖安装、数据迁移、语法检查或构建，再重启对应进程，最后验证进程状态、健康检查和关键功能。

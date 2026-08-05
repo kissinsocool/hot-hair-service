@@ -561,11 +561,19 @@ const getApprovedReviewsByStaffIds = async (staffIds = [], limit = PUBLIC_SALON_
     staffId: { $in: ids },
     'review.reviewStatus': 'approved',
   })
-    .select('id staffId staffName review updatedAt')
+    .select('id userId staffId staffName review updatedAt')
     .sort({ updatedAt: -1 })
     .limit(limit)
     .lean();
-  return bookings.map(publicReviewFromBooking);
+  const userIds = [...new Set(bookings.flatMap(booking => userIdAliases(booking.userId)))];
+  const users = userIds.length
+    ? await ClientUser.find({ id: { $in: userIds } }).select('id avatarUrl').lean()
+    : [];
+  const avatars = new Map(users.map(user => [normalizeUserId(user.id), user.avatarUrl]));
+  return bookings.map(booking => publicReviewFromBooking(
+    booking,
+    avatars.get(normalizeUserId(booking.userId)) || '',
+  ));
 };
 
 const groupReviewsByStaff = salonDomain.groupReviewsByStaff;

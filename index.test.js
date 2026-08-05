@@ -20,6 +20,7 @@ const {
   ensureSalonForMerchant,
   getNearbySalons,
   generateSlotsForStaffAndDate,
+  getApprovedReviewsByStaffIds,
   getCoordinates,
   hashPassword,
   hasReviewableContentChanges,
@@ -227,6 +228,43 @@ test('public staff payloads use supplied booking reviews and ignore legacy profi
   const payload = buildStaffPayload({ id: 'staff-1', reviews: [{ rating: 1 }] }, reviews);
   assert.equal(payload.reviews.length, 50);
   assert.equal(payload.rating, 5);
+});
+
+test('public reviews include the current approved customer avatar', async () => {
+  const originalBookingFind = Booking.find;
+  const originalClientUserFind = ClientUser.find;
+  const bookingCursor = {
+    select() { return bookingCursor; },
+    sort() { return bookingCursor; },
+    limit() { return bookingCursor; },
+    async lean() {
+      return [{
+        id: 'booking-1',
+        userId: 'user-customer-1',
+        staffId: 'staff-1',
+        review: { id: 'review-1', rating: 5, reviewStatus: 'approved' },
+      }];
+    },
+  };
+  const userCursor = {
+    select() { return userCursor; },
+    async lean() {
+      return [{
+        id: 'customer-1',
+        avatarUrl: 'https://hothairapp.oss-cn-beijing.aliyuncs.com/uploads/avatar.jpg',
+      }];
+    },
+  };
+  Booking.find = () => bookingCursor;
+  ClientUser.find = () => userCursor;
+
+  try {
+    const reviews = await getApprovedReviewsByStaffIds(['staff-1']);
+    assert.equal(reviews[0].avatarUrl, 'https://oss.hothaircc.cn/uploads/avatar.jpg');
+  } finally {
+    Booking.find = originalBookingFind;
+    ClientUser.find = originalClientUserFind;
+  }
 });
 
 test('health, readiness and centralized auth boundaries work without database access', async () => {

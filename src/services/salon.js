@@ -109,7 +109,7 @@ const buildStaffPayload = (person, reviews = []) => {
   };
 };
 
-const publicReviewFromBooking = (bookingDocument) => {
+const publicReviewFromBooking = (bookingDocument, avatarUrl = '') => {
   const bookingValue = normalizeDocument(bookingDocument);
   const { pendingImageUrls, pendingMerchantReply, pendingEdit, ...review } = bookingValue.review || {};
   if (review.merchantReply?.reviewStatus && review.merchantReply.reviewStatus !== 'approved') {
@@ -119,6 +119,7 @@ const publicReviewFromBooking = (bookingDocument) => {
     ...review,
     imageUrl: publicImageUrl(review.imageUrl || ''),
     imageUrls: (review.imageUrls || []).map(publicImageUrl),
+    avatarUrl: publicImageUrl(avatarUrl),
     bookingId: review.bookingId || bookingValue.id,
     staffId: bookingValue.staffId,
     staffName: bookingValue.staffName,
