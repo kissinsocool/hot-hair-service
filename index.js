@@ -18,6 +18,7 @@ const {
   publicBaseUrl,
   wechatAppId,
   wechatAppSecret,
+  wechatBookingStatusTemplateId,
   trustProxyHops,
   wsMaxConnections,
   wsMaxConnectionsPerIp,
@@ -79,11 +80,13 @@ const {
   createSession,
   decryptWechatPhoneNumber,
   getWechatPhoneNumber,
+  getWechatOpenId,
   hashSessionToken,
   normalizeUserId,
   sessionTokenFromRequest,
   userIdAliases,
 } = authDomain;
+const { sendBookingStatusNotification } = require('./src/services/wechat-subscriptions');
 
 const app = express();
 const server = http.createServer(app);
@@ -1027,6 +1030,7 @@ const routeContext = {
   getStaffMapByIds,
   getUserPolicy,
   getWechatPhoneNumber,
+  getWechatOpenId,
   hashPassword,
   hasReviewableContentChanges,
   ensureSalonForMerchant,
@@ -1077,6 +1081,8 @@ const routeContext = {
   INPUT_LIMITS,
   wechatAppId,
   wechatAppSecret,
+  wechatBookingStatusTemplateId,
+  sendBookingStatusNotification,
 };
 
 require('./src/routes/public')(app, routeContext);

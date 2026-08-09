@@ -67,6 +67,7 @@ module.exports = (app, ctx) => {
     clearPublicSalonDetailCache,
     UserCoupon,
     couponDiscountForOrder,
+    sendBookingStatusNotification,
   } = ctx;
 
   const reserveBookingSlot = (...args) => bookingService.reserveBookingSlot(SlotOccupancy, ...args);
@@ -489,6 +490,18 @@ module.exports = (app, ctx) => {
       throw error;
     }
     broadcastBookingEvent('booking.updated', booking);
+    if (['accept', 'reject', 'cancel', 'reschedule'].includes(action)) {
+      const notificationStatus = action === 'accept'
+        ? 'accepted'
+        : action === 'reject'
+          ? 'rejected'
+          : action === 'cancel'
+            ? 'canceled'
+            : 'rescheduled';
+      sendBookingStatusNotification(booking, notificationStatus).catch((error) => {
+        console.error(`Booking subscription notification failed for ${booking.id}:`, error.message);
+      });
+    }
   
     res.json({
       message: action === 'reschedule' ? 'Booking rescheduled.' : `Booking ${booking.status}.`,

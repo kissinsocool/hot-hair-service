@@ -23,6 +23,8 @@ module.exports = (app, ctx) => {
     readFavoriteSalons,
     FavoriteSalon,
     publicImageUrl,
+    getWechatOpenId,
+    wechatBookingStatusTemplateId,
   } = ctx;
 
   const clientUserPayload = user => ({
@@ -178,6 +180,29 @@ module.exports = (app, ctx) => {
   
   app.get('/api/auth/me', async (req, res) => {
     res.json({ user: clientUserPayload(req.clientUser) });
+  });
+
+  app.get('/api/auth/subscription-settings', async (_req, res) => {
+    res.json({
+      bookingStatusTemplateIds: wechatBookingStatusTemplateId
+        ? [wechatBookingStatusTemplateId]
+        : [],
+    });
+  });
+
+  app.post('/api/auth/wechat/openid', ...(rateLimits.login || []), async (req, res) => {
+    const loginCode = String(req.body.loginCode || '').trim();
+    if (!loginCode) return res.status(400).json({ message: 'loginCode is required' });
+    try {
+      const wechatOpenId = await getWechatOpenId(loginCode);
+      await ClientUser.updateOne(
+        { id: req.clientUser.id },
+        { $set: { wechatOpenId } },
+      );
+      res.json({ ok: true });
+    } catch (error) {
+      res.status(401).json({ message: error.message || '微信用户标识获取失败' });
+    }
   });
 
   app.get('/api/auth/reviews', async (req, res) => {

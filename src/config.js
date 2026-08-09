@@ -18,6 +18,10 @@ const ossEnabled = Boolean(process.env.OSS_ACCESS_KEY_ID && process.env.OSS_ACCE
 const amapWebServiceKey = process.env.AMAP_WEB_SERVICE_KEY || process.env.AMAP_WEB_KEY || '';
 const wechatAppId = process.env.WECHAT_APP_ID || process.env.WX_APP_ID || '';
 const wechatAppSecret = process.env.WECHAT_APP_SECRET || process.env.WX_APP_SECRET || '';
+const wechatBookingStatusTemplateId = process.env.WECHAT_BOOKING_STATUS_TEMPLATE_ID || '';
+const wechatMiniprogramState = ['developer', 'trial', 'formal'].includes(process.env.WECHAT_MINIPROGRAM_STATE)
+  ? process.env.WECHAT_MINIPROGRAM_STATE
+  : 'formal';
 const resolveTrustProxyHops = (value, nodeEnv = process.env.NODE_ENV) => {
   const fallback = String(nodeEnv || '').toLowerCase() === 'production' ? 1 : 0;
   if (value === undefined || value === '') return fallback;
@@ -59,6 +63,8 @@ module.exports = {
   amapWebServiceKey,
   wechatAppId,
   wechatAppSecret,
+  wechatBookingStatusTemplateId,
+  wechatMiniprogramState,
   resolveTrustProxyHops,
   trustProxyHops,
   wsMaxConnections,

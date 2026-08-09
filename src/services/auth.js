@@ -117,15 +117,40 @@ const getWechatPhoneNumber = async (code) => {
   return phone;
 };
 
-const getWechatSessionKey = async (loginCode) => {
+const getWechatSession = async (loginCode) => {
   const url = new URL('https://api.weixin.qq.com/sns/jscode2session');
   url.searchParams.set('appid', wechatAppId);
   url.searchParams.set('secret', wechatAppSecret);
   url.searchParams.set('js_code', loginCode);
   url.searchParams.set('grant_type', 'authorization_code');
-  const data = await fetchJson(url);
+  return fetchJson(url);
+};
+
+const getWechatSessionKey = async (loginCode) => {
+  const data = await getWechatSession(loginCode);
   if (!data?.session_key) throw new Error(data?.errmsg || '微信登录失败');
   return data.session_key;
+};
+
+const getWechatOpenId = async (loginCode) => {
+  const data = await getWechatSession(loginCode);
+  if (!data?.openid) throw new Error(data?.errmsg || '微信用户标识获取失败');
+  return data.openid;
+};
+
+const sendWechatSubscribeMessage = async (payload) => {
+  const accessToken = await getWechatAccessToken();
+  const data = await fetchJson(`https://api.weixin.qq.com/cgi-bin/message/subscribe/send?access_token=${accessToken}`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'content-type': 'application/json' },
+  });
+  if (!data) throw new Error('微信订阅消息发送失败');
+  if (data.errcode && data.errcode !== 0) {
+    if (data.errcode === 43101) return false;
+    throw new Error(data.errmsg || `微信订阅消息发送失败 ${data.errcode}`);
+  }
+  return true;
 };
 
 const decryptWechatPhoneNumber = async ({ encryptedData, iv, loginCode }) => {
@@ -264,8 +289,10 @@ module.exports = {
   createSession,
   decryptWechatPhoneNumber,
   getWechatPhoneNumber,
+  getWechatOpenId,
   hashSessionToken,
   normalizeUserId,
+  sendWechatSubscribeMessage,
   sessionTokenFromRequest,
   userIdAliases,
 };

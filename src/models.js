@@ -294,6 +294,7 @@ const clientUserSchema = new mongoose.Schema({
   avatarSubmittedAt: Date,
   avatarReviewedAt: Date,
   phone: { type: String, default: '' },
+  wechatOpenId: { type: String, default: '' },
   authProvider: { type: String, enum: ['wechat'], required: true },
   sessionTokenHash: { type: String, default: '', index: true },
   sessionExpiresAt: Date,
