@@ -1,4 +1,5 @@
 const bookingService = require('../services/booking');
+const bookingMessages = require('../services/booking-messages');
 const salonService = require('../services/salon');
 const {
   bookingDayRange,
@@ -42,6 +43,7 @@ module.exports = (app, ctx) => {
     normalizeBooking,
     normalizeMerchantBooking,
     Booking,
+    BookingMessage,
     USER_CANCEL_WINDOW_MS,
     broadcastBookingEvent,
     getApprovedReviewsByStaffIds,
@@ -477,6 +479,9 @@ module.exports = (app, ctx) => {
           : null;
         if (!['accept', 'reschedule'].includes(action)) {
           await SlotOccupancy.deleteOne({ bookingId: updated.id }, { session });
+        }
+        if (action !== 'reschedule' || changed) {
+          await bookingMessages.appendBookingMessage(BookingMessage, updated, action, session);
         }
         return { booking: updated, userPolicy: nextPolicy };
       });

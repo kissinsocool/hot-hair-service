@@ -1,4 +1,5 @@
 const bookingService = require('../services/booking');
+const bookingMessages = require('../services/booking-messages');
 const {
   generateBookingId,
   isDuplicateSlotError,
@@ -10,6 +11,7 @@ module.exports = (app, ctx) => {
     mongoose,
     SlotOccupancy,
     Booking,
+    BookingMessage,
     UserCoupon,
     Salon,
     crypto,
@@ -117,6 +119,7 @@ module.exports = (app, ctx) => {
         );
         if (!updated) throw transactionError(409, '订单状态已变更，请刷新后重试');
         await SlotOccupancy.deleteOne({ bookingId: updated.id }, { session });
+        await bookingMessages.appendBookingMessage(BookingMessage, updated, 'canceled', session);
         return updated;
       });
     } catch (error) {
@@ -547,6 +550,7 @@ module.exports = (app, ctx) => {
           updatedAt: now,
         });
         await created.save({ session });
+        await bookingMessages.appendBookingMessage(BookingMessage, created, 'created', session);
         return created;
       });
     } catch (error) {

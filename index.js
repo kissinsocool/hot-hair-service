@@ -26,6 +26,7 @@ const {
 } = require('./src/config');
 const {
   Booking,
+  BookingMessage,
   SlotOccupancy,
   UserPolicy,
   FavoriteSalon,
@@ -987,6 +988,7 @@ const routeContext = {
   applyDirectSalonContent,
   applyPendingContent,
   Booking,
+  BookingMessage,
   SlotOccupancy,
   broadcastBookingEvent,
   buildAdminMerchantPayload,
@@ -1093,9 +1095,11 @@ app.use([
   '/api/auth',
   '/api/favorites',
   '/api/bookings',
+  '/api/booking-messages',
 ], requireClientAuth);
 require('./src/routes/client')(app, routeContext);
 require('./src/routes/client-bookings')(app, routeContext);
+require('./src/routes/client-messages')(app, routeContext);
 app.use('/api/merchant', requireMerchantAuth);
 require('./src/routes/merchant')(app, routeContext);
 app.use('/api/admin', requireAdminAuth);
@@ -1130,6 +1134,7 @@ const startServer = async () => {
   }
   await Promise.all([
     Booking.createIndexes(),
+    BookingMessage.createIndexes(),
     SlotOccupancy.createIndexes(),
     ClientUser.createIndexes(),
     MerchantUser.createIndexes(),

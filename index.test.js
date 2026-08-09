@@ -1015,7 +1015,6 @@ test('favorite writes are idempotent upserts and deletes', async () => {
   };
   let updateCall;
   let deleteCall;
-  let couponReleaseCall;
   registerClientRoutes(app, {
     FavoriteSalon: {
       async updateOne(...args) { updateCall = args; },
@@ -2061,6 +2060,8 @@ test('booking cancellation atomically checks state and releases its slot in one 
   const session = { id: 'transaction-session' };
   let updateCall;
   let deleteCall;
+  let messageCreate;
+  let couponReleaseCall;
   let transactionOptions;
   let ended = false;
   const current = {
@@ -2077,6 +2078,9 @@ test('booking cancellation atomically checks state and releases its slot in one 
     Booking: {
       findOne() { return { session: async () => current }; },
       async findOneAndUpdate(...args) { updateCall = args; return updated; },
+    },
+    BookingMessage: {
+      async create(...args) { messageCreate = args; return args[0]; },
     },
     SlotOccupancy: {
       async deleteOne(...args) { deleteCall = args; },
@@ -2110,6 +2114,8 @@ test('booking cancellation atomically checks state and releases its slot in one 
   assert.equal(updateCall[1].$set.canceledBy, 'user');
   assert.equal(updateCall[2].session, session);
   assert.deepEqual(deleteCall, [{ bookingId: 'BK-1' }, { session }]);
+  assert.equal(messageCreate[0][0].type, 'canceled');
+  assert.equal(messageCreate[1].session, session);
   assert.equal(couponReleaseCall[0].id, 'coupon-1');
   assert.deepEqual(couponReleaseCall[0].$or, [
     { reservedBookingId: 'BK-1' },
@@ -2141,6 +2147,7 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
   let couponQuery;
   let couponUpdate;
   let savedBooking;
+  let messageCreate;
   class Booking {
     constructor(value) { Object.assign(this, value); }
     async save(options) {
@@ -2152,6 +2159,9 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
 
   registerClientBookingRoutes(app, {
     Booking,
+    BookingMessage: {
+      async create(...args) { messageCreate = args; return args[0]; },
+    },
     UserCoupon: {
       async findOneAndUpdate(query, update, options) {
         couponQuery = query;
@@ -2237,6 +2247,8 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
   assert.equal(savedBooking.couponId, 'coupon-1');
   assert.equal(savedBooking.couponDiscountFen, 2000);
   assert.equal(savedBooking.payableAmountFen, 10000);
+  assert.equal(messageCreate[0][0].type, 'created');
+  assert.equal(messageCreate[1].session, session);
   assert.equal(response.booking.id, '12345678');
 });
 
@@ -2261,6 +2273,7 @@ test('completing a booking atomically redeems its reserved coupon', async () => 
   };
   let couponUpdate;
   let bookingUpdate;
+  let messageCreate;
 
   registerMerchantRoutes(app, {
     Salon: {
@@ -2277,6 +2290,9 @@ test('completing a booking atomically redeems its reserved coupon', async () => 
         bookingUpdate = args;
         return { ...booking, ...args[1].$set };
       },
+    },
+    BookingMessage: {
+      async create(...args) { messageCreate = args; return args[0]; },
     },
     UserCoupon: {
       async findOneAndUpdate(...args) {
@@ -2324,5 +2340,8 @@ test('completing a booking atomically redeems its reserved coupon', async () => 
   assert.equal(couponUpdate[1].$unset.reservedBookingId, '');
   assert.equal(bookingUpdate[1].$set.status, 'completed');
   assert.ok(bookingUpdate[1].$set.couponRedeemedAt instanceof Date);
+  assert.equal(messageCreate[0][0].type, 'complete');
+  assert.equal(messageCreate[0][0].status, 'completed');
+  assert.equal(messageCreate[1].session, session);
   assert.equal(response.booking.status, 'completed');
 });

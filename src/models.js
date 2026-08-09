@@ -176,6 +176,29 @@ bookingSchema.index({ 'review.reviewStatus': 1, updatedAt: -1 });
 bookingSchema.index({ staffId: 1, 'review.reviewStatus': 1, updatedAt: -1 });
 bookingSchema.index({ 'complaint.reviewStatus': 1, updatedAt: -1 });
 
+const bookingMessageSchema = new mongoose.Schema({
+  id: { type: String, default: () => new mongoose.Types.ObjectId().toString(), unique: true, index: true },
+  userId: { type: String, required: true },
+  bookingId: { type: String, required: true },
+  type: { type: String, required: true },
+  status: { type: String, required: true },
+  userMessage: { type: String, required: true },
+  salonId: String,
+  salonName: String,
+  staffId: String,
+  staffName: String,
+  serviceId: String,
+  serviceName: String,
+  startTime: Date,
+  couponTitle: String,
+  couponDiscountFen: integer(),
+  createdAt: { type: Date, default: Date.now },
+  readAt: { type: Date, default: null },
+}, { id: false });
+
+bookingMessageSchema.index({ userId: 1, createdAt: -1 });
+bookingMessageSchema.index({ userId: 1, readAt: 1 });
+
 const slotOccupancySchema = new mongoose.Schema({
   staffId: { type: String, required: true },
   startTime: { type: Date, required: true },
@@ -364,6 +387,7 @@ supportMessageSchema.index({ createdAt: -1 });
 
 module.exports = {
   Booking: mongoose.model('Booking', bookingSchema),
+  BookingMessage: mongoose.model('BookingMessage', bookingMessageSchema),
   SlotOccupancy: mongoose.model('SlotOccupancy', slotOccupancySchema),
   UserPolicy: mongoose.model('UserPolicy', userPolicySchema),
   FavoriteSalon: mongoose.model('FavoriteSalon', favoriteSalonSchema),
