@@ -1087,6 +1087,66 @@ test('client booking reads require authentication and ignore claimed user ids', 
   });
 });
 
+test('client booking detail is owner-scoped and includes current salon contact', async () => {
+  const routes = new Map();
+  const app = {
+    get(path, ...handlers) { routes.set(`GET ${path}`, handlers.at(-1)); },
+    post() {},
+    patch() {},
+    delete() {},
+    use() {},
+  };
+  let bookingQuery;
+  const bookingCursor = {
+    select() { return this; },
+    async lean() {
+      return { id: 'booking-1', userId: 'owner-1', salonId: 'salon-1' };
+    },
+  };
+  const salonCursor = {
+    select() { return this; },
+    async lean() {
+      return {
+        phone: '010-12345678',
+        address: '北京市东城区测试路1号',
+        location: { latitude: 39.9, longitude: 116.4 },
+      };
+    },
+  };
+  registerClientBookingRoutes(app, {
+    Booking: {
+      findOne(query) { bookingQuery = query; return bookingCursor; },
+    },
+    Salon: {
+      findOne() { return salonCursor; },
+    },
+    normalizeUserId: value => value,
+    userIdAliases: value => [value, `legacy-${value}`],
+    normalizeBooking: value => value,
+    rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
+  });
+
+  let payload;
+  await routes.get('GET /api/bookings/:id')(
+    {
+      clientUser: { id: 'owner-1' },
+      params: { id: 'booking-1' },
+    },
+    {
+      status() { throw new Error('unexpected status'); },
+      json(value) { payload = value; },
+    },
+  );
+
+  assert.deepEqual(bookingQuery, {
+    id: 'booking-1',
+    userId: { $in: ['owner-1', 'legacy-owner-1'] },
+  });
+  assert.equal(payload.salonPhone, '010-12345678');
+  assert.equal(payload.salonAddress, '北京市东城区测试路1号');
+  assert.deepEqual(payload.salonLocation, { latitude: 39.9, longitude: 116.4 });
+});
+
 test('staff slots load daily bookings and unavailability with fixed query count', async () => {
   const originalSalonFindOne = Salon.findOne;
   const originalBookingFind = Booking.find;
