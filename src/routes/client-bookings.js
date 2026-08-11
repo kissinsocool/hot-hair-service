@@ -66,18 +66,7 @@ module.exports = (app, ctx) => {
     }).select('-_id -__v').lean();
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
 
-    const salon = booking.salonId
-      ? await Salon.findOne({ id: booking.salonId })
-        .select('phone address location geoLocation')
-        .lean()
-      : null;
-    res.json({
-      ...normalizeBooking(booking),
-      salonPhone: salon?.phone || '',
-      salonAddress: salon?.address || '',
-      salonLocation: salon?.location,
-      salonGeoLocation: salon?.geoLocation,
-    });
+    res.json(normalizeBooking(booking));
   });
   
   app.patch('/api/bookings/:id/cancel', ...rateLimits.booking, async (req, res) => {
