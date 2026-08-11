@@ -854,22 +854,33 @@ const ensureSalonForMerchant = async ({ salonId, displayName }) => {
   });
 };
 
-const readFavoriteSalons = async (userId) => {
+const readFavoriteSalonIds = async (userId) => {
   const favorites = await FavoriteSalon
     .find({ userId: { $in: userIdAliases(userId) } })
     .select('salonId')
     .sort({ createdAt: -1 })
     .lean();
+  return [...new Set(favorites.map(favorite => favorite.salonId))];
+};
+
+const readFavoriteSalons = async (userId) => {
+  const favoriteSalonIds = await readFavoriteSalonIds(userId);
   const salons = await Salon.find({
-    id: { $in: favorites.map(favorite => favorite.salonId) },
+    id: { $in: favoriteSalonIds },
     publishStatus: 'online',
-  });
+  }).select('id name description rating image images promoImages').lean();
   const salonsById = new Map(salons.map(salon => [salon.id, salon]));
   return Promise.all(
-    favorites
-      .map(favorite => salonsById.get(favorite.salonId))
+    favoriteSalonIds
+      .map(salonId => salonsById.get(salonId))
       .filter(Boolean)
-      .map(salon => buildPublicSalonDetail(salon)),
+      .map(async salon => ({
+        id: salon.id,
+        name: salon.name || '',
+        description: salon.description || '',
+        rating: salon.rating,
+        image: await salonCoverImage(salon),
+      })),
   );
 };
 
@@ -1060,6 +1071,7 @@ const routeContext = {
   parseMerchantRescheduleTime,
   parseOpeningHours,
   publishModeratedImage,
+  readFavoriteSalonIds,
   readFavoriteSalons,
   rateLimits,
   revokeSessionHash,
@@ -1192,6 +1204,7 @@ module.exports = {
   createClientUserWithSignupCoupons,
   createSession,
   parseMerchantRescheduleTime,
+  readFavoriteSalonIds,
   readFavoriteSalons,
   socketCanReceiveBooking,
   server,

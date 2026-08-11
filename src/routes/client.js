@@ -20,6 +20,7 @@ module.exports = (app, ctx) => {
     SupportMessage,
     normalizeUserId,
     couponPayload,
+    readFavoriteSalonIds,
     readFavoriteSalons,
     FavoriteSalon,
     publicImageUrl,
@@ -35,6 +36,11 @@ module.exports = (app, ctx) => {
   app.get('/api/favorites', async (req, res) => {
     const userId = normalizeUserId(req.clientUser.id);
     res.json(await readFavoriteSalons(userId));
+  });
+
+  app.get('/api/favorites/ids', async (req, res) => {
+    const userId = normalizeUserId(req.clientUser.id);
+    res.json({ salonIds: await readFavoriteSalonIds(userId) });
   });
 
   app.put('/api/favorites/:id', async (req, res) => {

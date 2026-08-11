@@ -37,6 +37,7 @@ const {
   normalizeRadiusKm,
   normalizeSalonTags,
   parseMerchantRescheduleTime,
+  readFavoriteSalonIds,
   readFavoriteSalons,
   server,
   socketCanReceiveBooking,
@@ -973,41 +974,50 @@ test('nearby salon expansion performs one geospatial query', async () => {
   }
 });
 
-test('favorites store references and read current salon data', async () => {
+test('favorite reads return ids or card summaries without building salon details', async () => {
   const originalFavoriteFind = FavoriteSalon.find;
   const originalSalonFind = Salon.find;
-  const originalStaffFind = StaffProfile.find;
   let salonQuery;
+  let salonProjection;
   FavoriteSalon.find = () => {
     const chain = {
       select() { return chain; },
       sort() { return chain; },
-      async lean() { return [{ salonId: 'salon-1' }]; },
+      async lean() { return [{ salonId: 'salon-1' }, { salonId: 'salon-1' }]; },
     };
     return chain;
   };
-  Salon.find = async (query) => {
+  Salon.find = (query) => {
     salonQuery = query;
-    return [new Salon({ id: 'salon-1', name: '最新店名', staffIds: [], publishStatus: 'online' })];
+    return {
+      select(value) { salonProjection = value; return this; },
+      async lean() { return [{ id: 'salon-1', name: '最新店名', description: '摘要', rating: 4.9, image: '' }]; },
+    };
   };
-  StaffProfile.find = () => ({ lean: async () => [] });
 
   try {
+    assert.deepEqual(await readFavoriteSalonIds('user-1'), ['salon-1']);
     const favorites = await readFavoriteSalons('user-1');
     assert.equal(FavoriteSalon.schema.path('salon'), undefined);
     assert.deepEqual(salonQuery, { id: { $in: ['salon-1'] }, publishStatus: 'online' });
-    assert.equal(favorites[0].name, '最新店名');
+    assert.equal(salonProjection, 'id name description rating image images promoImages');
+    assert.deepEqual(favorites, [{
+      id: 'salon-1',
+      name: '最新店名',
+      description: '摘要',
+      rating: 4.9,
+      image: '',
+    }]);
   } finally {
     FavoriteSalon.find = originalFavoriteFind;
     Salon.find = originalSalonFind;
-    StaffProfile.find = originalStaffFind;
   }
 });
 
 test('favorite writes are idempotent upserts and deletes', async () => {
   const routes = new Map();
   const app = {
-    get() {},
+    get(path, handler) { routes.set(`GET ${path}`, handler); },
     post() {},
     patch() {},
     put(path, handler) { routes.set(`PUT ${path}`, handler); },
@@ -1021,13 +1031,17 @@ test('favorite writes are idempotent upserts and deletes', async () => {
       async deleteMany(query) { deleteCall = query; },
     },
     normalizeUserId: value => value,
+    async readFavoriteSalonIds() { return ['salon-1']; },
     async readFavoriteSalons() { return []; },
     userIdAliases: userId => [userId, 'legacy-user-1'],
     rateLimits: { support: [], upload: [], booking: [] },
   });
-  const response = { json() {}, status() { return this; } };
+  let responseBody;
+  const response = { json(value) { responseBody = value; }, status() { return this; } };
   const request = { clientUser: { id: 'user-1' }, params: { id: 'salon-1' } };
 
+  await routes.get('GET /api/favorites/ids')(request, response);
+  assert.deepEqual(responseBody, { salonIds: ['salon-1'] });
   await routes.get('PUT /api/favorites/:id')(request, response);
   await routes.get('PUT /api/favorites/:id')(request, response);
   await routes.get('DELETE /api/favorites/:id')(request, response);
