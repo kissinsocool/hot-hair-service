@@ -1,5 +1,6 @@
 const { normalizeDocument } = require('../services/salon');
 const { funnelMetrics } = require('../services/analytics');
+const { bookingDayRange } = require('../services/booking');
 
 module.exports = (app, ctx) => {
   const {
@@ -86,20 +87,29 @@ module.exports = (app, ctx) => {
   });
   
   app.get('/api/admin/overview', async (req, res) => {
-    const [merchantCount, clientCount, salonCount, bookingCount, pendingCount, acceptedCount, funnelRows] = await Promise.all([
+    const today = bookingDayRange();
+    const yesterday = {
+      start: new Date(today.start.getTime() - 24 * 60 * 60 * 1000),
+      end: today.start,
+    };
+    const [merchantCount, clientCount, yesterdayNewClientCount, salonCount, bookingCount, pendingCount, acceptedCount, funnelRows] = await Promise.all([
       MerchantUser.countDocuments(),
       ClientUser.countDocuments(),
+      ClientUser.countDocuments({ createdAt: { $gte: yesterday.start, $lt: yesterday.end } }),
       Salon.countDocuments(),
       Booking.countDocuments(),
       Booking.countDocuments({ status: 'pending' }),
       Booking.countDocuments({ status: 'accepted' }),
-      // ponytail: all-time counts fit the current volume; add daily buckets when this overview query becomes slow.
-      AnalyticsEvent.aggregate([{ $group: { _id: '$name', count: { $sum: 1 } } }]),
+      AnalyticsEvent.aggregate([
+        { $match: { createdAt: { $gte: yesterday.start, $lt: yesterday.end } } },
+        { $group: { _id: '$name', count: { $sum: 1 } } },
+      ]),
     ]);
   
     res.json({
       merchantCount,
       clientCount,
+      yesterdayNewClientCount,
       salonCount,
       bookingCount,
       pendingCount,
