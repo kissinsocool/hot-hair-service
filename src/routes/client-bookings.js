@@ -1,5 +1,6 @@
 const bookingService = require('../services/booking');
 const bookingMessages = require('../services/booking-messages');
+const { bookingEvent, recordAnalyticsEvent } = require('../services/analytics');
 const {
   generateBookingId,
   isDuplicateSlotError,
@@ -36,6 +37,7 @@ module.exports = (app, ctx) => {
     couponDiscountForOrder,
     INPUT_LIMITS,
     rateLimits,
+    AnalyticsEvent,
   } = ctx;
 
   const reserveBookingSlot = (...args) => bookingService.reserveBookingSlot(SlotOccupancy, ...args);
@@ -200,6 +202,8 @@ module.exports = (app, ctx) => {
     }
   
     broadcastBookingEvent('booking.updated', updatedBooking);
+    await recordAnalyticsEvent(AnalyticsEvent, bookingEvent('review_submitted', updatedBooking))
+      .catch(error => console.error('Review analytics failed:', error.message));
     res.status(201).json({ review, booking: normalizeBooking(updatedBooking) });
   });
 
@@ -562,6 +566,8 @@ module.exports = (app, ctx) => {
     }
   
     broadcastBookingEvent('booking.created', booking);
+    await recordAnalyticsEvent(AnalyticsEvent, bookingEvent('booking_submitted', booking))
+      .catch(error => console.error('Booking analytics failed:', error.message));
     res.status(201).json({
       message: 'Booking request submitted and waiting for merchant confirmation.',
       booking: normalizeBooking(booking),

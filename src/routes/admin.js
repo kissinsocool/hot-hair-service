@@ -1,4 +1,5 @@
 const { normalizeDocument } = require('../services/salon');
+const { funnelMetrics } = require('../services/analytics');
 
 module.exports = (app, ctx) => {
   const {
@@ -36,6 +37,7 @@ module.exports = (app, ctx) => {
     UserCoupon,
     campaignPayload,
     validateCampaignInput,
+    AnalyticsEvent,
   } = ctx;
 
   const buildCampaignResponse = async (campaign) => {
@@ -84,13 +86,15 @@ module.exports = (app, ctx) => {
   });
   
   app.get('/api/admin/overview', async (req, res) => {
-    const [merchantCount, clientCount, salonCount, bookingCount, pendingCount, acceptedCount] = await Promise.all([
+    const [merchantCount, clientCount, salonCount, bookingCount, pendingCount, acceptedCount, funnelRows] = await Promise.all([
       MerchantUser.countDocuments(),
       ClientUser.countDocuments(),
       Salon.countDocuments(),
       Booking.countDocuments(),
       Booking.countDocuments({ status: 'pending' }),
       Booking.countDocuments({ status: 'accepted' }),
+      // ponytail: all-time counts fit the current volume; add daily buckets when this overview query becomes slow.
+      AnalyticsEvent.aggregate([{ $group: { _id: '$name', count: { $sum: 1 } } }]),
     ]);
   
     res.json({
@@ -100,6 +104,7 @@ module.exports = (app, ctx) => {
       bookingCount,
       pendingCount,
       acceptedCount,
+      funnel: funnelMetrics(funnelRows),
     });
   });
 

@@ -2010,6 +2010,7 @@ test('concurrent review and complaint submissions only update once', async () =>
     staffId: 'staff-1',
   };
   registerClientBookingRoutes(app, {
+    AnalyticsEvent: { async updateOne() {} },
     Booking: {
       async findOne() { return booking; },
       async findOneAndUpdate(query, update) {
@@ -2158,6 +2159,7 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
   }
 
   registerClientBookingRoutes(app, {
+    AnalyticsEvent: { async updateOne() {} },
     Booking,
     BookingMessage: {
       async create(...args) { messageCreate = args; return args[0]; },
@@ -2276,6 +2278,7 @@ test('completing a booking atomically redeems its reserved coupon', async () => 
   let messageCreate;
 
   registerMerchantRoutes(app, {
+    AnalyticsEvent: { async updateOne() {} },
     Salon: {
       findOne() {
         return {

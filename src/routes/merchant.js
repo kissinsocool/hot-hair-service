@@ -1,6 +1,7 @@
 const bookingService = require('../services/booking');
 const bookingMessages = require('../services/booking-messages');
 const salonService = require('../services/salon');
+const { bookingEvent, recordAnalyticsEvent } = require('../services/analytics');
 const {
   bookingDayRange,
   generateBookingId,
@@ -70,6 +71,7 @@ module.exports = (app, ctx) => {
     UserCoupon,
     couponDiscountForOrder,
     sendBookingStatusNotification,
+    AnalyticsEvent,
   } = ctx;
 
   const reserveBookingSlot = (...args) => bookingService.reserveBookingSlot(SlotOccupancy, ...args);
@@ -495,6 +497,15 @@ module.exports = (app, ctx) => {
       throw error;
     }
     broadcastBookingEvent('booking.updated', booking);
+    const eventName = action === 'accept'
+      ? 'merchant_accepted'
+      : action === 'complete'
+        ? 'visit_completed'
+        : '';
+    if (eventName) {
+      await recordAnalyticsEvent(AnalyticsEvent, bookingEvent(eventName, booking))
+        .catch(error => console.error('Booking status analytics failed:', error.message));
+    }
     if (['accept', 'reject', 'cancel', 'reschedule'].includes(action)) {
       const notificationStatus = action === 'accept'
         ? 'accepted'

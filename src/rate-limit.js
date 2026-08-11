@@ -106,6 +106,9 @@ const rateLimits = {
     createRateLimiter({ name: 'support-ip', limit: 10, windowMs: MINUTE }),
     createRateLimiter({ name: 'support-actor', limit: 5, windowMs: MINUTE, key: actorKey }),
   ],
+  analytics: [
+    createRateLimiter({ name: 'analytics-ip', limit: 120, windowMs: MINUTE }),
+  ],
   merchantBooking: [
     createRateLimiter({ name: 'merchant-booking-ip', limit: 120, windowMs: MINUTE }),
     createRateLimiter({ name: 'merchant-booking-actor', limit: 60, windowMs: MINUTE, key: actorKey }),

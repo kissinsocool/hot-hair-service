@@ -385,6 +385,21 @@ const supportMessageSchema = new mongoose.Schema({
 
 supportMessageSchema.index({ createdAt: -1 });
 
+const analyticsEventSchema = new mongoose.Schema({
+  eventId: { type: String, required: true, unique: true },
+  name: { type: String, required: true, index: true },
+  anonymousId: { type: String, default: '' },
+  userId: { type: String, default: '', index: true },
+  salonId: { type: String, default: '', index: true },
+  serviceId: { type: String, default: '' },
+  bookingId: { type: String, default: '', index: true },
+  sourceBookingId: { type: String, default: '' },
+  source: { type: String, enum: ['client', 'server'], required: true },
+  createdAt: { type: Date, default: Date.now },
+}, { id: false });
+
+analyticsEventSchema.index({ name: 1, createdAt: -1 });
+
 module.exports = {
   Booking: mongoose.model('Booking', bookingSchema),
   BookingMessage: mongoose.model('BookingMessage', bookingMessageSchema),
@@ -400,4 +415,5 @@ module.exports = {
   CouponCampaign: mongoose.model('CouponCampaign', couponCampaignSchema),
   UserCoupon: mongoose.model('UserCoupon', userCouponSchema),
   SupportMessage: mongoose.model('SupportMessage', supportMessageSchema),
+  AnalyticsEvent: mongoose.model('AnalyticsEvent', analyticsEventSchema),
 };

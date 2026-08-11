@@ -39,6 +39,7 @@ const {
   CouponCampaign,
   UserCoupon,
   SupportMessage,
+  AnalyticsEvent,
 } = require('./src/models');
 const {
   campaignPayload,
@@ -1071,6 +1072,8 @@ const routeContext = {
   setPaginationHeaders,
   privateImageUrl,
   SupportMessage,
+  AnalyticsEvent,
+  activeSessionQuery,
   publicImageUrl,
   stripSensitiveSalonFields,
   toFiniteNumber,
@@ -1089,6 +1092,7 @@ const routeContext = {
 
 require('./src/routes/public')(app, routeContext);
 require('./src/routes/auth-entry')(app, routeContext);
+require('./src/routes/analytics')(app, routeContext);
 app.use([
   '/api/support-messages',
   '/api/uploads',
@@ -1141,6 +1145,7 @@ const startServer = async () => {
     Salon.createIndexes(),
     CouponCampaign.createIndexes(),
     UserCoupon.createIndexes(),
+    AnalyticsEvent.createIndexes(),
   ]);
   console.log('MongoDB connected');
 
