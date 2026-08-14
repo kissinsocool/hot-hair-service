@@ -14,7 +14,10 @@ object_uri() {
   printf 'oss://%s/.well-known/acme-challenge/%s' "$bucket" "$CERTBOT_TOKEN"
 }
 
-case "${1:-}" in
+action=${1:-}
+[[ -n "$action" || -z "${RENEWED_LINEAGE:-}" ]] || action=deploy
+
+case "$action" in
   auth)
     : "${CERTBOT_VALIDATION:?}"
     tmp=$(mktemp)
