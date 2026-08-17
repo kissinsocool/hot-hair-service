@@ -11,6 +11,7 @@ const legacyYuanToFen = value => bookingDomain.priceFen(String(value ?? 0));
 const serviceForMigration = (service = {}, fallbackId = '') => ({
   ...salonDomain.serviceForStorage({
     ...service,
+    // Migration-only adapter: convert pre-priceFen data, but never persist price again.
     priceFen: Number.isSafeInteger(service.priceFen)
       ? service.priceFen
       : legacyYuanToFen(service.price),
@@ -18,7 +19,6 @@ const serviceForMigration = (service = {}, fallbackId = '') => ({
       ? service.durationMinutes
       : bookingDomain.durationMinutes(service.duration),
   }, fallbackId),
-  ...(service.price === undefined ? {} : { price: service.price }),
   ...(service.duration === undefined ? {} : { duration: service.duration }),
 });
 

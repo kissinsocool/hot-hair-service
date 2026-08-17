@@ -630,22 +630,13 @@ function validateSalonContent(payload = {}, limits) {
     if (
       String(service?.name || '').length > 100
       || String(service?.note || '').length > 500
-      || String(service?.price || '').length > 50
       || String(service?.duration || '').length > 50
       || String(service?.imageUrl || '').length > 2048
     ) {
       return 'service field is too long';
     }
-    if (service?.priceFen !== undefined
-      && (!Number.isSafeInteger(service.priceFen) || service.priceFen < 0)) {
+    if (!Number.isSafeInteger(service?.priceFen) || service.priceFen < 0) {
       return 'service priceFen must be a non-negative integer';
-    }
-    if (service?.priceFen === undefined) {
-      const legacyPriceText = String(service?.price ?? '').replace(/[^\d.-]/g, '');
-      const legacyPrice = Number(legacyPriceText);
-      if (!legacyPriceText || !Number.isFinite(legacyPrice) || legacyPrice < 0) {
-        return 'service price is invalid';
-      }
     }
     const durationMinutes = service?.durationMinutes === undefined
       ? bookingService.durationMinutes(service?.duration)

@@ -180,12 +180,13 @@ test('booking domain stores fen, minutes and an explicit Shanghai timezone', () 
   const service = salonDomain.serviceForStorage({
     id: 'service-1',
     name: '剪发',
-    price: '¥88.50',
-    duration: '45分钟',
+    priceFen: 8850,
+    durationMinutes: 45,
   });
   assert.equal(service.priceFen, 8850);
   assert.equal(service.durationMinutes, 45);
   assert.equal(Object.hasOwn(service, 'price'), false);
+  assert.equal(Object.hasOwn(salonDomain.servicePayload(service), 'price'), false);
   assert.equal(bookingDomain.slotStartTime('2030-01-02', '10:30'), '2030-01-02T10:30:00+08:00');
   assert.equal(
     bookingDomain.parseBookingTime('2030-01-02T10:30:00').toISOString(),
@@ -205,7 +206,7 @@ test('booking domain stores fen, minutes and an explicit Shanghai timezone', () 
   assert.equal(normalized.timeZone, 'Asia/Shanghai');
 });
 
-test('booking migration derives canonical fields without deleting legacy data', () => {
+test('booking migration derives canonical booking fields and stores service priceFen only', () => {
   assert.deepEqual(bookingPatch({
     servicePrice: '¥68',
     serviceDuration: '30分钟',
@@ -233,7 +234,6 @@ test('booking migration derives canonical fields without deleting legacy data', 
     durationMinutes: 30,
     note: '',
     imageUrl: '',
-    price: '¥68',
     duration: '30分钟',
   });
 });
@@ -244,6 +244,8 @@ test('service, review, complaint and pending content use child schemas instead o
   assert.ok(Booking.schema.path('review').schema);
   assert.ok(Booking.schema.path('complaint').schema);
   assert.equal(Salon.schema.path('services').schema.path('priceFen').instance, 'Number');
+  assert.equal(Salon.schema.path('services').schema.path('priceFen').isRequired, true);
+  assert.equal(Salon.schema.path('services').schema.path('price'), undefined);
   assert.equal(Booking.schema.path('serviceDurationMinutes').instance, 'Number');
 
   const invalid = new Booking({
@@ -1286,7 +1288,7 @@ test('content review only covers merchant text and uploaded images', () => {
     phone: '13800000000',
     openingHours: '09:00 - 21:00',
     closedDates: ['2026-07-20'],
-    services: [{ id: 'S1', price: '¥800', duration: '60分钟', tags: ['剪发'] }],
+    services: [{ id: 'S1', priceFen: 80000, duration: '60分钟', tags: ['剪发'] }],
     staff: [{ id: 'P1', role: '店长', experience: '10年', extraServiceFee: 200 }],
   }), false);
   assert.equal(hasReviewableContentChanges(current, { address: '新地址' }), true);
@@ -2262,8 +2264,8 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
             services: [{
               id: 'service-1',
               name: 'Cut',
-              price: '¥120',
-              duration: '60分钟',
+              priceFen: 12000,
+              durationMinutes: 60,
             }],
           };
         },

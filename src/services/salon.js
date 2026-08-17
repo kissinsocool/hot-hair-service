@@ -65,9 +65,7 @@ const serviceForStorage = (service = {}, fallbackId = '') => ({
   id: String(service.id || fallbackId).trim(),
   name: String(service.name || '').trim(),
   tags: normalizeServiceTags(service.tags),
-  priceFen: Number.isSafeInteger(service.priceFen)
-    ? service.priceFen
-    : booking.priceFen(String(service.price || 0)),
+  priceFen: service.priceFen,
   durationMinutes: Number.isSafeInteger(service.durationMinutes)
     ? service.durationMinutes
     : booking.durationMinutes(service.duration),
@@ -77,11 +75,9 @@ const serviceForStorage = (service = {}, fallbackId = '') => ({
 
 const servicePayload = (service = {}) => {
   const normalized = serviceForStorage(service, service.id);
-  const amount = normalized.priceFen / 100;
   return {
     ...normalized,
     imageUrl: publicImageUrl(normalized.imageUrl),
-    price: `¥${Number.isInteger(amount) ? amount : amount.toFixed(2)}`,
     duration: `${normalized.durationMinutes}分钟`,
   };
 };

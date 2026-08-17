@@ -24,12 +24,11 @@ const serviceSchema = new mongoose.Schema({
   id: { type: String, required: true },
   name: { type: String, required: true },
   tags: [String],
-  priceFen: integer(),
+  priceFen: { ...integer(), required: true },
   durationMinutes: integer(1),
   note: { type: String, default: '' },
   imageUrl: { type: String, default: '' },
-  // Transitional read fields; new writes use priceFen and durationMinutes only.
-  price: String,
+  // Transitional read field; new writes use durationMinutes only.
   duration: String,
 }, { _id: false });
 

@@ -468,9 +468,7 @@ module.exports = (app, ctx) => {
     }
   
     const now = new Date().toISOString();
-    const servicePriceFen = Number.isSafeInteger(service.priceFen)
-      ? service.priceFen
-      : bookingService.priceFen(String(service.price || 0));
+    const servicePriceFen = service.priceFen;
     const serviceDurationMinutes = Number.isSafeInteger(service.durationMinutes)
       ? service.durationMinutes
       : bookingService.durationMinutes(service.duration);
