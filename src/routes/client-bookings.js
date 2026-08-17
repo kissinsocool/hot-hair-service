@@ -469,14 +469,10 @@ module.exports = (app, ctx) => {
   
     const now = new Date().toISOString();
     const servicePriceFen = service.priceFen;
-    const serviceDurationMinutes = Number.isSafeInteger(service.durationMinutes)
-      ? service.durationMinutes
-      : bookingService.durationMinutes(service.duration);
+    const serviceDurationMinutes = service.durationMinutes;
     const staffExtraServiceFeeFen = isNoPreference
       ? 0
-      : Number.isSafeInteger(staffMember.extraServiceFeeFen)
-        ? staffMember.extraServiceFeeFen
-        : bookingService.priceFen(String(staffMember.extraServiceFee || 0));
+      : staffMember.extraServiceFeeFen;
     const originalAmountFen = servicePriceFen + staffExtraServiceFeeFen;
     let bookingId = '';
     for (let attempts = 0; attempts < 10 && !bookingId; attempts += 1) {

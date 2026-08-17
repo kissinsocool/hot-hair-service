@@ -25,11 +25,9 @@ const serviceSchema = new mongoose.Schema({
   name: { type: String, required: true },
   tags: [String],
   priceFen: { ...integer(), required: true },
-  durationMinutes: integer(1),
+  durationMinutes: { ...integer(1), required: true },
   note: { type: String, default: '' },
   imageUrl: { type: String, default: '' },
-  // Transitional read field; new writes use durationMinutes only.
-  duration: String,
 }, { _id: false });
 
 const merchantReplySchema = new mongoose.Schema({
@@ -95,7 +93,7 @@ const staffDraftSchema = new mongoose.Schema({
   name: String,
   role: String,
   experience: String,
-  extraServiceFeeFen: integer(),
+  extraServiceFeeFen: { ...integer(), required: true, default: 0 },
   imageUrl: String,
   bio: String,
   unavailableSlots: [String],
@@ -268,9 +266,7 @@ const staffProfileSchema = new mongoose.Schema({
   name: String,
   role: String,
   experience: String,
-  extraServiceFeeFen: integer(),
-  // Migration-only legacy field.
-  extraServiceFee: { type: Number, default: 0 },
+  extraServiceFeeFen: { ...integer(), required: true, default: 0 },
   imageUrl: String,
   bio: String,
   unavailableSlots: [String],

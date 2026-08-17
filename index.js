@@ -707,7 +707,7 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
       { $set: {
         role: profile.role || '',
         experience: profile.experience || '',
-        extraServiceFeeFen: salonDomain.staffExtraServiceFeeFen(profile),
+        extraServiceFeeFen: profile.extraServiceFeeFen,
         unavailableSlots: normalizeUnavailableSlots(profile.unavailableSlots),
       } },
     )));
@@ -762,7 +762,7 @@ const buildContentDraft = async (salon, payload) => {
           name: profile.name,
           role: profile.role || '',
           experience: profile.experience || '',
-          extraServiceFeeFen: salonDomain.staffExtraServiceFeeFen(profile),
+          extraServiceFeeFen: profile.extraServiceFeeFen,
           imageUrl: profile.imageUrl || '',
           bio: profile.bio || '',
           unavailableSlots: normalizeUnavailableSlots(profile.unavailableSlots),

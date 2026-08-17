@@ -630,7 +630,6 @@ function validateSalonContent(payload = {}, limits) {
     if (
       String(service?.name || '').length > 100
       || String(service?.note || '').length > 500
-      || String(service?.duration || '').length > 50
       || String(service?.imageUrl || '').length > 2048
     ) {
       return 'service field is too long';
@@ -638,10 +637,7 @@ function validateSalonContent(payload = {}, limits) {
     if (!Number.isSafeInteger(service?.priceFen) || service.priceFen < 0) {
       return 'service priceFen must be a non-negative integer';
     }
-    const durationMinutes = service?.durationMinutes === undefined
-      ? bookingService.durationMinutes(service?.duration)
-      : service.durationMinutes;
-    if (!Number.isSafeInteger(durationMinutes) || durationMinutes <= 0) {
+    if (!Number.isSafeInteger(service?.durationMinutes) || service.durationMinutes <= 0) {
       return 'service durationMinutes must be a positive integer';
     }
     if (Array.isArray(service?.tags) && service.tags.length > 6) return 'service tags cannot exceed 6 items';
@@ -657,8 +653,7 @@ function validateSalonContent(payload = {}, limits) {
     ) {
       return 'staff field is too long';
     }
-    if (profile?.extraServiceFeeFen !== undefined
-      && (!Number.isSafeInteger(profile.extraServiceFeeFen) || profile.extraServiceFeeFen < 0)) {
+    if (!Number.isSafeInteger(profile?.extraServiceFeeFen) || profile.extraServiceFeeFen < 0) {
       return 'staff extraServiceFeeFen must be a non-negative integer';
     }
     if (Array.isArray(profile?.unavailableSlots) && profile.unavailableSlots.length > limits.unavailableSlots) {

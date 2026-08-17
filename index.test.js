@@ -186,7 +186,15 @@ test('booking domain stores fen, minutes and an explicit Shanghai timezone', () 
   assert.equal(service.priceFen, 8850);
   assert.equal(service.durationMinutes, 45);
   assert.equal(Object.hasOwn(service, 'price'), false);
-  assert.equal(Object.hasOwn(salonDomain.servicePayload(service), 'price'), false);
+  const servicePayload = salonDomain.servicePayload(service);
+  assert.equal(Object.hasOwn(servicePayload, 'price'), false);
+  assert.equal(Object.hasOwn(servicePayload, 'duration'), false);
+  const staffPayload = salonDomain.staffPayload({
+    id: 'staff-1',
+    extraServiceFeeFen: 20000,
+  });
+  assert.equal(staffPayload.extraServiceFeeFen, 20000);
+  assert.equal(Object.hasOwn(staffPayload, 'extraServiceFee'), false);
   assert.equal(bookingDomain.slotStartTime('2030-01-02', '10:30'), '2030-01-02T10:30:00+08:00');
   assert.equal(
     bookingDomain.parseBookingTime('2030-01-02T10:30:00').toISOString(),
@@ -206,7 +214,7 @@ test('booking domain stores fen, minutes and an explicit Shanghai timezone', () 
   assert.equal(normalized.timeZone, 'Asia/Shanghai');
 });
 
-test('booking migration derives canonical booking fields and stores service priceFen only', () => {
+test('booking migration derives canonical booking fields', () => {
   assert.deepEqual(bookingPatch({
     servicePrice: '¥68',
     serviceDuration: '30分钟',
@@ -222,19 +230,18 @@ test('booking migration derives canonical booking fields and stores service pric
     timeZone: 'Asia/Shanghai',
   });
   assert.deepEqual(serviceForMigration({
-    id: 'service-legacy',
-    name: '旧服务',
+    id: 'service-1',
+    name: '剪发',
     price: '¥68',
-    duration: '30分钟',
+    durationMinutes: 30,
   }), {
-    id: 'service-legacy',
-    name: '旧服务',
+    id: 'service-1',
+    name: '剪发',
     tags: [],
     priceFen: 6800,
     durationMinutes: 30,
     note: '',
     imageUrl: '',
-    duration: '30分钟',
   });
 });
 
@@ -246,6 +253,10 @@ test('service, review, complaint and pending content use child schemas instead o
   assert.equal(Salon.schema.path('services').schema.path('priceFen').instance, 'Number');
   assert.equal(Salon.schema.path('services').schema.path('priceFen').isRequired, true);
   assert.equal(Salon.schema.path('services').schema.path('price'), undefined);
+  assert.equal(Salon.schema.path('services').schema.path('duration'), undefined);
+  assert.equal(Salon.schema.path('services').schema.path('durationMinutes').isRequired, true);
+  assert.equal(StaffProfile.schema.path('extraServiceFee'), undefined);
+  assert.equal(StaffProfile.schema.path('extraServiceFeeFen').isRequired, true);
   assert.equal(Booking.schema.path('serviceDurationMinutes').instance, 'Number');
 
   const invalid = new Booking({
@@ -1288,8 +1299,8 @@ test('content review only covers merchant text and uploaded images', () => {
     phone: '13800000000',
     openingHours: '09:00 - 21:00',
     closedDates: ['2026-07-20'],
-    services: [{ id: 'S1', priceFen: 80000, duration: '60分钟', tags: ['剪发'] }],
-    staff: [{ id: 'P1', role: '店长', experience: '10年', extraServiceFee: 200 }],
+    services: [{ id: 'S1', priceFen: 80000, durationMinutes: 60, tags: ['剪发'] }],
+    staff: [{ id: 'P1', role: '店长', experience: '10年', extraServiceFeeFen: 20000 }],
   }), false);
   assert.equal(hasReviewableContentChanges(current, { address: '新地址' }), true);
   assert.equal(hasReviewableContentChanges(current, { description: '新介绍' }), true);
@@ -2252,7 +2263,7 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
     normalizeUserId: value => value,
     userIdAliases: value => [value],
     getStaffById() {
-      return { async lean() { return { id: 'staff-1', name: 'Stylist', extraServiceFee: 0 }; } };
+      return { async lean() { return { id: 'staff-1', name: 'Stylist', extraServiceFeeFen: 0 }; } };
     },
     getSalonByStaffId() {
       return {

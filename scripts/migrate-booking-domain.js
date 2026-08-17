@@ -8,19 +8,12 @@ const salonDomain = require('../src/services/salon');
 const BATCH_SIZE = 200;
 const legacyYuanToFen = value => bookingDomain.priceFen(String(value ?? 0));
 
-const serviceForMigration = (service = {}, fallbackId = '') => ({
-  ...salonDomain.serviceForStorage({
-    ...service,
-    // Migration-only adapter: convert pre-priceFen data, but never persist price again.
-    priceFen: Number.isSafeInteger(service.priceFen)
-      ? service.priceFen
-      : legacyYuanToFen(service.price),
-    durationMinutes: Number.isSafeInteger(service.durationMinutes)
-      ? service.durationMinutes
-      : bookingDomain.durationMinutes(service.duration),
-  }, fallbackId),
-  ...(service.duration === undefined ? {} : { duration: service.duration }),
-});
+const serviceForMigration = (service = {}, fallbackId = '') => salonDomain.serviceForStorage({
+  ...service,
+  priceFen: Number.isSafeInteger(service.priceFen)
+    ? service.priceFen
+    : legacyYuanToFen(service.price),
+}, fallbackId);
 
 const bookingPatch = (document) => {
   const servicePriceFen = Number.isSafeInteger(document.servicePriceFen)
@@ -99,10 +92,14 @@ const migrate = async () => {
         }
         if (Array.isArray(pendingContent.staff)) {
           pendingContent.staff = pendingContent.staff.map(profile => ({
-            ...profile,
-            extraServiceFeeFen: Number.isSafeInteger(profile.extraServiceFeeFen)
-              ? profile.extraServiceFeeFen
-              : legacyYuanToFen(profile.extraServiceFee),
+            id: profile.id,
+            name: profile.name,
+            role: profile.role,
+            experience: profile.experience,
+            extraServiceFeeFen: profile.extraServiceFeeFen,
+            imageUrl: profile.imageUrl,
+            bio: profile.bio,
+            unavailableSlots: profile.unavailableSlots,
           }));
         }
         set.pendingContent = pendingContent;
@@ -110,12 +107,8 @@ const migrate = async () => {
       return Object.keys(set).length ? { $set: set } : null;
     });
 
-    const staff = await migrateCollection(StaffProfile.collection, document => ({
-      $set: {
-        extraServiceFeeFen: Number.isSafeInteger(document.extraServiceFeeFen)
-          ? document.extraServiceFeeFen
-          : legacyYuanToFen(document.extraServiceFee),
-      },
+    const staff = await migrateCollection(StaffProfile.collection, () => ({
+      $unset: { extraServiceFee: '' },
     }));
 
     const bookings = await migrateCollection(Booking.collection, document => ({

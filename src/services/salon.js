@@ -1,4 +1,3 @@
-const booking = require('./booking');
 const { publicImageUrl } = require('../images');
 
 const PUBLIC_STAFF_REVIEWS_LIMIT = 50;
@@ -66,9 +65,7 @@ const serviceForStorage = (service = {}, fallbackId = '') => ({
   name: String(service.name || '').trim(),
   tags: normalizeServiceTags(service.tags),
   priceFen: service.priceFen,
-  durationMinutes: Number.isSafeInteger(service.durationMinutes)
-    ? service.durationMinutes
-    : booking.durationMinutes(service.duration),
+  durationMinutes: service.durationMinutes,
   note: String(service.note || ''),
   imageUrl: String(service.imageUrl || ''),
 });
@@ -78,19 +75,12 @@ const servicePayload = (service = {}) => {
   return {
     ...normalized,
     imageUrl: publicImageUrl(normalized.imageUrl),
-    duration: `${normalized.durationMinutes}分钟`,
   };
 };
-
-const staffExtraServiceFeeFen = (profile = {}) => Number.isSafeInteger(profile.extraServiceFeeFen)
-  ? profile.extraServiceFeeFen
-  : booking.priceFen(String(profile.extraServiceFee || 0));
 
 const staffPayload = (profile = {}) => ({
   ...profile,
   imageUrl: publicImageUrl(profile.imageUrl || ''),
-  extraServiceFeeFen: staffExtraServiceFeeFen(profile),
-  extraServiceFee: staffExtraServiceFeeFen(profile) / 100,
 });
 
 const calculateStaffRating = (reviews = []) => {
@@ -198,7 +188,6 @@ module.exports = {
   publicReviewFromBooking,
   serviceForStorage,
   servicePayload,
-  staffExtraServiceFeeFen,
   staffPayload,
   stripSensitiveSalonFields,
   toFiniteNumber,
