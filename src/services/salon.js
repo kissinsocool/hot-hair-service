@@ -83,19 +83,29 @@ const staffPayload = (profile = {}) => ({
   imageUrl: publicImageUrl(profile.imageUrl || ''),
 });
 
-const calculateStaffRating = (reviews = []) => {
-  if (!reviews.length) return 5;
-  const total = reviews.reduce((sum, review) => sum + Number(review.rating || 0), 0);
-  return Number((total / reviews.length).toFixed(1));
+const ratingSummary = (reviewCount, ratingTotal) => {
+  const count = Number(reviewCount) || 0;
+  const total = Number(ratingTotal) || 0;
+  return {
+    rating: count ? Number((total / count).toFixed(1)) : null,
+    reviewCount: count,
+    ratingTotal: total,
+  };
 };
 
-const buildStaffPayload = (person, reviews = []) => {
+const ratingSummaryFromReviews = (reviews = []) => ratingSummary(
+  reviews.length,
+  reviews.reduce((sum, review) => sum + Number(review.rating || 0), 0),
+);
+
+const buildStaffPayload = (person, reviews = [], summary = ratingSummaryFromReviews(reviews)) => {
   const { reviews: _legacyReviews, rating: _legacyRating, ...profile } = person || {};
   const publicReviews = reviews.slice(0, PUBLIC_STAFF_REVIEWS_LIMIT);
   return {
     ...staffPayload(profile),
     reviews: publicReviews,
-    rating: calculateStaffRating(publicReviews),
+    rating: summary.rating,
+    reviewCount: summary.reviewCount,
   };
 };
 
@@ -185,6 +195,8 @@ module.exports = {
   normalizeSalonTags,
   normalizeServiceTags,
   normalizeDocument,
+  ratingSummary,
+  ratingSummaryFromReviews,
   publicReviewFromBooking,
   serviceForStorage,
   servicePayload,

@@ -5,6 +5,7 @@ const test = require('node:test');
 const {
   activeSessionQuery,
   acceptedBookingAtTimeQuery,
+  addApprovedSalonRatings,
   applyDirectSalonContent,
   buildContentDraft,
   buildGeoLocation,
@@ -23,6 +24,7 @@ const {
   getNearbySalons,
   generateSlotsForStaffAndDate,
   getApprovedReviewsByStaffIds,
+  getApprovedRatingSummariesByStaffIds,
   getCoordinates,
   hashPassword,
   hasReviewableContentChanges,
@@ -310,6 +312,58 @@ test('public staff payloads use supplied booking reviews and ignore legacy profi
   const payload = buildStaffPayload({ id: 'staff-1', reviews: [{ rating: 1 }] }, reviews);
   assert.equal(payload.reviews.length, 50);
   assert.equal(payload.rating, 5);
+  assert.equal(payload.reviewCount, 205);
+});
+
+test('public staff payloads do not invent a rating when there are no approved reviews', () => {
+  const payload = buildStaffPayload({ id: 'staff-without-reviews' }, []);
+  assert.equal(payload.rating, null);
+  assert.equal(payload.reviewCount, 0);
+});
+
+test('rating summaries use every approved review and group them by staff', async () => {
+  const originalAggregate = Booking.aggregate;
+  let pipeline;
+  Booking.aggregate = async (value) => {
+    pipeline = value;
+    return [
+      { _id: 'staff-1', reviewCount: 2, ratingTotal: 9 },
+      { _id: 'staff-2', reviewCount: 1, ratingTotal: 3 },
+    ];
+  };
+
+  try {
+    const summaries = await getApprovedRatingSummariesByStaffIds(['staff-1', 'staff-2', 'staff-1']);
+    assert.deepEqual(pipeline[0], {
+      $match: {
+        staffId: { $in: ['staff-1', 'staff-2'] },
+        'review.reviewStatus': 'approved',
+        'review.rating': { $gte: 1, $lte: 5 },
+      },
+    });
+    assert.deepEqual(summaries, {
+      'staff-1': { rating: 4.5, reviewCount: 2, ratingTotal: 9 },
+      'staff-2': { rating: 3, reviewCount: 1, ratingTotal: 3 },
+    });
+  } finally {
+    Booking.aggregate = originalAggregate;
+  }
+});
+
+test('salon rating summaries expose an explicit unrated state', async () => {
+  const originalAggregate = Booking.aggregate;
+  Booking.aggregate = async () => [];
+
+  try {
+    const [salon] = await addApprovedSalonRatings([{
+      id: 'salon-without-reviews',
+      staffIds: ['staff-without-reviews'],
+    }]);
+    assert.equal(salon.rating, null);
+    assert.equal(salon.reviewCount, 0);
+  } finally {
+    Booking.aggregate = originalAggregate;
+  }
 });
 
 test('public reviews include the current approved customer avatar', async () => {
@@ -647,6 +701,50 @@ test('public coupon campaign exposes only the active promotion image', async () 
     enabled: true,
     promotionImageUrl: 'https://example.com/new-user-gift.jpg',
   });
+});
+
+test('current mini-program salon-list request returns an explicit unrated contract', async () => {
+  const routes = new Map();
+  const app = {
+    get(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+    post() {},
+    put() {},
+    patch() {},
+    delete() {},
+    use() {},
+  };
+  const originalAggregate = Booking.aggregate;
+  Booking.aggregate = async () => [];
+  registerPublicRoutes(app, {
+    rateLimits: { publicRead: [] },
+    getCoordinates,
+    normalizeRadiusKm: (_value, fallback) => fallback,
+    normalizeLimit: (value, fallback = 50) => Number(value) || fallback,
+    async getNearbySalons() {
+      return [{
+        id: 'salon-without-reviews',
+        name: '零评价店铺',
+        staffIds: ['staff-without-reviews'],
+      }];
+    },
+    addApprovedSalonRatings,
+    stripSensitiveSalonFields,
+    existingSalonImages: async () => [],
+    salonCoverImage: async () => '',
+  });
+
+  try {
+    let payload;
+    await routes.get('/api/salons')(
+      { query: { latitude: '39.9042', longitude: '116.4074' } },
+      { set() {}, json(value) { payload = value; } },
+    );
+    assert.equal(payload[0].rating, null);
+    assert.equal(payload[0].reviewCount, 0);
+    assert.equal(Object.hasOwn(payload[0], 'staffIds'), false);
+  } finally {
+    Booking.aggregate = originalAggregate;
+  }
 });
 
 test('signup transaction saves a client with its MongoDB session', async () => {
@@ -992,6 +1090,7 @@ test('nearby salon expansion performs one geospatial query', async () => {
 test('favorite reads return ids or card summaries without building salon details', async () => {
   const originalFavoriteFind = FavoriteSalon.find;
   const originalSalonFind = Salon.find;
+  const originalBookingAggregate = Booking.aggregate;
   let salonQuery;
   let salonProjection;
   FavoriteSalon.find = () => {
@@ -1006,26 +1105,29 @@ test('favorite reads return ids or card summaries without building salon details
     salonQuery = query;
     return {
       select(value) { salonProjection = value; return this; },
-      async lean() { return [{ id: 'salon-1', name: '最新店名', description: '摘要', rating: 4.9, image: '' }]; },
+      async lean() { return [{ id: 'salon-1', name: '最新店名', description: '摘要', staffIds: ['staff-1'], image: '' }]; },
     };
   };
+  Booking.aggregate = async () => [{ _id: 'staff-1', reviewCount: 2, ratingTotal: 9 }];
 
   try {
     assert.deepEqual(await readFavoriteSalonIds('user-1'), ['salon-1']);
     const favorites = await readFavoriteSalons('user-1');
     assert.equal(FavoriteSalon.schema.path('salon'), undefined);
     assert.deepEqual(salonQuery, { id: { $in: ['salon-1'] }, publishStatus: 'online' });
-    assert.equal(salonProjection, 'id name description rating image images promoImages');
+    assert.equal(salonProjection, 'id name description staffIds image images promoImages');
     assert.deepEqual(favorites, [{
       id: 'salon-1',
       name: '最新店名',
       description: '摘要',
-      rating: 4.9,
+      rating: 4.5,
+      reviewCount: 2,
       image: '',
     }]);
   } finally {
     FavoriteSalon.find = originalFavoriteFind;
     Salon.find = originalSalonFind;
+    Booking.aggregate = originalBookingAggregate;
   }
 });
 

@@ -18,6 +18,8 @@ module.exports = (app, ctx) => {
     getSalonByStaffId,
     getStaffMapByIds,
     getApprovedReviewsByStaffIds,
+    getApprovedRatingSummariesByStaffIds,
+    addApprovedSalonRatings,
     buildStaffPayload,
     generateSlotsForNoPreferenceAndDate,
     generateSlotsForStaffAndDate,
@@ -50,7 +52,9 @@ module.exports = (app, ctx) => {
     const limit = normalizeLimit(req.query.limit);
     const minResults = normalizeLimit(req.query.minResults, 10, limit);
     const maxRadiusKm = normalizeRadiusKm(req.query.maxRadiusKm, 50, 100, radiusKm);
-    const salonList = await getNearbySalons(userLocation, radiusKm, limit, minResults, maxRadiusKm);
+    const salonList = await addApprovedSalonRatings(
+      await getNearbySalons(userLocation, radiusKm, limit, minResults, maxRadiusKm),
+    );
     res.json(await Promise.all(salonList.map(async (s) => {
       const { fullDescription, openingHours, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(s);
       const images = await existingSalonImages(s);
@@ -69,11 +73,12 @@ module.exports = (app, ctx) => {
     const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const salons = await Salon
       .find({ publishStatus: 'online', name: { $regex: escaped, $options: 'i' } })
-      .select('id name address location geoLocation rating image images promoImages description tags publishStatus')
+      .select('id name address location geoLocation staffIds image images promoImages description tags publishStatus')
       .limit(8)
       .lean();
     const userLocation = getCoordinates(req.query);
-    res.json(await Promise.all(salons.map(async (salon) => {
+    const ratedSalons = await addApprovedSalonRatings(salons);
+    res.json(await Promise.all(ratedSalons.map(async (salon) => {
       const coordinates = getCoordinates(salon.location || salon.geoLocation);
       const distanceKm = userLocation && coordinates
         ? Number(calculateDistanceKm(userLocation, coordinates).toFixed(2))
@@ -104,20 +109,25 @@ module.exports = (app, ctx) => {
     if (!person) return res.status(404).json({ message: 'Staff not found' });
     const salon = await getSalonByStaffId(req.params.id).lean();
     const staffMap = salon ? await getStaffMapByIds(salon.staffIds) : {};
-    const [reviews, salonReviews] = await Promise.all([
+    const [reviews, salonReviews, ratingSummaries] = await Promise.all([
       getApprovedReviewsByStaffIds([req.params.id], 50),
       salon ? getApprovedReviewsByStaffIds(salon.staffIds, 150) : [],
+      getApprovedRatingSummariesByStaffIds(salon?.staffIds || [req.params.id]),
     ]);
     const reviewsByStaff = salonReviews.reduce((grouped, review) => {
       (grouped[review.staffId] ||= []).push(review);
       return grouped;
     }, {});
     res.json({
-      ...buildStaffPayload(person, reviews),
+      ...buildStaffPayload(person, reviews, ratingSummaries[req.params.id]),
       salonId: salon?.id || '',
       salonServices: (salon?.services || []).map(servicePayload),
       salonStaff: salon ? salon.staffIds.map(id => staffMap[id]).filter(Boolean)
-        .map(profile => buildStaffPayload(profile, reviewsByStaff[profile.id] || [])) : [],
+        .map(profile => buildStaffPayload(
+          profile,
+          reviewsByStaff[profile.id] || [],
+          ratingSummaries[profile.id],
+        )) : [],
       salonClosedDates: salon?.closedDates || [],
       salonAcceptsSameDayBooking: salon?.acceptsSameDayBooking !== false,
     });

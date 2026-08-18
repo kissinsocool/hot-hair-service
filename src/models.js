@@ -229,7 +229,6 @@ const salonSchema = new mongoose.Schema({
     type: { type: String, enum: ['Point'] },
     coordinates: [Number],
   },
-  rating: Number,
   image: String,
   images: [String],
   promoImages: [String],

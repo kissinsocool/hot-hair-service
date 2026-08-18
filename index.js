@@ -155,16 +155,19 @@ const stripSensitiveSalonFields = salonDomain.stripSensitiveSalonFields;
 const buildAdminMerchantPayload = async (user, salonDocument = {}) => {
   const salon = normalizeDocument(salonDocument);
   const staffMap = await getStaffMapByIds(salon.staffIds || []);
-  const reviews = await getApprovedReviewsByStaffIds(salon.staffIds || [], PUBLIC_SALON_REVIEWS_LIMIT);
+  const [reviews, ratingSummaries] = await Promise.all([
+    getApprovedReviewsByStaffIds(salon.staffIds || [], PUBLIC_SALON_REVIEWS_LIMIT),
+    getApprovedRatingSummariesByStaffIds(salon.staffIds || []),
+  ]);
   const reviewsByStaff = groupReviewsByStaff(reviews);
   const publicSalon = {
     ...stripSensitiveSalonFields(salon),
     staff: (salon.staffIds || []).map(id => staffMap[id]).filter(Boolean)
-      .map(person => buildStaffPayload(person, reviewsByStaff[person.id] || [])),
+      .map(person => buildStaffPayload(person, reviewsByStaff[person.id] || [], ratingSummaries[person.id])),
   };
   const salonPayload = salon.pendingContent ? { ...publicSalon, ...salon.pendingContent } : publicSalon;
   salonPayload.staff = (salonPayload.staff || [])
-    .map(person => buildStaffPayload(person, reviewsByStaff[person.id] || []));
+    .map(person => buildStaffPayload(person, reviewsByStaff[person.id] || [], ratingSummaries[person.id]));
   salonPayload.reviews = reviews;
   return {
     ...buildMerchantUserPayload(user),
@@ -581,6 +584,53 @@ const getApprovedReviewsByStaffIds = async (staffIds = [], limit = PUBLIC_SALON_
   ));
 };
 
+const getApprovedRatingSummariesByStaffIds = async (staffIds = []) => {
+  const ids = [...new Set(staffIds.map(String).filter(Boolean))];
+  if (!ids.length) return {};
+  const rows = await Booking.aggregate([
+    {
+      $match: {
+        staffId: { $in: ids },
+        'review.reviewStatus': 'approved',
+        'review.rating': { $gte: 1, $lte: 5 },
+      },
+    },
+    {
+      $group: {
+        _id: '$staffId',
+        reviewCount: { $sum: 1 },
+        ratingTotal: { $sum: '$review.rating' },
+      },
+    },
+  ]);
+  return Object.fromEntries(rows.map(row => [
+    String(row._id),
+    salonDomain.ratingSummary(row.reviewCount, row.ratingTotal),
+  ]));
+};
+
+const approvedSalonRatingSummary = (salon, summariesByStaffId) => {
+  const totals = (salon.staffIds || []).reduce((totals, staffId) => {
+    const summary = summariesByStaffId[String(staffId)];
+    if (summary) {
+      totals.reviewCount += summary.reviewCount;
+      totals.ratingTotal += summary.ratingTotal;
+    }
+    return totals;
+  }, { reviewCount: 0, ratingTotal: 0 });
+  return salonDomain.ratingSummary(totals.reviewCount, totals.ratingTotal);
+};
+
+const addApprovedSalonRatings = async (salons = []) => {
+  const summaries = await getApprovedRatingSummariesByStaffIds(
+    salons.flatMap(salon => salon.staffIds || []),
+  );
+  return salons.map((salon) => {
+    const { rating, reviewCount } = approvedSalonRatingSummary(salon, summaries);
+    return { ...salon, rating, reviewCount };
+  });
+};
+
 const groupReviewsByStaff = salonDomain.groupReviewsByStaff;
 const buildSalonImageList = salonDomain.buildSalonImageList;
 
@@ -601,13 +651,23 @@ const buildSalonDetail = async (salonDocument) => {
   const salon = normalizeDocument(salonDocument);
   const staffMap = await getStaffMapByIds(salon.staffIds);
   const staffList = salon.staffIds.map(id => staffMap[id]).filter(Boolean);
-  const reviews = await getApprovedReviewsByStaffIds(salon.staffIds, PUBLIC_SALON_REVIEWS_LIMIT);
+  const [reviews, ratingSummaries] = await Promise.all([
+    getApprovedReviewsByStaffIds(salon.staffIds, PUBLIC_SALON_REVIEWS_LIMIT),
+    getApprovedRatingSummariesByStaffIds(salon.staffIds),
+  ]);
   const reviewsByStaff = groupReviewsByStaff(reviews);
   const images = await existingSalonImages(salon);
-  const staff = staffList.map(person => buildStaffPayload(person, reviewsByStaff[person.id] || []));
+  const staff = staffList.map(person => buildStaffPayload(
+    person,
+    reviewsByStaff[person.id] || [],
+    ratingSummaries[person.id] || salonDomain.ratingSummary(0, 0),
+  ));
   const publicSalon = stripSensitiveSalonFields(salon);
+  const { rating, reviewCount } = approvedSalonRatingSummary(salon, ratingSummaries);
   return {
     ...publicSalon,
+    rating,
+    reviewCount,
     services: (publicSalon.services || []).map(salonDomain.servicePayload),
     image: await salonCoverImage(salon),
     images,
@@ -829,8 +889,13 @@ const buildMerchantSalonPayload = async (salonId = '1') => {
   };
   merged.services = (merged.services || []).map(salonDomain.servicePayload);
   const reviewsByStaff = groupReviewsByStaff(payload.reviews);
+  const liveStaff = Object.fromEntries((payload.staff || []).map(person => [person.id, person]));
   merged.staff = (merged.staff || [])
-    .map(person => buildStaffPayload(person, reviewsByStaff[person.id] || []));
+    .map((person) => {
+      const live = liveStaff[person.id];
+      const summary = live ? { rating: live.rating, reviewCount: live.reviewCount } : undefined;
+      return buildStaffPayload(person, reviewsByStaff[person.id] || [], summary);
+    });
   merged.reviews = payload.reviews;
   return merged;
 };
@@ -848,7 +913,6 @@ const ensureSalonForMerchant = async ({ salonId, displayName }) => {
     addressDetail: '',
     location: null,
     geoLocation: null,
-    rating: 4.8,
     image: '',
     images: [],
     promoImages: [],
@@ -885,8 +949,9 @@ const readFavoriteSalons = async (userId) => {
   const salons = await Salon.find({
     id: { $in: favoriteSalonIds },
     publishStatus: 'online',
-  }).select('id name description rating image images promoImages').lean();
-  const salonsById = new Map(salons.map(salon => [salon.id, salon]));
+  }).select('id name description staffIds image images promoImages').lean();
+  const ratedSalons = await addApprovedSalonRatings(salons);
+  const salonsById = new Map(ratedSalons.map(salon => [salon.id, salon]));
   return Promise.all(
     favoriteSalonIds
       .map(salonId => salonsById.get(salonId))
@@ -896,6 +961,7 @@ const readFavoriteSalons = async (userId) => {
         name: salon.name || '',
         description: salon.description || '',
         rating: salon.rating,
+        reviewCount: salon.reviewCount,
         image: await salonCoverImage(salon),
       })),
   );
@@ -1021,6 +1087,7 @@ const routeContext = {
   SlotOccupancy,
   broadcastBookingEvent,
   buildAdminMerchantPayload,
+  addApprovedSalonRatings,
   buildAdminUserPayload,
   buildAdPayload,
   buildClientUserPayload,
@@ -1054,6 +1121,7 @@ const routeContext = {
   generateSlotsForStaffAndDate,
   getNearbySalons,
   getApprovedReviewsByStaffIds,
+  getApprovedRatingSummariesByStaffIds,
   getCoordinates,
   getSalonByStaffId,
   getServiceById,
@@ -1199,6 +1267,7 @@ module.exports = {
   buildMerchantSalonPayload,
   buildPublicSalonDetail,
   buildStaffPayload,
+  addApprovedSalonRatings,
   clearPublicSalonDetailCache,
   buildMerchantBookingScope,
   campaignPayload,
@@ -1207,6 +1276,7 @@ module.exports = {
   couponPayload,
   couponStatus,
   getApprovedReviewsByStaffIds,
+  getApprovedRatingSummariesByStaffIds,
   getNearbySalons,
   getCoordinates,
   generateSlotsForStaffAndDate,
