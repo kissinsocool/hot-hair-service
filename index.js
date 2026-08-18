@@ -683,15 +683,29 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
   set('acceptsSameDayBooking', typeof payload.acceptsSameDayBooking === 'boolean' ? payload.acceptsSameDayBooking : undefined);
   set('closedDates', Array.isArray(payload.closedDates) ? normalizeClosedDates(payload.closedDates) : undefined);
   set('phone', typeof payload.phone === 'string' ? payload.phone : undefined);
+  if (payload.image === '') salon.image = '';
+  if (Array.isArray(payload.promoImages) || Array.isArray(payload.images)) {
+    const incoming = new Set((payload.promoImages ?? payload.images)
+      .map(image => String(image || '').trim())
+      .filter(Boolean));
+    const retained = buildSalonImageList(salon).filter(image => incoming.has(image));
+    salon.images = retained;
+    salon.promoImages = retained;
+  }
   if (Array.isArray(payload.services)) {
     const currentServices = new Map((salon.services || []).map(item => [String(item.id || ''), item]));
     salon.services = payload.services.flatMap((service, index) => {
       const id = String(service?.id || `s1-${Date.now()}-${index}`).trim();
       const previous = currentServices.get(id);
       if (!previous) return [];
+      const current = normalizeDocument(previous);
       return [salonDomain.serviceForStorage({
-        ...normalizeDocument(previous),
-        ...service,
+        ...current,
+        tags: service.tags ?? current.tags,
+        priceFen: service.priceFen ?? current.priceFen,
+        durationMinutes: service.durationMinutes ?? current.durationMinutes,
+        note: service.note === '' ? '' : current.note,
+        imageUrl: service.imageUrl === '' ? '' : current.imageUrl,
         id,
       })];
     });
@@ -708,14 +722,17 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
         role: profile.role || '',
         experience: profile.experience || '',
         extraServiceFeeFen: profile.extraServiceFeeFen,
+        ...(profile.bio === '' ? { bio: '' } : {}),
+        ...(profile.imageUrl === '' ? { imageUrl: '' } : {}),
         unavailableSlots: normalizeUnavailableSlots(profile.unavailableSlots),
       } },
     )));
   }
 };
 
-const buildContentDraft = async (salon, payload) => {
-  const draft = normalizeDocument(salon.pendingContent) || await buildSalonDetail(salon);
+const buildContentDraft = async (salon, payload, liveContent) => {
+  const base = normalizeDocument(salon.pendingContent) || liveContent || await buildSalonDetail(salon);
+  const draft = structuredClone(base);
   const set = (key, value) => {
     if (value !== undefined) draft[key] = value;
   };
@@ -1176,6 +1193,8 @@ if (require.main === module) {
 module.exports = {
   activeSessionQuery,
   acceptedBookingAtTimeQuery,
+  applyDirectSalonContent,
+  buildContentDraft,
   buildGeoLocation,
   buildMerchantSalonPayload,
   buildPublicSalonDetail,

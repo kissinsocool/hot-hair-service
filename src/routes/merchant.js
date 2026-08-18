@@ -251,13 +251,12 @@ module.exports = (app, ctx) => {
     const validationError = validateSalonContent(payload, INPUT_LIMITS);
     if (validationError) return res.status(400).json({ message: validationError });
 
-    const currentContent = salon.pendingContent || await buildSalonDetail(salon);
-    const requiresReview = Boolean(salon.pendingContent)
-      || hasReviewableContentChanges(currentContent, payload);
     await applyDirectSalonContent(salon, payload);
+    const liveContent = await buildSalonDetail(salon);
+    const draft = await buildContentDraft(salon, payload, liveContent);
+    const requiresReview = hasReviewableContentChanges(liveContent, draft);
 
     if (requiresReview) {
-      const draft = await buildContentDraft(salon, payload);
       if (typeof draft.name === 'string' && draft.name) {
         const existingSalon = await Salon.findOne({
           id: { $ne: salon.id },
@@ -271,6 +270,10 @@ module.exports = (app, ctx) => {
       salon.contentReviewStatus = 'pending';
       salon.contentRejectReason = '';
       salon.contentReviewedAt = null;
+    } else {
+      salon.pendingContent = undefined;
+      salon.contentReviewStatus = 'approved';
+      salon.contentRejectReason = '';
     }
     await salon.save();
     res.json(await buildMerchantSalonPayload(req.merchantUser.salonId || '1'));

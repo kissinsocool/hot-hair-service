@@ -5,6 +5,8 @@ const test = require('node:test');
 const {
   activeSessionQuery,
   acceptedBookingAtTimeQuery,
+  applyDirectSalonContent,
+  buildContentDraft,
   buildGeoLocation,
   buildMerchantSalonPayload,
   buildPublicSalonDetail,
@@ -1308,6 +1310,164 @@ test('content review only covers merchant text and uploaded images', () => {
     services: [{ id: 'S1', note: '新备注' }],
   }), true);
   assert.equal(hasReviewableContentChanges(current, { promoImages: ['new-cover.jpg'] }), true);
+});
+
+test('merchant deletions publish immediately while additions and edits stay in review', async () => {
+  const salon = new Salon({
+    id: 'salon-delete-content',
+    image: 'cover.jpg',
+    images: ['a.jpg', 'b.jpg'],
+    promoImages: ['a.jpg', 'b.jpg'],
+    services: [
+      { id: 'S1', name: '剪发', tags: ['剪发'], priceFen: 8000, durationMinutes: 30, note: '旧备注', imageUrl: 'old.jpg' },
+      { id: 'S2', name: '染发', tags: ['染发'], priceFen: 12000, durationMinutes: 60, note: '', imageUrl: 'dye.jpg' },
+    ],
+  });
+  const payload = {
+    promoImages: ['a.jpg', 'new.jpg'],
+    services: [{
+      id: 'S1',
+      name: '新名称',
+      tags: ['剪发'],
+      priceFen: 9000,
+      durationMinutes: 30,
+      note: '新备注',
+      imageUrl: '',
+    }],
+  };
+
+  await applyDirectSalonContent(salon, payload);
+  assert.deepEqual(salon.promoImages, ['a.jpg']);
+  assert.deepEqual(salon.images, ['a.jpg']);
+  assert.equal(salon.services.length, 1);
+  assert.equal(salon.services[0].name, '剪发');
+  assert.equal(salon.services[0].note, '旧备注');
+  assert.equal(salon.services[0].imageUrl, '');
+  assert.equal(salon.services[0].priceFen, 9000);
+
+  const liveContent = {
+    image: salon.image,
+    promoImages: [...salon.promoImages],
+    services: salon.services.map(service => service.toObject()),
+    staff: [],
+  };
+  const draft = await buildContentDraft(salon, payload, liveContent);
+  assert.equal(hasReviewableContentChanges(liveContent, draft), true);
+  assert.deepEqual(draft.promoImages, ['a.jpg', 'new.jpg']);
+  assert.equal(draft.services[0].name, '新名称');
+  assert.equal(draft.services[0].note, '新备注');
+
+  const deletionSalon = new Salon({
+    id: 'salon-delete-only',
+    images: ['only.jpg'],
+    promoImages: ['only.jpg'],
+    services: [{
+      id: 'S3',
+      name: '护理',
+      tags: ['护理'],
+      priceFen: 6000,
+      durationMinutes: 30,
+      note: '',
+      imageUrl: 'care.jpg',
+    }],
+  });
+  const deletionPayload = { promoImages: [], services: [] };
+  await applyDirectSalonContent(deletionSalon, deletionPayload);
+  const deletionLive = {
+    promoImages: [...deletionSalon.promoImages],
+    services: deletionSalon.services.map(service => service.toObject()),
+    staff: [],
+  };
+  const deletionDraft = await buildContentDraft(deletionSalon, deletionPayload, deletionLive);
+  assert.equal(hasReviewableContentChanges(deletionLive, deletionDraft), false);
+});
+
+test('merchant salon route clears review when the current client payload only removes pending content', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    delete() {},
+    use() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const salon = new Salon({
+    id: 'salon-delete-pending',
+    name: '门店',
+    address: '地址',
+    description: '介绍',
+    fullDescription: '详情',
+    image: 'cover.jpg',
+    images: ['approved.jpg'],
+    promoImages: ['approved.jpg'],
+    services: [],
+    staffIds: [],
+    contentReviewStatus: 'pending',
+    pendingContent: {
+      name: '门店',
+      address: '地址',
+      description: '介绍',
+      fullDescription: '详情',
+      image: 'cover.jpg',
+      images: ['approved.jpg', 'pending.jpg'],
+      promoImages: ['approved.jpg', 'pending.jpg'],
+      services: [],
+      staff: [],
+    },
+  });
+  salon.save = async () => salon;
+  const originalStaffFind = StaffProfile.find;
+  StaffProfile.find = () => ({ lean: async () => [] });
+
+  const livePayload = () => ({
+    name: salon.name,
+    address: salon.address,
+    description: salon.description,
+    fullDescription: salon.fullDescription,
+    image: salon.image,
+    images: [...salon.images],
+    promoImages: [...salon.promoImages],
+    openingHours: salon.openingHours,
+    acceptsSameDayBooking: salon.acceptsSameDayBooking,
+    closedDates: [...salon.closedDates],
+    phone: salon.phone,
+    services: salon.services.map(service => service.toObject()),
+    staff: [],
+  });
+  registerMerchantRoutes(app, {
+    Salon: { async findOne() { return salon; } },
+    applyDirectSalonContent,
+    buildContentDraft,
+    buildSalonDetail: async () => livePayload(),
+    hasReviewableContentChanges,
+    buildMerchantSalonPayload: async () => ({
+      ...livePayload(),
+      contentReviewStatus: salon.contentReviewStatus,
+    }),
+    INPUT_LIMITS,
+    rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
+  });
+
+  let response;
+  try {
+    await routes.get('/api/merchant/salon')(
+      {
+        merchantUser: { salonId: salon.id },
+        body: {
+          ...livePayload(),
+          images: ['approved.jpg'],
+          promoImages: ['approved.jpg'],
+        },
+      },
+      { status() { return this; }, json(value) { response = value; } },
+    );
+  } finally {
+    StaffProfile.find = originalStaffFind;
+  }
+
+  assert.equal(salon.pendingContent, undefined);
+  assert.equal(salon.contentReviewStatus, 'approved');
+  assert.deepEqual(response.promoImages, ['approved.jpg']);
 });
 
 test('merchant qualification submission stores all required direct-upload documents', async () => {
