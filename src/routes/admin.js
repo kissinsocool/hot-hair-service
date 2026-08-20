@@ -39,6 +39,7 @@ module.exports = (app, ctx) => {
     campaignPayload,
     validateCampaignInput,
     AnalyticsEvent,
+    requireQualificationForPublishing = false,
   } = ctx;
 
   const buildCampaignResponse = async (campaign) => {
@@ -367,7 +368,11 @@ module.exports = (app, ctx) => {
     if (!user) return res.status(404).json({ message: 'Merchant user not found' });
     const salon = await Salon.findOne({ id: user.salonId });
     if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
-    if (action === 'online' && salon.licenseStatus !== 'approved') {
+    if (
+      requireQualificationForPublishing
+      && action === 'online'
+      && salon.licenseStatus !== 'approved'
+    ) {
       return res.status(409).json({ message: '营业执照审核通过后才能上架' });
     }
     if (action === 'online' && salon.contentReviewStatus !== 'approved') {

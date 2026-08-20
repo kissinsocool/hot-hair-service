@@ -22,6 +22,7 @@ const {
   trustProxyHops,
   wsMaxConnections,
   wsMaxConnectionsPerIp,
+  requireQualificationForPublishing,
   isAllowedOrigin,
 } = require('./src/config');
 const {
@@ -1185,6 +1186,7 @@ const routeContext = {
   wechatAppSecret,
   wechatBookingStatusTemplateId,
   sendBookingStatusNotification,
+  requireQualificationForPublishing,
 };
 
 require('./src/routes/public')(app, routeContext);

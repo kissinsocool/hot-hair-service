@@ -143,6 +143,63 @@ test('admin merchant updates persist selected tags on the real salon document', 
   assert.deepEqual(salon.toObject().tags, ['人气店铺', '好评No.1']);
 });
 
+test('merchant publishing can temporarily skip qualification without removing the original guard', async () => {
+  const salon = new Salon({
+    id: 'salon-publish-without-qualification',
+    publishStatus: 'offline',
+    licenseStatus: 'unsubmitted',
+    contentReviewStatus: 'approved',
+  });
+  let saveCount = 0;
+  salon.save = async () => { saveCount += 1; return salon; };
+  const user = { id: 'merchant-publish', salonId: salon.id };
+
+  const publish = async (requireQualificationForPublishing) => {
+    const routes = new Map();
+    const app = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map(method => [
+      method,
+      (path, ...handlers) => routes.set(`${method}:${path}`, handlers.at(-1)),
+    ]));
+    registerAdminRoutes(app, {
+      MerchantUser: { findOne: () => ({ lean: async () => user }) },
+      Salon: { findOne: async () => salon },
+      buildAdminMerchantPayload: async () => ({ publishStatus: salon.publishStatus }),
+      requireQualificationForPublishing,
+      rateLimits: { upload: [] },
+    });
+    const response = {
+      statusCode: 200,
+      body: null,
+      status(code) { this.statusCode = code; return this; },
+      json(body) { this.body = body; return body; },
+    };
+    await routes.get('patch:/api/admin/merchants/:id/publish')({
+      params: { id: user.id },
+      body: { action: 'online' },
+    }, response);
+    return response;
+  };
+
+  const relaxed = await publish(false);
+  assert.equal(relaxed.statusCode, 200);
+  assert.equal(salon.publishStatus, 'online');
+  assert.equal(saveCount, 1);
+
+  salon.publishStatus = 'offline';
+  salon.contentReviewStatus = 'pending';
+  const contentPending = await publish(false);
+  assert.equal(contentPending.statusCode, 409);
+  assert.equal(contentPending.body.message, '店铺内容审核通过后才能上架');
+  assert.equal(saveCount, 1);
+
+  salon.contentReviewStatus = 'approved';
+  const restored = await publish(true);
+  assert.equal(restored.statusCode, 409);
+  assert.equal(restored.body.message, '营业执照审核通过后才能上架');
+  assert.equal(salon.publishStatus, 'offline');
+  assert.equal(saveCount, 1);
+});
+
 const collectRoutePaths = (register, context = {}) => {
   const paths = [];
   const app = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map(method => [
