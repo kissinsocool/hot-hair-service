@@ -1101,6 +1101,63 @@ test('merchant booking list does not hide future orders when no date is requeste
   assert.equal(JSON.stringify(query).includes('startTime'), false);
 });
 
+test('merchant booking list includes the current user phone', async () => {
+  const routes = new Map();
+  const app = {
+    get(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+    post() {},
+    patch() {},
+    delete() {},
+    use() {},
+  };
+  const bookingQuery = {
+    select() { return this; },
+    sort() { return this; },
+    skip() { return this; },
+    limit() { return this; },
+    async lean() { return [{ id: 'BK-1', userId: 'user-client-1' }]; },
+  };
+  let userQuery;
+  registerMerchantRoutes(app, {
+    Salon: {
+      findOne() {
+        return { select() { return this; }, async lean() { return { staffIds: [] }; } };
+      },
+    },
+    Booking: {
+      find() { return bookingQuery; },
+      async countDocuments() { return 1; },
+    },
+    ClientUser: {
+      find(value) {
+        userQuery = value;
+        return {
+          select() { return this; },
+          async lean() { return [{ id: 'client-1', phone: '13800138000' }]; },
+        };
+      },
+    },
+    buildMerchantBookingScope: () => ({ salonId: 'salon-1' }),
+    normalizeMerchantBooking: value => value,
+    normalizeUserId: value => String(value).replace(/^user-/, ''),
+    normalizePagination,
+    setPaginationHeaders() {},
+    rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
+  });
+
+  let response;
+  await routes.get('/api/merchant/bookings')(
+    {
+      query: { page: '1', limit: '100' },
+      merchantUser: { salonId: 'salon-1' },
+    },
+    { json(value) { response = value; } },
+  );
+
+  assert.deepEqual(userQuery, { id: { $in: ['client-1'] } });
+  assert.equal(response[0].userPhone, '13800138000');
+});
+
 test('merchant active booking scope follows current salon staff ownership', () => {
   assert.deepEqual(buildMerchantBookingScope('1', ['tina']), {
     $or: [

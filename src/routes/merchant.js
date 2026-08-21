@@ -68,6 +68,7 @@ module.exports = (app, ctx) => {
     logoutSession,
     sessionTokenFromRequest,
     clearPublicSalonDetailCache,
+    ClientUser,
     UserCoupon,
     couponDiscountForOrder,
     sendBookingStatusNotification,
@@ -578,7 +579,21 @@ module.exports = (app, ctx) => {
       Booking.countDocuments(query),
     ]);
     setPaginationHeaders(res, pagination, total);
-    res.json(result.map(normalizeMerchantBooking));
+    const bookings = result.map(normalizeMerchantBooking);
+    const userIds = [...new Set(bookings
+      .map(booking => normalizeUserId(booking.userId))
+      .filter(Boolean))];
+    const users = userIds.length
+      ? await ClientUser.find({ id: { $in: userIds } }).select('id phone account').lean()
+      : [];
+    const phoneByUserId = new Map(users.map(user => [
+      normalizeUserId(user.id),
+      String(user.phone || user.account || ''),
+    ]));
+    res.json(bookings.map(booking => ({
+      ...booking,
+      userPhone: phoneByUserId.get(normalizeUserId(booking.userId)) || '',
+    })));
   });
 };
 
