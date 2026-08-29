@@ -1,5 +1,6 @@
 const bookingService = require('../services/booking');
 const bookingMessages = require('../services/booking-messages');
+const { normalizeReviewTags } = require('../services/salon');
 const { bookingEvent, recordAnalyticsEvent } = require('../services/analytics');
 const {
   generateBookingId,
@@ -163,6 +164,7 @@ module.exports = (app, ctx) => {
   
     const rating = Number(req.body.rating);
     const comment = String(req.body.comment || '').trim();
+    const tags = normalizeReviewTags(req.body.tags);
     const imageObjects = Array.isArray(req.body.imageObjects) ? req.body.imageObjects : [];
     if (Array.isArray(req.body.images) && req.body.images.length) {
       return res.status(400).json({ message: '请升级客户端后重新上传图片' });
@@ -176,6 +178,9 @@ module.exports = (app, ctx) => {
     }
     if (comment.length > INPUT_LIMITS.review) {
       return res.status(400).json({ message: `comment cannot exceed ${INPUT_LIMITS.review} characters` });
+    }
+    if (req.body.tags !== undefined && (!Array.isArray(req.body.tags) || tags.length !== req.body.tags.length)) {
+      return res.status(400).json({ message: 'tags contain unsupported or duplicate values' });
     }
   
     let imageUrls;
@@ -192,6 +197,7 @@ module.exports = (app, ctx) => {
       user: booking.userName,
       rating,
       comment,
+      tags,
       date: new Date().toISOString().slice(0, 10),
       createdAt: new Date().toISOString(),
       serviceName: booking.serviceName,
@@ -231,6 +237,8 @@ module.exports = (app, ctx) => {
 
     const rating = Number(req.body.rating);
     const comment = String(req.body.comment || '').trim();
+    const requestedTags = req.body.tags;
+    const normalizedTags = normalizeReviewTags(requestedTags);
     const retainedImageUrls = Array.isArray(req.body.retainedImageUrls)
       ? req.body.retainedImageUrls.map(String)
       : [];
@@ -241,6 +249,9 @@ module.exports = (app, ctx) => {
     if (!comment) return res.status(400).json({ message: 'comment is required' });
     if (comment.length > INPUT_LIMITS.review) {
       return res.status(400).json({ message: `comment cannot exceed ${INPUT_LIMITS.review} characters` });
+    }
+    if (requestedTags !== undefined && (!Array.isArray(requestedTags) || normalizedTags.length !== requestedTags.length)) {
+      return res.status(400).json({ message: 'tags contain unsupported or duplicate values' });
     }
 
     const previousReview = booking.review.toObject
@@ -269,6 +280,7 @@ module.exports = (app, ctx) => {
       ...previousReview,
       rating,
       comment,
+      tags: requestedTags === undefined ? previousReview.tags || [] : normalizedTags,
       date: now.slice(0, 10),
       updatedAt: now,
       imageUrls: [...retainedImageUrls, ...uploadedImages],

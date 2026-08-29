@@ -610,6 +610,21 @@ const getApprovedRatingSummariesByStaffIds = async (staffIds = []) => {
   ]));
 };
 
+const getApprovedReviewTagCountsByStaffIds = async (staffIds = []) => {
+  const ids = [...new Set(staffIds.map(String).filter(Boolean))];
+  if (!ids.length) return [];
+  const rows = await Booking.aggregate([
+    { $match: { staffId: { $in: ids }, 'review.reviewStatus': 'approved' } },
+    { $unwind: '$review.tags' },
+    { $match: { 'review.tags': { $in: salonDomain.REVIEW_TAGS } } },
+    { $group: { _id: '$review.tags', count: { $sum: 1 } } },
+  ]);
+  const counts = Object.fromEntries(rows.map(row => [String(row._id), Number(row.count) || 0]));
+  return salonDomain.REVIEW_TAGS
+    .filter(name => counts[name])
+    .map(name => ({ name, count: counts[name] }));
+};
+
 const approvedSalonRatingSummary = (salon, summariesByStaffId) => {
   const totals = (salon.staffIds || []).reduce((totals, staffId) => {
     const summary = summariesByStaffId[String(staffId)];
@@ -652,9 +667,10 @@ const buildSalonDetail = async (salonDocument) => {
   const salon = normalizeDocument(salonDocument);
   const staffMap = await getStaffMapByIds(salon.staffIds);
   const staffList = salon.staffIds.map(id => staffMap[id]).filter(Boolean);
-  const [reviews, ratingSummaries] = await Promise.all([
+  const [reviews, ratingSummaries, reviewTags] = await Promise.all([
     getApprovedReviewsByStaffIds(salon.staffIds, PUBLIC_SALON_REVIEWS_LIMIT),
     getApprovedRatingSummariesByStaffIds(salon.staffIds),
+    getApprovedReviewTagCountsByStaffIds(salon.staffIds),
   ]);
   const reviewsByStaff = groupReviewsByStaff(reviews);
   const images = await existingSalonImages(salon);
@@ -675,6 +691,7 @@ const buildSalonDetail = async (salonDocument) => {
     promoImages: images,
     staff,
     reviews,
+    reviewTags,
   };
 };
 
@@ -1279,6 +1296,7 @@ module.exports = {
   couponStatus,
   getApprovedReviewsByStaffIds,
   getApprovedRatingSummariesByStaffIds,
+  getApprovedReviewTagCountsByStaffIds,
   getNearbySalons,
   getCoordinates,
   generateSlotsForStaffAndDate,

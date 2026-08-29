@@ -25,6 +25,7 @@ const {
   generateSlotsForStaffAndDate,
   getApprovedReviewsByStaffIds,
   getApprovedRatingSummariesByStaffIds,
+  getApprovedReviewTagCountsByStaffIds,
   getCoordinates,
   hashPassword,
   hasReviewableContentChanges,
@@ -402,6 +403,34 @@ test('rating summaries use every approved review and group them by staff', async
       'staff-1': { rating: 4.5, reviewCount: 2, ratingTotal: 9 },
       'staff-2': { rating: 3, reviewCount: 1, ratingTotal: 3 },
     });
+  } finally {
+    Booking.aggregate = originalAggregate;
+  }
+});
+
+test('review tag counts use every approved review and keep the configured display order', async () => {
+  const originalAggregate = Booking.aggregate;
+  let pipeline;
+  Booking.aggregate = async (value) => {
+    pipeline = value;
+    return [
+      { _id: '服务周到', count: 2 },
+      { _id: '善于沟通', count: 3 },
+    ];
+  };
+
+  try {
+    const tags = await getApprovedReviewTagCountsByStaffIds(['staff-1', 'staff-1']);
+    assert.deepEqual(pipeline, [
+      { $match: { staffId: { $in: ['staff-1'] }, 'review.reviewStatus': 'approved' } },
+      { $unwind: '$review.tags' },
+      { $match: { 'review.tags': { $in: ['善于沟通', '环境舒适', '技术一流', '服务周到'] } } },
+      { $group: { _id: '$review.tags', count: { $sum: 1 } } },
+    ]);
+    assert.deepEqual(tags, [
+      { name: '善于沟通', count: 3 },
+      { name: '服务周到', count: 2 },
+    ]);
   } finally {
     Booking.aggregate = originalAggregate;
   }
@@ -1853,6 +1882,7 @@ test('approving a review edit replaces the public review only after approval', a
     bookingId: 'BK-1',
     comment: '原评论',
     rating: 4,
+    tags: ['善于沟通'],
     reviewStatus: 'approved',
   };
   const booking = {
@@ -2342,6 +2372,7 @@ test('editing a review stores a pending draft without changing the approved revi
     bookingId: 'BK-1',
     comment: '原评论',
     rating: 4,
+    tags: ['善于沟通'],
     imageUrls: ['https://public.example/old.jpg'],
     reviewStatus: 'approved',
   };
@@ -2388,7 +2419,24 @@ test('editing a review stores a pending draft without changing the approved revi
   assert.equal(booking.review.comment, '原评论');
   assert.equal(updateQuery['review.id'], 'review-1');
   assert.equal(update.$set['review.pendingEdit'].comment, '修改后评论');
+  assert.deepEqual(update.$set['review.pendingEdit'].tags, ['善于沟通']);
   assert.equal(update.$set['review.pendingEdit'].reviewStatus, 'pending');
+
+  await routes.get('/api/bookings/:id/review')(
+    {
+      clientUser: { id: 'user-1' },
+      params: { id: 'BK-1' },
+      body: {
+        rating: 5,
+        comment: '再次修改',
+        tags: ['技术一流', '服务周到'],
+        retainedImageUrls: ['https://public.example/old.jpg'],
+        imageObjects: [],
+      },
+    },
+    { status() { return this; }, json() {} },
+  );
+  assert.deepEqual(update.$set['review.pendingEdit'].tags, ['技术一流', '服务周到']);
 });
 
 test('deleting a review returns success even when post-delete cleanup fails', async () => {
@@ -2458,6 +2506,7 @@ test('concurrent review and complaint submissions only update once', async () =>
     complained: false,
     staffId: 'staff-1',
   };
+  let submittedReview;
   registerClientBookingRoutes(app, {
     AnalyticsEvent: { async updateOne() {} },
     Booking: {
@@ -2466,6 +2515,7 @@ test('concurrent review and complaint submissions only update once', async () =>
         const type = query.reviewed ? 'review' : 'complaint';
         if (claimed[type]) return null;
         claimed[type] = true;
+        if (type === 'review') submittedReview = update.$set.review;
         return { ...booking, ...update.$set };
       },
     },
@@ -2491,10 +2541,30 @@ test('concurrent review and complaint submissions only update once', async () =>
     return result.status;
   }));
 
-  const reviewStatuses = await invokeTwice('/api/bookings/:id/review', { rating: 5, comment: 'good' });
+  const invalidReview = { status: 200 };
+  await routes.get('/api/bookings/:id/review')(
+    {
+      clientUser: { id: 'user-1' },
+      params: { id: 'BK-1' },
+      body: { rating: 5, comment: 'good', tags: ['未知标签'] },
+    },
+    {
+      status(value) { invalidReview.status = value; return this; },
+      json() {},
+    },
+  );
+  assert.equal(invalidReview.status, 400);
+
+  const reviewStatuses = await invokeTwice('/api/bookings/:id/review', {
+    rating: 5,
+    comment: 'good',
+    tags: ['善于沟通', '服务周到'],
+    imageObjects: [],
+  });
   const complaintStatuses = await invokeTwice('/api/bookings/:id/complaint', { description: 'problem' });
 
   assert.deepEqual(reviewStatuses.sort(), [201, 409]);
+  assert.deepEqual(submittedReview.tags, ['善于沟通', '服务周到']);
   assert.deepEqual(complaintStatuses.sort(), [201, 409]);
 });
 
