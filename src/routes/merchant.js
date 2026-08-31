@@ -283,7 +283,7 @@ module.exports = (app, ctx) => {
   app.patch('/api/merchant/bookings/:id', ...rateLimits.merchantBooking, async (req, res) => {
     const { action, reason = '', assignedStaffId = '', startTime } = req.body;
     const merchantSalon = await Salon.findOne({ id: req.merchantUser.salonId })
-      .select('staffIds openingHours closedDates')
+      .select('staffIds openingHours weeklyClosedDays closedDates')
       .lean();
     const merchantScope = buildMerchantBookingScope(req.merchantUser.salonId, merchantSalon?.staffIds || []);
     let booking = await Booking.findOne({
@@ -601,12 +601,19 @@ function validateSalonContent(payload = {}, limits) {
   if (payload.acceptsSameDayBooking !== undefined && typeof payload.acceptsSameDayBooking !== 'boolean') {
     return 'acceptsSameDayBooking must be a boolean';
   }
+  if (payload.weeklyClosedDays !== undefined && (
+    !Array.isArray(payload.weeklyClosedDays)
+    || payload.weeklyClosedDays.some(day => !Number.isInteger(day) || day < 1 || day > 7)
+  )) {
+    return 'weeklyClosedDays must contain integers between 1 and 7';
+  }
   const arrays = [
     ['services', limits.services],
     ['staff', limits.contentStaff],
     ['images', 20],
     ['promoImages', 20],
     ['closedDates', limits.closedDates],
+    ['weeklyClosedDays', 7],
   ];
   for (const [field, max] of arrays) {
     if (Array.isArray(payload[field]) && payload[field].length > max) return `${field} cannot exceed ${max} items`;

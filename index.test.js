@@ -549,6 +549,10 @@ test('closed dates are normalized and matched by calendar date', () => {
   );
   assert.equal(isSalonClosedOnDate({ closedDates: ['2026-07-18'] }, '2026-07-18T10:00:00'), true);
   assert.equal(isSalonClosedOnDate({ closedDates: ['2026-07-18'] }, '2026-07-19T10:00:00'), false);
+  assert.equal(isSalonClosedOnDate({ weeklyClosedDays: [1, 3] }, '2026-07-20T10:00:00'), true);
+  assert.equal(isSalonClosedOnDate({ weeklyClosedDays: [1, 3] }, '2026-07-21T10:00:00'), false);
+  assert.equal(isSalonClosedOnDate({ weeklyClosedDays: [1, 7] }, '2026-07-19'), true);
+  assert.deepEqual(bookingDomain.normalizeWeeklyClosedDays([3, 1, 3, 0, 8]), [1, 3]);
 });
 
 test('same-day booking policy blocks only today', () => {
@@ -1645,6 +1649,7 @@ test('merchant salon route clears review when the current client payload only re
     image: 'cover.jpg',
     images: ['approved.jpg'],
     promoImages: ['approved.jpg'],
+    weeklyClosedDays: [],
     services: [],
     staffIds: [],
     contentReviewStatus: 'pending',
@@ -1674,6 +1679,7 @@ test('merchant salon route clears review when the current client payload only re
     promoImages: [...salon.promoImages],
     openingHours: salon.openingHours,
     acceptsSameDayBooking: salon.acceptsSameDayBooking,
+    weeklyClosedDays: [...salon.weeklyClosedDays],
     closedDates: [...salon.closedDates],
     phone: salon.phone,
     services: salon.services.map(service => service.toObject()),
@@ -1700,6 +1706,7 @@ test('merchant salon route clears review when the current client payload only re
         merchantUser: { salonId: salon.id },
         body: {
           ...livePayload(),
+          weeklyClosedDays: [1, 3],
           images: ['approved.jpg'],
           promoImages: ['approved.jpg'],
         },
@@ -1712,6 +1719,7 @@ test('merchant salon route clears review when the current client payload only re
 
   assert.equal(salon.pendingContent, undefined);
   assert.equal(salon.contentReviewStatus, 'approved');
+  assert.deepEqual(salon.weeklyClosedDays, [1, 3]);
   assert.deepEqual(response.promoImages, ['approved.jpg']);
 });
 

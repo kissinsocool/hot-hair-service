@@ -493,6 +493,7 @@ const parseAmapReverseAddress = (data) => {
 const generateHalfHourSlots = bookingDomain.generateHalfHourSlots;
 const normalizeUnavailableSlots = bookingDomain.normalizeUnavailableSlots;
 const normalizeClosedDates = bookingDomain.normalizeClosedDates;
+const normalizeWeeklyClosedDays = bookingDomain.normalizeWeeklyClosedDays;
 const isSalonClosedOnDate = bookingDomain.isSalonClosedOnDate;
 
 const isSameDayBookingBlocked = bookingDomain.isSameDayBookingBlocked;
@@ -712,6 +713,7 @@ const contentFields = [
   'promoImages',
   'openingHours',
   'acceptsSameDayBooking',
+  'weeklyClosedDays',
   'closedDates',
   'phone',
   'services',
@@ -759,6 +761,9 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
   };
   set('openingHours', typeof payload.openingHours === 'string' ? payload.openingHours : undefined);
   set('acceptsSameDayBooking', typeof payload.acceptsSameDayBooking === 'boolean' ? payload.acceptsSameDayBooking : undefined);
+  set('weeklyClosedDays', Array.isArray(payload.weeklyClosedDays)
+    ? normalizeWeeklyClosedDays(payload.weeklyClosedDays)
+    : undefined);
   set('closedDates', Array.isArray(payload.closedDates) ? normalizeClosedDates(payload.closedDates) : undefined);
   set('phone', typeof payload.phone === 'string' ? payload.phone : undefined);
   if (payload.image === '') salon.image = '';
@@ -827,6 +832,9 @@ const buildContentDraft = async (salon, payload, liveContent) => {
   set('image', typeof payload.image === 'string' ? payload.image : undefined);
   set('openingHours', typeof payload.openingHours === 'string' ? payload.openingHours : undefined);
   set('acceptsSameDayBooking', typeof payload.acceptsSameDayBooking === 'boolean' ? payload.acceptsSameDayBooking : undefined);
+  set('weeklyClosedDays', Array.isArray(payload.weeklyClosedDays)
+    ? normalizeWeeklyClosedDays(payload.weeklyClosedDays)
+    : undefined);
   set('closedDates', Array.isArray(payload.closedDates) ? normalizeClosedDates(payload.closedDates) : undefined);
   set('phone', typeof payload.phone === 'string' ? payload.phone : undefined);
 
@@ -939,6 +947,7 @@ const ensureSalonForMerchant = async ({ salonId, displayName }) => {
     fullDescription: '',
     openingHours: '10:00 - 20:00',
     acceptsSameDayBooking: true,
+    weeklyClosedDays: [],
     closedDates: [],
     phone: '',
     staffIds: [],

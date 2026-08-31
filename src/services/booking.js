@@ -111,9 +111,16 @@ const normalizeClosedDates = (dates, max = 500) => {
   )].sort().slice(0, max);
 };
 
+const normalizeWeeklyClosedDays = days => Array.isArray(days)
+  ? [...new Set(days.filter(day => Number.isInteger(day) && day >= 1 && day <= 7))].sort()
+  : [];
+
 const isSalonClosedOnDate = (salon, date) => {
   const dateKey = localBookingDateKey(date);
-  return Boolean(dateKey && normalizeClosedDates(salon?.closedDates).includes(dateKey));
+  if (!dateKey) return false;
+  const weekday = new Date(`${dateKey}T00:00:00Z`).getUTCDay() || 7;
+  return normalizeWeeklyClosedDays(salon?.weeklyClosedDays).includes(weekday)
+    || normalizeClosedDates(salon?.closedDates).includes(dateKey);
 };
 
 const isSameDayBookingBlocked = (salon, date, now = new Date()) => {
@@ -248,6 +255,7 @@ module.exports = {
   localTimeMinutes,
   normalizeBookingPayload,
   normalizeClosedDates,
+  normalizeWeeklyClosedDays,
   normalizeUnavailableSlots,
   parseBookingTime,
   parseMerchantRescheduleTime,

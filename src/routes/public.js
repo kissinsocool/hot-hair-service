@@ -129,6 +129,7 @@ module.exports = (app, ctx) => {
           ratingSummaries[profile.id],
         )) : [],
       salonClosedDates: salon?.closedDates || [],
+      salonWeeklyClosedDays: salon?.weeklyClosedDays || [],
       salonAcceptsSameDayBooking: salon?.acceptsSameDayBooking !== false,
     });
   });
