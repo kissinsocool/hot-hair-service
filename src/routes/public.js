@@ -23,6 +23,7 @@ module.exports = (app, ctx) => {
     buildStaffPayload,
     generateSlotsForNoPreferenceAndDate,
     generateSlotsForStaffAndDate,
+    expandedSalonClosedDates,
     servicePayload,
     publicImageUrl,
   } = ctx;
@@ -56,7 +57,7 @@ module.exports = (app, ctx) => {
       await getNearbySalons(userLocation, radiusKm, limit, minResults, maxRadiusKm),
     );
     res.json(await Promise.all(salonList.map(async (s) => {
-      const { fullDescription, openingHours, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(s);
+      const { fullDescription, openingHours, weeklyClosedDays, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(s);
       const images = await existingSalonImages(s);
       return {
         ...basic,
@@ -83,7 +84,7 @@ module.exports = (app, ctx) => {
       const distanceKm = userLocation && coordinates
         ? Number(calculateDistanceKm(userLocation, coordinates).toFixed(2))
         : undefined;
-      const { fullDescription, openingHours, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(salon);
+      const { fullDescription, openingHours, weeklyClosedDays, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(salon);
       const images = await existingSalonImages(salon);
       return {
         ...basic,
@@ -128,8 +129,7 @@ module.exports = (app, ctx) => {
           reviewsByStaff[profile.id] || [],
           ratingSummaries[profile.id],
         )) : [],
-      salonClosedDates: salon?.closedDates || [],
-      salonWeeklyClosedDays: salon?.weeklyClosedDays || [],
+      salonClosedDates: expandedSalonClosedDates(salon),
       salonAcceptsSameDayBooking: salon?.acceptsSameDayBooking !== false,
     });
   });

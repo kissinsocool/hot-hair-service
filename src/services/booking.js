@@ -115,6 +115,22 @@ const normalizeWeeklyClosedDays = days => Array.isArray(days)
   ? [...new Set(days.filter(day => Number.isInteger(day) && day >= 1 && day <= 7))].sort()
   : [];
 
+const expandedSalonClosedDates = (salon, now = new Date(), days = 31) => {
+  const dates = new Set(normalizeClosedDates(salon?.closedDates));
+  const weeklyClosedDays = new Set(normalizeWeeklyClosedDays(salon?.weeklyClosedDays));
+  const startDate = localDateKey(now);
+  if (!weeklyClosedDays.size || !startDate) return [...dates].sort();
+
+  const [year, month, day] = startDate.split('-').map(Number);
+  for (let offset = 0; offset < days; offset += 1) {
+    const date = new Date(Date.UTC(year, month - 1, day + offset));
+    if (weeklyClosedDays.has(date.getUTCDay() || 7)) {
+      dates.add(date.toISOString().slice(0, 10));
+    }
+  }
+  return [...dates].sort();
+};
+
 const isSalonClosedOnDate = (salon, date) => {
   const dateKey = localBookingDateKey(date);
   if (!dateKey) return false;
@@ -244,6 +260,7 @@ module.exports = {
   bookingDayRange,
   buildMerchantBookingScope,
   durationMinutes,
+  expandedSalonClosedDates,
   formatMinutesAsTime,
   generateBookingId,
   generateHalfHourSlots,

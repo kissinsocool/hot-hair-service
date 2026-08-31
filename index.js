@@ -494,6 +494,7 @@ const generateHalfHourSlots = bookingDomain.generateHalfHourSlots;
 const normalizeUnavailableSlots = bookingDomain.normalizeUnavailableSlots;
 const normalizeClosedDates = bookingDomain.normalizeClosedDates;
 const normalizeWeeklyClosedDays = bookingDomain.normalizeWeeklyClosedDays;
+const expandedSalonClosedDates = bookingDomain.expandedSalonClosedDates;
 const isSalonClosedOnDate = bookingDomain.isSalonClosedOnDate;
 
 const isSameDayBookingBlocked = bookingDomain.isSameDayBookingBlocked;
@@ -697,7 +698,15 @@ const buildSalonDetail = async (salonDocument) => {
 };
 
 const buildPublicSalonDetail = (salonDocument, builder = buildSalonDetail, now = Date.now()) =>
-  salonDomain.buildPublicSalonDetail(salonDocument, builder, now);
+  salonDomain.buildPublicSalonDetail(salonDocument, async document => {
+    const detail = await builder(document);
+    if (detail.closedDates === undefined && detail.weeklyClosedDays === undefined) return detail;
+    const { weeklyClosedDays, ...publicDetail } = detail;
+    return {
+      ...publicDetail,
+      closedDates: expandedSalonClosedDates(detail, new Date(now)),
+    };
+  }, now);
 const clearPublicSalonDetailCache = salonDomain.clearPublicSalonDetailCache;
 
 const contentFields = [
@@ -1139,6 +1148,7 @@ const routeContext = {
   crypto,
   decryptWechatPhoneNumber,
   deleteModeratedImages,
+  expandedSalonClosedDates,
   FavoriteSalon,
   fetchJson,
   findAcceptedBookingAtTimeExcluding,

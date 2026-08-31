@@ -361,6 +361,25 @@ test('public salon details share a bounded short-lived cache entry', async () =>
   clearPublicSalonDetailCache();
 });
 
+test('public salon details fold weekly closures into the existing closedDates contract', async () => {
+  clearPublicSalonDetailCache();
+  const now = Date.parse('2026-07-20T01:00:00Z');
+  const result = await buildPublicSalonDetail(
+    {
+      id: 'salon-weekly-closures',
+      updatedAt: new Date('2026-07-19T00:00:00Z'),
+      closedDates: ['2026-07-25'],
+      weeklyClosedDays: [1, 3],
+    },
+    async salon => salon,
+    now,
+  );
+
+  assert.equal(Object.hasOwn(result, 'weeklyClosedDays'), false);
+  assert.deepEqual(result.closedDates.slice(0, 3), ['2026-07-20', '2026-07-22', '2026-07-25']);
+  clearPublicSalonDetailCache();
+});
+
 test('public staff payloads use supplied booking reviews and ignore legacy profile reviews', () => {
   const reviews = Array.from({ length: 205 }, (_, index) => ({
     id: `review-${index}`,
@@ -553,6 +572,14 @@ test('closed dates are normalized and matched by calendar date', () => {
   assert.equal(isSalonClosedOnDate({ weeklyClosedDays: [1, 3] }, '2026-07-21T10:00:00'), false);
   assert.equal(isSalonClosedOnDate({ weeklyClosedDays: [1, 7] }, '2026-07-19'), true);
   assert.deepEqual(bookingDomain.normalizeWeeklyClosedDays([3, 1, 3, 0, 8]), [1, 3]);
+  assert.deepEqual(
+    bookingDomain.expandedSalonClosedDates(
+      { closedDates: ['2026-07-25'], weeklyClosedDays: [1, 3] },
+      new Date('2026-07-20T01:00:00Z'),
+      7,
+    ),
+    ['2026-07-20', '2026-07-22', '2026-07-25'],
+  );
 });
 
 test('same-day booking policy blocks only today', () => {
