@@ -746,7 +746,8 @@ const hasReviewableContentChanges = (current = {}, payload = {}) => {
   if (changed('addressRegion') || changed('location')) return true;
   if (payload.images !== undefined || payload.promoImages !== undefined) {
     const incoming = payload.promoImages ?? payload.images;
-    if (JSON.stringify(images(incoming)) !== JSON.stringify(images(current.promoImages ?? current.images))) return true;
+    const currentImages = new Set(images(current.promoImages ?? current.images));
+    if (images(incoming).some(image => !currentImages.has(image))) return true;
   }
 
   const currentServices = new Map((current.services || []).map(item => [String(item.id || ''), item]));
@@ -777,10 +778,11 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
   set('phone', typeof payload.phone === 'string' ? payload.phone : undefined);
   if (payload.image === '') salon.image = '';
   if (Array.isArray(payload.promoImages) || Array.isArray(payload.images)) {
-    const incoming = new Set((payload.promoImages ?? payload.images)
+    const currentImages = new Set(buildSalonImageList(salon));
+    const retained = [...new Set((payload.promoImages ?? payload.images)
       .map(image => String(image || '').trim())
-      .filter(Boolean));
-    const retained = buildSalonImageList(salon).filter(image => incoming.has(image));
+      .filter(Boolean))]
+      .filter(image => currentImages.has(image));
     salon.images = retained;
     salon.promoImages = retained;
   }

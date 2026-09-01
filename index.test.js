@@ -1586,7 +1586,7 @@ test('content review only covers merchant text and uploaded images', () => {
     name: '店铺',
     description: '介绍',
     fullDescription: '详情',
-    promoImages: ['cover.jpg'],
+    promoImages: ['cover.jpg', 'detail.jpg'],
     services: [{ id: 'S1', name: '剪发', note: '备注', imageUrl: 'service.jpg' }],
     staff: [{ id: 'P1', name: '理发师', bio: '简介', imageUrl: 'staff.jpg' }],
   };
@@ -1603,7 +1603,25 @@ test('content review only covers merchant text and uploaded images', () => {
   assert.equal(hasReviewableContentChanges(current, {
     services: [{ id: 'S1', note: '新备注' }],
   }), true);
+  assert.equal(hasReviewableContentChanges(current, {
+    promoImages: ['detail.jpg', 'cover.jpg'],
+  }), false);
   assert.equal(hasReviewableContentChanges(current, { promoImages: ['new-cover.jpg'] }), true);
+});
+
+test('reordering existing promo images publishes directly without review', async () => {
+  const salon = new Salon({
+    id: 'salon-reorder-images',
+    images: ['a.jpg', 'b.jpg', 'c.jpg'],
+    promoImages: ['a.jpg', 'b.jpg', 'c.jpg'],
+  });
+  const payload = { promoImages: ['c.jpg', 'a.jpg', 'b.jpg'] };
+
+  await applyDirectSalonContent(salon, payload);
+
+  assert.deepEqual(salon.promoImages, payload.promoImages);
+  assert.deepEqual(salon.images, payload.promoImages);
+  assert.equal(hasReviewableContentChanges(salon, payload), false);
 });
 
 test('merchant deletions publish immediately while additions and edits stay in review', async () => {
@@ -1676,7 +1694,7 @@ test('merchant deletions publish immediately while additions and edits stay in r
   assert.equal(hasReviewableContentChanges(deletionLive, deletionDraft), false);
 });
 
-test('merchant salon route clears review when the current client payload only removes pending content', async () => {
+test('merchant salon route publishes weekly and exceptional closures without review', async () => {
   const routes = new Map();
   const app = {
     get() {},
@@ -1692,8 +1710,8 @@ test('merchant salon route clears review when the current client payload only re
     description: '介绍',
     fullDescription: '详情',
     image: 'cover.jpg',
-    images: ['approved.jpg'],
-    promoImages: ['approved.jpg'],
+    images: ['approved.jpg', 'second.jpg'],
+    promoImages: ['approved.jpg', 'second.jpg'],
     weeklyClosedDays: [],
     services: [],
     staffIds: [],
@@ -1704,8 +1722,8 @@ test('merchant salon route clears review when the current client payload only re
       description: '介绍',
       fullDescription: '详情',
       image: 'cover.jpg',
-      images: ['approved.jpg', 'pending.jpg'],
-      promoImages: ['approved.jpg', 'pending.jpg'],
+      images: ['approved.jpg', 'second.jpg', 'pending.jpg'],
+      promoImages: ['approved.jpg', 'second.jpg', 'pending.jpg'],
       services: [],
       staff: [],
     },
@@ -1752,8 +1770,9 @@ test('merchant salon route clears review when the current client payload only re
         body: {
           ...livePayload(),
           weeklyClosedDays: [1, 3],
-          images: ['approved.jpg'],
-          promoImages: ['approved.jpg'],
+          closedDates: ['2026-09-15'],
+          images: ['second.jpg', 'approved.jpg'],
+          promoImages: ['second.jpg', 'approved.jpg'],
         },
       },
       { status() { return this; }, json(value) { response = value; } },
@@ -1765,7 +1784,8 @@ test('merchant salon route clears review when the current client payload only re
   assert.equal(salon.pendingContent, undefined);
   assert.equal(salon.contentReviewStatus, 'approved');
   assert.deepEqual(salon.weeklyClosedDays, [1, 3]);
-  assert.deepEqual(response.promoImages, ['approved.jpg']);
+  assert.deepEqual(salon.closedDates, ['2026-09-15']);
+  assert.deepEqual(response.promoImages, ['second.jpg', 'approved.jpg']);
 });
 
 test('merchant qualification submission stores all required direct-upload documents', async () => {
