@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-domain='oss.hothaircc.cn'
-bucket='hothairapp'
-region='cn-beijing'
-lineage="/etc/letsencrypt/live/$domain"
-ossutil='/usr/local/bin/ossutil-v2'
-oss_config='/root/.ossutilconfig'
+region=${OSS_REGION:-cn-beijing}
+ossutil=${OSSUTIL_BIN:-/usr/local/bin/ossutil-v2}
+oss_config=${OSSUTIL_CONFIG:-/root/.ossutilconfig}
+
+bucket_for_domain() {
+  case "$1" in
+    oss.hothaircc.cn) printf 'hothairapp' ;;
+    media.hothaircc.cn) printf 'hothairmedia' ;;
+    *) return 1 ;;
+  esac
+}
 
 object_uri() {
-  [[ "${CERTBOT_DOMAIN:-}" == "$domain" ]]
+  domain=${CERTBOT_DOMAIN:?}
+  bucket=$(bucket_for_domain "$domain")
   [[ "${CERTBOT_TOKEN:-}" =~ ^[A-Za-z0-9_-]+$ ]]
   printf 'oss://%s/.well-known/acme-challenge/%s' "$bucket" "$CERTBOT_TOKEN"
 }
@@ -27,8 +33,11 @@ case "${1:-}" in
     "$ossutil" rm "$(object_uri)" -f --region "$region" -c "$oss_config" || true
     ;;
   deploy)
-    renewed_lineage=${RENEWED_LINEAGE:-$lineage}
-    [[ "$renewed_lineage" == "$lineage" ]] || exit 0
+    renewed_lineage=${RENEWED_LINEAGE:?}
+    domain=$(basename "$renewed_lineage")
+    bucket=$(bucket_for_domain "$domain")
+    lineage="/etc/letsencrypt/live/$domain"
+    [[ "$renewed_lineage" == "$lineage" ]]
 
     umask 077
     cert_xml=$(mktemp)

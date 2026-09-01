@@ -12,11 +12,13 @@
 | `www.hothaircc.cn` | ECS Nginx | `hothaircc.cn` | 与主域名共用 SAN 证书 |
 | `api.hothaircc.cn` | ECS Nginx | `hothaircc.cn` | 与主域名共用 SAN 证书 |
 | `oss.hothaircc.cn` | 阿里云 OSS | `oss.hothaircc.cn` | OSS HTTP-01 验证钩子、OSS API 自动部署 |
+| `media.hothaircc.cn` | 阿里云 OSS | `media.hothaircc.cn` | OSS HTTP-01 验证钩子、OSS API 自动部署 |
 
 - 主域名、`www` 和 `api` 直接解析到 ECS `182.92.129.180`。
 - `oss.hothaircc.cn` CNAME 到 `hothairapp.oss-cn-beijing.aliyuncs.com`，请求不经过 ECS 或 ESA。
+- `media.hothaircc.cn` CNAME 到 `hothairmedia.oss-cn-beijing.aliyuncs.com`，只承载公开上传图片。
 - ESA 不在当前 HTTPS 或请求链路中；停用或不续费 ESA 不影响上述证书。
-- 应用生成的 OSS 公网地址使用 `https://oss.hothaircc.cn`。
+- 应用生成的公开图片地址使用 `https://media.hothaircc.cn`；`https://oss.hothaircc.cn` 保留给商家端静态网站。
 
 ## 自动续签
 
@@ -38,10 +40,12 @@ OSS 证书配置：
 - `manual_cleanup_hook`：`/opt/hot-hair-service/ops/certbot-oss-hook cleanup`
 - `renew_hook`：`/opt/hot-hair-service/ops/certbot-oss-hook deploy`
 
+媒体 OSS 证书使用相同钩子，证书名为 `media.hothaircc.cn`。钩子根据证书域名选择 `hothairapp` 或 `hothairmedia` Bucket。
+
 OSS 续签流程：
 
-1. 验证钩子把挑战内容写入 `oss://hothairapp/.well-known/acme-challenge/<token>`。
-2. Let's Encrypt 从 `http://oss.hothaircc.cn/.well-known/acme-challenge/<token>` 完成 HTTP-01 验证。
+1. 验证钩子按域名把挑战内容写入对应 Bucket 的 `.well-known/acme-challenge/<token>`。
+2. Let's Encrypt 从对应的 OSS 自定义域名完成 HTTP-01 验证。
 3. 清理钩子删除临时对象。
 4. 签发成功后，部署钩子调用 `ossutil api put-cname`，将证书和私钥部署到 OSS 自定义域名。
 

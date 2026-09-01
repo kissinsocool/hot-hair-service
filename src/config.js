@@ -8,10 +8,15 @@ const uploadDir = path.join(__dirname, '..', 'uploads');
 const imageCacheDir = path.join(__dirname, '..', 'image-cache');
 const picturesDir = process.env.PICTURES_DIR || path.join(process.env.HOME || '', 'Pictures');
 const ossRegion = process.env.OSS_REGION || 'oss-cn-beijing';
-const ossBucket = process.env.OSS_BUCKET || 'hothairapp';
+const ossBucket = process.env.OSS_BUCKET || 'hothairmedia';
 const ossPrivateBucket = process.env.OSS_PRIVATE_BUCKET || 'hothairprivate';
 const ossEndpoint = process.env.OSS_ENDPOINT || 'https://oss-cn-beijing.aliyuncs.com';
-const ossPublicBaseUrl = (process.env.OSS_PUBLIC_BASE_URL || 'https://oss.hothaircc.cn').replace(/\/+$/, '');
+const ossPublicBaseUrl = (process.env.OSS_PUBLIC_BASE_URL || 'https://media.hothaircc.cn').replace(/\/+$/, '');
+const ossLegacyPublicBaseUrls = (process.env.OSS_LEGACY_PUBLIC_BASE_URLS
+  || 'https://oss.hothaircc.cn,https://hothairapp.oss-cn-beijing.aliyuncs.com')
+  .split(',')
+  .map(url => url.trim().replace(/\/+$/, ''))
+  .filter(Boolean);
 const ossPublicUploadUrl = (process.env.OSS_PUBLIC_UPLOAD_URL || `https://${ossBucket}.${ossRegion}.aliyuncs.com`).replace(/\/+$/, '');
 const ossPrivateUploadUrl = (process.env.OSS_PRIVATE_UPLOAD_URL || `https://${ossPrivateBucket}.${ossRegion}.aliyuncs.com`).replace(/\/+$/, '');
 const ossEnabled = Boolean(process.env.OSS_ACCESS_KEY_ID && process.env.OSS_ACCESS_KEY_SECRET);
@@ -60,6 +65,7 @@ module.exports = {
   ossPrivateBucket,
   ossEndpoint,
   ossPublicBaseUrl,
+  ossLegacyPublicBaseUrls,
   ossPublicUploadUrl,
   ossPrivateUploadUrl,
   ossEnabled,

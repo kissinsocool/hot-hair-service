@@ -14,6 +14,7 @@ const {
   ossPrivateBucket,
   ossEndpoint,
   ossPublicBaseUrl,
+  ossLegacyPublicBaseUrls,
   ossPublicUploadUrl,
   ossPrivateUploadUrl,
   ossEnabled,
@@ -126,8 +127,14 @@ const imageExists = async (url) => {
 const publicOssOrigin = `https://${ossBucket}.${ossRegion}.aliyuncs.com`;
 const publicImageUrl = (url) => {
   const value = String(url || '').trim();
-  return value === publicOssOrigin || value.startsWith(`${publicOssOrigin}/`)
-    ? `${ossPublicBaseUrl}${value.slice(publicOssOrigin.length)}`
+  if (value === publicOssOrigin || value.startsWith(`${publicOssOrigin}/`)) {
+    return `${ossPublicBaseUrl}${value.slice(publicOssOrigin.length)}`;
+  }
+  const legacyOrigin = ossLegacyPublicBaseUrls.find(origin =>
+    value === `${origin}/uploads` || value.startsWith(`${origin}/uploads/`)
+  );
+  return legacyOrigin
+    ? `${ossPublicBaseUrl}${value.slice(legacyOrigin.length)}`
     : value;
 };
 

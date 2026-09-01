@@ -51,7 +51,13 @@ const {
   validateCampaignInput,
 } = require('./index');
 const { issueSignupCoupons } = require('./src/coupons');
-const { isAllowedOrigin, resolveTrustProxyHops } = require('./src/config');
+const {
+  isAllowedOrigin,
+  ossBucket,
+  ossPublicBaseUrl,
+  ossRegion,
+  resolveTrustProxyHops,
+} = require('./src/config');
 const { publicImageUrl } = require('./src/images');
 const {
   Booking,
@@ -75,8 +81,20 @@ const { bookingPatch, serviceForMigration } = require('./scripts/migrate-booking
 
 test('public image URLs use the custom OSS domain', () => {
   assert.equal(
-    publicImageUrl('https://hothairapp.oss-cn-beijing.aliyuncs.com/uploads/image.jpg'),
-    'https://oss.hothaircc.cn/uploads/image.jpg',
+    publicImageUrl(`https://${ossBucket}.${ossRegion}.aliyuncs.com/uploads/image.jpg`),
+    `${ossPublicBaseUrl}/uploads/image.jpg`,
+  );
+  assert.equal(
+    publicImageUrl('https://oss.hothaircc.cn/uploads/legacy.jpg'),
+    `${ossPublicBaseUrl}/uploads/legacy.jpg`,
+  );
+  assert.equal(
+    publicImageUrl('https://hothairapp.oss-cn-beijing.aliyuncs.com/uploads/legacy-endpoint.jpg'),
+    `${ossPublicBaseUrl}/uploads/legacy-endpoint.jpg`,
+  );
+  assert.equal(
+    publicImageUrl('https://oss.hothaircc.cn/merchant-app/index.html'),
+    'https://oss.hothaircc.cn/merchant-app/index.html',
   );
 });
 
@@ -501,7 +519,7 @@ test('public reviews include the current approved customer avatar', async () => 
 
   try {
     const reviews = await getApprovedReviewsByStaffIds(['staff-1']);
-    assert.equal(reviews[0].avatarUrl, 'https://oss.hothaircc.cn/uploads/avatar.jpg');
+    assert.equal(reviews[0].avatarUrl, `${ossPublicBaseUrl}/uploads/avatar.jpg`);
   } finally {
     Booking.find = originalBookingFind;
     ClientUser.find = originalClientUserFind;
