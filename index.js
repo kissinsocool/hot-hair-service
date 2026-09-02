@@ -89,7 +89,7 @@ const {
   sessionTokenFromRequest,
   userIdAliases,
 } = authDomain;
-const { sendBookingStatusNotification } = require('./src/services/wechat-subscriptions');
+const { sendBookingAcceptedNotification } = require('./src/services/wechat-subscriptions');
 
 const app = express();
 const server = http.createServer(app);
@@ -1219,7 +1219,7 @@ const routeContext = {
   wechatAppId,
   wechatAppSecret,
   wechatBookingStatusTemplateId,
-  sendBookingStatusNotification,
+  sendBookingAcceptedNotification,
   requireQualificationForPublishing,
 };
 

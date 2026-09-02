@@ -71,7 +71,7 @@ module.exports = (app, ctx) => {
     ClientUser,
     UserCoupon,
     couponDiscountForOrder,
-    sendBookingStatusNotification,
+    sendBookingAcceptedNotification,
     AnalyticsEvent,
   } = ctx;
 
@@ -510,15 +510,8 @@ module.exports = (app, ctx) => {
       await recordAnalyticsEvent(AnalyticsEvent, bookingEvent(eventName, booking))
         .catch(error => console.error('Booking status analytics failed:', error.message));
     }
-    if (['accept', 'reject', 'cancel', 'reschedule'].includes(action)) {
-      const notificationStatus = action === 'accept'
-        ? 'accepted'
-        : action === 'reject'
-          ? 'rejected'
-          : action === 'cancel'
-            ? 'canceled'
-            : 'rescheduled';
-      sendBookingStatusNotification(booking, notificationStatus).catch((error) => {
+    if (action === 'accept') {
+      sendBookingAcceptedNotification(booking).catch((error) => {
         console.error(`Booking subscription notification failed for ${booking.id}:`, error.message);
       });
     }
