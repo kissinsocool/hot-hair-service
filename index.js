@@ -427,12 +427,8 @@ const findNearbySalons = async (userLocation, radiusKm, limit) => {
     });
 };
 
-const getNearbySalons = async (userLocation, radiusKm, limit, minResults = 10, maxRadiusKm = 50) => {
-  const targetCount = Math.min(limit, minResults);
-  const salonList = await findNearbySalons(userLocation, maxRadiusKm, limit);
-  const initialRadiusResults = salonList.filter(salon => salon.distanceKm <= radiusKm);
-  return initialRadiusResults.length >= targetCount ? initialRadiusResults : salonList;
-};
+const getNearbySalons = async (userLocation, _radiusKm, limit, _minResults = 10, maxRadiusKm = 50) =>
+  findNearbySalons(userLocation, maxRadiusKm, limit);
 
 const getServiceById = async (serviceId) => {
   const salon = await Salon.findOne({ 'services.id': serviceId }).select('services').lean();

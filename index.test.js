@@ -1252,7 +1252,7 @@ test('normalizeRadiusKm applies defaults and bounds', () => {
   assert.equal(normalizeRadiusKm('-1', 10, 50), 0.1);
 });
 
-test('nearby salon expansion performs one geospatial query', async () => {
+test('nearby salons retain expanded-radius results after reaching the minimum count', async () => {
   const originalFind = Salon.find;
   let queries = 0;
   Salon.find = () => {
@@ -1271,7 +1271,7 @@ test('nearby salon expansion performs one geospatial query', async () => {
   };
 
   try {
-    const salons = await getNearbySalons({ latitude: 31.2304, longitude: 121.4737 }, 1, 10, 2, 50);
+    const salons = await getNearbySalons({ latitude: 31.2304, longitude: 121.4737 }, 1, 10, 1, 50);
     assert.equal(queries, 1);
     assert.deepEqual(salons.map(salon => salon.id), ['near', 'farther']);
   } finally {
