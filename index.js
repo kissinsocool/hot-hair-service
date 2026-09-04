@@ -402,7 +402,6 @@ const INPUT_LIMITS = Object.freeze({
 });
 
 const findNearbySalons = async (userLocation, radiusKm, limit) => {
-  const maxDistance = Math.max(radiusKm, 0.1) * 1000;
   const query = {
     publishStatus: 'online',
     geoLocation: {
@@ -411,7 +410,7 @@ const findNearbySalons = async (userLocation, radiusKm, limit) => {
           type: 'Point',
           coordinates: [userLocation.longitude, userLocation.latitude],
         },
-        $maxDistance: maxDistance,
+        ...(radiusKm == null ? {} : { $maxDistance: Math.max(radiusKm, 0.1) * 1000 }),
       },
     },
   };
@@ -427,8 +426,10 @@ const findNearbySalons = async (userLocation, radiusKm, limit) => {
     });
 };
 
-const getNearbySalons = async (userLocation, _radiusKm, limit, _minResults = 10, maxRadiusKm = 50) =>
-  findNearbySalons(userLocation, maxRadiusKm, limit);
+const getNearbySalons = async (userLocation, _radiusKm, limit, _minResults = 10, maxRadiusKm = 50) => {
+  const salonList = await findNearbySalons(userLocation, maxRadiusKm, limit);
+  return salonList.length ? salonList : findNearbySalons(userLocation, null, limit);
+};
 
 const getServiceById = async (serviceId) => {
   const salon = await Salon.findOne({ 'services.id': serviceId }).select('services').lean();

@@ -1279,6 +1279,34 @@ test('nearby salons retain expanded-radius results after reaching the minimum co
   }
 });
 
+test('nearby salons fall back to the nearest online salons when none are within the maximum radius', async () => {
+  const originalFind = Salon.find;
+  const queries = [];
+  Salon.find = (query) => {
+    queries.push(query);
+    const chain = {
+      select() { return chain; },
+      limit() { return chain; },
+      async lean() {
+        return query.geoLocation.$nearSphere.$maxDistance
+          ? []
+          : [{ id: 'outside-radius', geoLocation: { type: 'Point', coordinates: [122.4737, 31.2304] } }];
+      },
+    };
+    return chain;
+  };
+
+  try {
+    const salons = await getNearbySalons({ latitude: 31.2304, longitude: 121.4737 }, 10, 10, 10, 50);
+    assert.equal(queries.length, 2);
+    assert.equal(queries[0].geoLocation.$nearSphere.$maxDistance, 50000);
+    assert.equal(Object.hasOwn(queries[1].geoLocation.$nearSphere, '$maxDistance'), false);
+    assert.deepEqual(salons.map(salon => salon.id), ['outside-radius']);
+  } finally {
+    Salon.find = originalFind;
+  }
+});
+
 test('favorite reads return ids or card summaries without building salon details', async () => {
   const originalFavoriteFind = FavoriteSalon.find;
   const originalSalonFind = Salon.find;
