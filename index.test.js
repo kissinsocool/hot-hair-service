@@ -1279,7 +1279,7 @@ test('nearby salons retain expanded-radius results after reaching the minimum co
   }
 });
 
-test('nearby salons fall back to the nearest online salons when none are within the maximum radius', async () => {
+test('nearby salons fall back to the nearest online salons when fewer than the minimum are within range', async () => {
   const originalFind = Salon.find;
   const queries = [];
   Salon.find = (query) => {
@@ -1289,19 +1289,27 @@ test('nearby salons fall back to the nearest online salons when none are within 
       limit() { return chain; },
       async lean() {
         return query.geoLocation.$nearSphere.$maxDistance
-          ? []
-          : [{ id: 'outside-radius', geoLocation: { type: 'Point', coordinates: [122.4737, 31.2304] } }];
+          ? [{ id: 'within-radius', geoLocation: { type: 'Point', coordinates: [121.4738, 31.2305] } }]
+          : [
+            { id: 'within-radius', geoLocation: { type: 'Point', coordinates: [121.4738, 31.2305] } },
+            { id: 'outside-radius-1', geoLocation: { type: 'Point', coordinates: [122.4737, 31.2304] } },
+            { id: 'outside-radius-2', geoLocation: { type: 'Point', coordinates: [123.4737, 31.2304] } },
+          ];
       },
     };
     return chain;
   };
 
   try {
-    const salons = await getNearbySalons({ latitude: 31.2304, longitude: 121.4737 }, 10, 10, 10, 50);
+    const salons = await getNearbySalons({ latitude: 31.2304, longitude: 121.4737 }, 10, 50, 3, 50);
     assert.equal(queries.length, 2);
     assert.equal(queries[0].geoLocation.$nearSphere.$maxDistance, 50000);
     assert.equal(Object.hasOwn(queries[1].geoLocation.$nearSphere, '$maxDistance'), false);
-    assert.deepEqual(salons.map(salon => salon.id), ['outside-radius']);
+    assert.deepEqual(salons.map(salon => salon.id), [
+      'within-radius',
+      'outside-radius-1',
+      'outside-radius-2',
+    ]);
   } finally {
     Salon.find = originalFind;
   }
