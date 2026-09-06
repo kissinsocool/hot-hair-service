@@ -65,6 +65,25 @@ const normalizeReviewTags = (tags) => Array.isArray(tags)
   ? [...new Set(tags.filter(tag => REVIEW_TAGS.includes(tag)))]
   : [];
 
+const serviceImages = (service = {}) => [...new Set(
+  (Array.isArray(service.imageUrls) ? service.imageUrls : [service.imageUrl])
+    .filter(image => typeof image === 'string' && image.trim())
+    .map(image => image.trim()),
+)];
+
+// Old clients may echo the new array unchanged while editing the legacy cover.
+const incomingServiceImages = (service, previous = {}) => {
+  const current = serviceImages(previous);
+  if (service.imageUrls !== undefined
+    && !(JSON.stringify(serviceImages(service)) === JSON.stringify(current)
+      && service.imageUrl !== undefined && service.imageUrl !== (current[0] || ''))) {
+    return serviceImages(service);
+  }
+  if (service.imageUrl === undefined) return current;
+  if (!service.imageUrl) return [];
+  return serviceImages({ imageUrls: [service.imageUrl, ...current.slice(1)] });
+};
+
 const serviceForStorage = (service = {}, fallbackId = '') => ({
   id: String(service.id || fallbackId).trim(),
   name: String(service.name || '').trim(),
@@ -72,7 +91,8 @@ const serviceForStorage = (service = {}, fallbackId = '') => ({
   priceFen: service.priceFen,
   durationMinutes: service.durationMinutes,
   note: String(service.note || ''),
-  imageUrl: String(service.imageUrl || ''),
+  imageUrl: serviceImages(service)[0] || '',
+  imageUrls: serviceImages(service),
 });
 
 const servicePayload = (service = {}) => {
@@ -80,6 +100,7 @@ const servicePayload = (service = {}) => {
   return {
     ...normalized,
     imageUrl: publicImageUrl(normalized.imageUrl),
+    imageUrls: normalized.imageUrls.map(publicImageUrl),
   };
 };
 
@@ -205,6 +226,8 @@ module.exports = {
   ratingSummaryFromReviews,
   REVIEW_TAGS,
   publicReviewFromBooking,
+  serviceImages,
+  incomingServiceImages,
   serviceForStorage,
   servicePayload,
   staffPayload,

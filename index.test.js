@@ -322,6 +322,7 @@ test('booking migration derives canonical booking fields', () => {
     durationMinutes: 30,
     note: '',
     imageUrl: '',
+    imageUrls: [],
   });
 });
 
@@ -2975,4 +2976,53 @@ test('completing a booking atomically redeems its reserved coupon', async () => 
   assert.equal(messageCreate[0][0].status, 'completed');
   assert.equal(messageCreate[1].session, session);
   assert.equal(response.booking.status, 'completed');
+});
+
+test('merchant service gallery contract preserves legacy requests and review isolation', async () => {
+  const routes = new Map();
+  const app = { get() {}, post() {}, delete() {}, use() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); } };
+  const oldService = { id: 'S1', name: '剪发', tags: ['洗剪吹'], priceFen: 8000,
+    durationMinutes: 30, note: '简介', imageUrl: 'first.jpg' };
+  const salon = new Salon({ id: 'gallery', services: [oldService], staffIds: [] });
+  salon.save = async () => salon;
+  const live = () => ({ services: salon.services.map(salonDomain.servicePayload), staff: [] });
+  registerMerchantRoutes(app, {
+    Salon: { async findOne() { return salon; } },
+    applyDirectSalonContent, buildContentDraft, hasReviewableContentChanges,
+    buildSalonDetail: async () => live(), buildMerchantSalonPayload: async () => live(),
+    INPUT_LIMITS, rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
+  });
+  const save = async service => {
+    let status = 200;
+    await routes.get('/api/merchant/salon')({ merchantUser: { salonId: salon.id }, body: { services: [service] } },
+      { status(code) { status = code; return this; }, json() {} });
+    return status;
+  };
+  assert.equal(await save(oldService), 200);
+  assert.deepEqual(salonDomain.serviceImages(salon.services[0]), ['first.jpg']);
+  assert.equal(await save({ ...oldService, imageUrls: ['first.jpg', 'second.jpg'] }), 200);
+  assert.equal(salon.contentReviewStatus, 'pending');
+  assert.deepEqual(salonDomain.serviceImages(salon.services[0]), ['first.jpg']);
+  assert.deepEqual([...salon.pendingContent.services[0].imageUrls], ['first.jpg', 'second.jpg']);
+  // Use real Mongoose subdocuments to simulate the existing approval assignment.
+  salon.services = salon.pendingContent.services;
+  salon.pendingContent = undefined;
+  assert.equal(await save(oldService), 200);
+  assert.deepEqual(salonDomain.serviceImages(salon.services[0]), ['first.jpg', 'second.jpg']);
+  assert.equal(await save({ ...oldService, imageUrls: ['second.jpg', 'first.jpg'], imageUrl: 'second.jpg' }), 200);
+  assert.equal(salon.contentReviewStatus, 'approved');
+  assert.equal(salon.services[0].imageUrl, 'second.jpg');
+  assert.deepEqual(salonDomain.serviceImages(salon.services[0]), ['second.jpg', 'first.jpg']);
+  // The old Flutter client echoes unknown fields but only edits imageUrl.
+  assert.equal(await save({ ...oldService, imageUrls: ['second.jpg', 'first.jpg'], imageUrl: 'new.jpg' }), 200);
+  assert.deepEqual([...salon.pendingContent.services[0].imageUrls], ['new.jpg', 'first.jpg']);
+  assert.ok(!salonDomain.serviceImages(salon.services[0]).includes('new.jpg'));
+  for (const imageUrls of [null, 'bad', [123], [''], ['x'.repeat(2049)], Array(21).fill('a.jpg')]) {
+    assert.equal(await save({ ...oldService, imageUrls }), 400);
+  }
+  salon.pendingContent = undefined;
+  assert.equal(await save({ ...oldService, imageUrls: [], imageUrl: '' }), 200);
+  assert.deepEqual(salonDomain.serviceImages(salon.services[0]), []);
+  assert.equal(salon.services[0].imageUrl, '');
 });

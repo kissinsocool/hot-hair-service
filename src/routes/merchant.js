@@ -252,9 +252,9 @@ module.exports = (app, ctx) => {
     const validationError = validateSalonContent(payload, INPUT_LIMITS);
     if (validationError) return res.status(400).json({ message: validationError });
 
+    const draft = await buildContentDraft(salon, payload, await buildSalonDetail(salon));
     await applyDirectSalonContent(salon, payload);
     const liveContent = await buildSalonDetail(salon);
-    const draft = await buildContentDraft(salon, payload, liveContent);
     const requiresReview = hasReviewableContentChanges(liveContent, draft);
 
     if (requiresReview) {
@@ -645,6 +645,10 @@ function validateSalonContent(payload = {}, limits) {
   }
 
   for (const service of Array.isArray(payload.services) ? payload.services : []) {
+    if (service?.imageUrls !== undefined && (
+      !Array.isArray(service.imageUrls) || service.imageUrls.length > 20
+      || service.imageUrls.some(image => typeof image !== 'string' || !image.trim() || image.length > 2048)
+    )) return 'service imageUrls must contain at most 20 non-empty image URLs (max 2048 characters each)';
     if (
       String(service?.name || '').length > 100
       || String(service?.note || '').length > 500

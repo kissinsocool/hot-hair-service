@@ -752,7 +752,9 @@ const hasReviewableContentChanges = (current = {}, payload = {}) => {
   const currentServices = new Map((current.services || []).map(item => [String(item.id || ''), item]));
   if ((payload.services || []).some(service => {
     const previous = currentServices.get(String(service?.id || '')) || {};
-    return ['name', 'note', 'imageUrl'].some(field =>
+    const previousImages = new Set(salonDomain.serviceImages(previous));
+    if (salonDomain.incomingServiceImages(service, previous).some(image => !previousImages.has(image))) return true;
+    return ['name', 'note'].some(field =>
       service?.[field] !== undefined && text(service[field]) !== text(previous[field]));
   })) return true;
 
@@ -798,7 +800,8 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
         priceFen: service.priceFen ?? current.priceFen,
         durationMinutes: service.durationMinutes ?? current.durationMinutes,
         note: service.note === '' ? '' : current.note,
-        imageUrl: service.imageUrl === '' ? '' : current.imageUrl,
+        imageUrls: salonDomain.incomingServiceImages(service, current)
+          .filter(image => salonDomain.serviceImages(current).includes(image)),
         id,
       })];
     });
@@ -860,7 +863,8 @@ const buildContentDraft = async (salon, payload, liveContent) => {
     draft.services = payload.services
       .filter(service => service && service.name)
       .map((service, index) => salonDomain.serviceForStorage(
-        service,
+        { ...service, imageUrls: salonDomain.incomingServiceImages(service,
+          (base.services || []).find(item => item.id === service.id)) },
         `s1-${Date.now()}-${index}`,
       ));
   }

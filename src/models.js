@@ -28,6 +28,7 @@ const serviceSchema = new mongoose.Schema({
   durationMinutes: { ...integer(1), required: true },
   note: { type: String, default: '' },
   imageUrl: { type: String, default: '' },
+  imageUrls: { type: [String], default: undefined },
 }, { _id: false });
 
 const merchantReplySchema = new mongoose.Schema({
