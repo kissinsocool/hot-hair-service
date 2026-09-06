@@ -1,383 +1,440 @@
-require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
+const path = require('path');
+const dotenv = require('dotenv');
+dotenv.config({ path: path.join(__dirname, '.env') });
 const express = require('express');
 const cors = require('cors');
-const bodyParser = require('body-parser');
 const fs = require('fs');
-const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
-const { WebSocketServer } = require('ws');
+const { WebSocket, WebSocketServer } = require('ws');
+const {
+  PORT,
+  listenHost,
+  uploadDir,
+  imageCacheDir,
+  picturesDir,
+  amapWebServiceKey,
+  publicBaseUrl,
+  wechatAppId,
+  wechatAppSecret,
+  wechatBookingStatusTemplateId,
+  trustProxyHops,
+  wsMaxConnections,
+  wsMaxConnectionsPerIp,
+  requireQualificationForPublishing,
+  isAllowedOrigin,
+} = require('./src/config');
+const {
+  Booking,
+  BookingMessage,
+  SlotOccupancy,
+  UserPolicy,
+  FavoriteSalon,
+  Salon,
+  StaffProfile,
+  MerchantUser,
+  AdminUser,
+  ClientUser,
+  AdConfig,
+  CouponCampaign,
+  UserCoupon,
+  SupportMessage,
+  AnalyticsEvent,
+} = require('./src/models');
+const {
+  campaignPayload,
+  couponDiscountForOrder,
+  couponPayload,
+  couponStatus,
+  validateCampaignInput,
+} = require('./src/coupons');
+const {
+  compressedImageMiddleware,
+  deleteModeratedImages,
+  imageExists,
+  publishModeratedImage,
+  createMerchantUploadPolicies,
+  createModeratedUploadPolicies,
+  publicImageUrl,
+  saveBase64Image,
+  privateImageUrl,
+  verifyMerchantQualificationObjects,
+  verifyModeratedImageObjects,
+} = require('./src/images');
+const { rateLimits } = require('./src/rate-limit');
+const { hashPassword, verifyPassword } = require('./src/passwords');
+const {
+  connectRedis,
+  getRedisClient,
+  publishSessionRevocation,
+  subscribeSessionRevocations,
+} = require('./src/redis');
+const { errorLogger, requestLogger } = require('./src/observability');
+const authDomain = require('./src/services/auth');
+const bookingDomain = require('./src/services/booking');
+const salonDomain = require('./src/services/salon');
+const {
+  activeSessionQuery,
+  buildAdminUserPayload,
+  buildClientUserPayload,
+  buildMerchantUserPayload,
+  createClientUserWithSignupCoupons,
+  createSession,
+  decryptWechatPhoneNumber,
+  getWechatPhoneNumber,
+  getWechatOpenId,
+  hashSessionToken,
+  normalizeUserId,
+  sessionTokenFromRequest,
+  userIdAliases,
+} = authDomain;
+const { sendBookingAcceptedNotification } = require('./src/services/wechat-subscriptions');
 
 const app = express();
-const PORT = 3000;
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+const socketConnectionCounts = new Map();
+const wss = new WebSocketServer({
+  server,
+  path: '/ws',
+  maxPayload: 4 * 1024,
+  perMessageDeflate: false,
+  verifyClient: ({ origin }, done) => {
+    if (!isAllowedOrigin(origin)) return done(false, 403, 'Origin not allowed');
+    if (wss.clients.size >= wsMaxConnections) return done(false, 503, 'WebSocket capacity reached');
+    done(true);
+  },
+});
 
-app.use(cors());
-app.use(bodyParser.json({ limit: '10mb' }));
+if (trustProxyHops > 0) app.set('trust proxy', trustProxyHops);
 
+app.use(requestLogger);
+app.use(cors({
+  origin: (origin, callback) => {
+    if (isAllowedOrigin(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
+  exposedHeaders: ['X-Total-Count', 'X-Page', 'X-Page-Size'],
+}));
+app.use(express.json({ limit: process.env.JSON_LIMIT || '10mb' }));
+
+app.get('/health', (_req, res) => {
+  res.set('Cache-Control', 'no-store').json({ status: 'ok', uptimeSeconds: Math.floor(process.uptime()) });
+});
+app.get('/ready', (_req, res) => {
+  const mongoReady = mongoose.connection.readyState === 1;
+  const redisRequired = Boolean(String(process.env.REDIS_URL || '').trim());
+  const redisReady = !redisRequired || Boolean(getRedisClient());
+  res.status(mongoReady && redisReady ? 200 : 503).set('Cache-Control', 'no-store').json({
+    status: mongoReady && redisReady ? 'ready' : 'not_ready',
+    mongodb: mongoReady ? 'up' : 'down',
+    redis: redisReady ? 'up' : 'down',
+  });
+});
 // 静态资源托管
-app.use('/images', express.static('/Users/alice/Pictures'));
-const uploadDir = path.join(__dirname, 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
+fs.mkdirSync(imageCacheDir, { recursive: true });
+app.use('/cached-images', express.static(imageCacheDir));
+app.get(/^\/images\/(.+)/, compressedImageMiddleware(picturesDir));
+app.use('/images', express.static(picturesDir));
+app.get(/^\/uploads\/(.+)/, compressedImageMiddleware(uploadDir));
 app.use('/uploads', express.static(uploadDir));
-const dataDir = path.join(__dirname, 'data');
-const favoritesFile = path.join(dataDir, 'favorites.json');
-fs.mkdirSync(dataDir, { recursive: true });
 
-const bookingSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true, index: true },
-  userId: { type: String, default: 'demo-user', index: true },
-  userName: { type: String, default: 'Demo 用户' },
-  salonId: String,
-  salonName: String,
-  staffId: { type: String, required: true, index: true },
-  staffName: String,
-  serviceId: { type: String, required: true },
-  serviceName: String,
-  servicePrice: String,
-  serviceDuration: String,
-  serviceBasePrice: { type: Number, default: 0 },
-  staffExtraServiceFee: { type: Number, default: 0 },
-  totalPrice: { type: Number, default: 0 },
-  startTime: { type: Date, required: true, index: true },
-  note: { type: String, default: '' },
-  status: { type: String, default: 'pending', index: true },
-  merchantMessage: String,
-  userMessage: String,
-  rejectReason: { type: String, default: '' },
-  reviewed: { type: Boolean, default: false },
-  review: mongoose.Schema.Types.Mixed,
-  complained: { type: Boolean, default: false },
-  complaint: mongoose.Schema.Types.Mixed,
-  createdAt: Date,
-  updatedAt: Date,
-}, { id: false });
-
-const userPolicySchema = new mongoose.Schema({
-  userId: { type: String, required: true, unique: true, index: true },
-  noShowCount: { type: Number, default: 0 },
-  isBlacklisted: { type: Boolean, default: false },
-  updatedAt: Date,
-}, { timestamps: true });
-
-const favoriteSalonSchema = new mongoose.Schema({
-  userId: { type: String, default: 'demo-user', index: true },
-  salonId: { type: String, required: true, index: true },
-  salon: { type: mongoose.Schema.Types.Mixed, required: true },
-}, { timestamps: true });
-
-favoriteSalonSchema.index({ userId: 1, salonId: 1 }, { unique: true });
-
-const salonSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true, index: true },
-  name: String,
-  address: String,
-  addressRegion: mongoose.Schema.Types.Mixed,
-  addressDetail: String,
-  rating: Number,
-  image: String,
-  images: [String],
-  promoImages: [String],
-  description: String,
-  fullDescription: String,
-  openingHours: String,
-  phone: String,
-  staffIds: [String],
-  services: [mongoose.Schema.Types.Mixed],
-  publishStatus: { type: String, default: 'online', index: true },
-  licenseUrl: { type: String, default: '' },
-  licenseStatus: { type: String, default: 'unsubmitted', index: true },
-  licenseRejectReason: { type: String, default: '' },
-  licenseSubmittedAt: Date,
-  licenseReviewedAt: Date,
-}, { timestamps: true });
-
-const staffProfileSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true, index: true },
-  name: String,
-  role: String,
-  experience: String,
-  extraServiceFee: { type: Number, default: 0 },
-  imageUrl: String,
-  bio: String,
-  rating: Number,
-  reviews: [mongoose.Schema.Types.Mixed],
-  unavailableSlots: [String],
-}, { timestamps: true });
-
-const merchantUserSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true, index: true },
-  username: { type: String, required: true, unique: true, index: true },
-  displayName: String,
-  salonId: { type: String, default: '1', index: true },
-  role: { type: String, default: 'merchant' },
-  passwordHash: { type: String, required: true },
-  passwordSalt: { type: String, required: true },
-  sessionToken: { type: String, default: '' },
-  lastLoginAt: Date,
-}, { timestamps: true });
-
-const adminUserSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true, index: true },
-  username: { type: String, required: true, unique: true, index: true },
-  displayName: String,
-  role: { type: String, default: 'admin' },
-  passwordHash: { type: String, required: true },
-  passwordSalt: { type: String, required: true },
-  sessionToken: { type: String, default: '', index: true },
-  lastLoginAt: Date,
-}, { timestamps: true });
-
-const clientUserSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true, index: true },
-  account: { type: String, required: true, unique: true, index: true },
-  displayName: String,
-  gender: { type: String, default: '保密' },
-  avatarUrl: { type: String, default: '' },
-  phone: { type: String, default: '' },
-  passwordHash: { type: String, required: true },
-  passwordSalt: { type: String, required: true },
-  sessionToken: { type: String, default: '', index: true },
-  lastLoginAt: Date,
-}, { timestamps: true });
-
-const smsVerificationSchema = new mongoose.Schema({
-  phone: { type: String, required: true, index: true },
-  codeHash: { type: String, required: true },
-  expiresAt: { type: Date, required: true, index: true },
-  consumedAt: Date,
-}, { timestamps: true });
-
-const Booking = mongoose.model('Booking', bookingSchema);
-const UserPolicy = mongoose.model('UserPolicy', userPolicySchema);
-const FavoriteSalon = mongoose.model('FavoriteSalon', favoriteSalonSchema);
-const Salon = mongoose.model('Salon', salonSchema);
-const StaffProfile = mongoose.model('StaffProfile', staffProfileSchema);
-const MerchantUser = mongoose.model('MerchantUser', merchantUserSchema);
-const AdminUser = mongoose.model('AdminUser', adminUserSchema);
-const ClientUser = mongoose.model('ClientUser', clientUserSchema);
-const SmsVerification = mongoose.model('SmsVerification', smsVerificationSchema);
-
-const hashPassword = (password, salt = crypto.randomBytes(16).toString('hex')) => ({
-  salt,
-  hash: crypto.createHash('sha256').update(`${salt}:${password}`).digest('hex'),
-});
-
-const normalizePhone = (phone) => String(phone || '').replace(/\D/g, '');
-
-const isValidPhone = (phone) => /^1\d{10}$/.test(phone);
-
-const maskPhone = (phone) =>
-  phone.length === 11 ? `${phone.slice(0, 3)}****${phone.slice(7)}` : phone;
-
-const hashSmsCode = (phone, code) =>
-  crypto.createHash('sha256').update(`${phone}:${code}`).digest('hex');
-
-const buildMerchantUserPayload = (user) => ({
-  id: user.id,
-  username: user.username,
-  displayName: user.displayName,
-  salonId: user.salonId,
-  role: user.role,
-});
-
-const buildAdminUserPayload = (user) => ({
-  id: user.id,
-  username: user.username,
-  displayName: user.displayName,
-  role: user.role,
-});
-
-const buildClientUserPayload = (user) => ({
-  id: user.id,
-  account: user.account,
-  displayName: user.displayName,
-  gender: user.gender || '保密',
-  avatarUrl: user.avatarUrl || '',
-  phone: user.phone || user.account,
-});
-
-const requireMerchantAuth = async (req, res, next) => {
-  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-  if (!token) return res.status(401).json({ message: 'Merchant login required' });
-
-  const user = await MerchantUser.findOne({ sessionToken: token }).lean();
-  if (!user) return res.status(401).json({ message: 'Merchant login expired' });
-
-  req.merchantUser = user;
-  next();
+const normalizeAdLink = (value) => {
+  const link = String(value || '').trim();
+  return /^\/pages\/[A-Za-z0-9_/-]+(?:\?[^#\s]*)?$/.test(link) && !link.includes('..') ? link : '';
 };
 
-const requireAdminAuth = async (req, res, next) => {
-  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-  if (!token) return res.status(401).json({ message: 'Admin login required' });
+const buildAdPayload = (config) => ({
+  imageUrl: publicImageUrl(config?.imageUrl || ''),
+  link: normalizeAdLink(config?.link) || '/pages/ad/ad',
+  enabled: config?.enabled !== false,
+});
 
-  const user = await AdminUser.findOne({ sessionToken: token }).lean();
-  if (!user) return res.status(401).json({ message: 'Admin login expired' });
+const stripSensitiveSalonFields = salonDomain.stripSensitiveSalonFields;
 
-  req.adminUser = user;
-  next();
-};
-
-const getClientUserFromRequest = async (req) => {
-  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-  if (!token) return null;
-  return ClientUser.findOne({ sessionToken: token }).lean();
-};
-
-const requireClientAuth = async (req, res, next) => {
-  const user = await getClientUserFromRequest(req);
-  if (!user) return res.status(401).json({ message: 'User login required' });
-  req.clientUser = user;
-  next();
-};
-
-const resolveRequestUser = async (req) => {
-  const clientUser = await getClientUserFromRequest(req);
-  if (clientUser) {
-    return {
-      userId: clientUser.id,
-      userName: clientUser.displayName || clientUser.account,
-    };
-  }
-
+const buildAdminMerchantPayload = async (user, salonDocument = {}) => {
+  const salon = normalizeDocument(salonDocument);
+  const staffMap = await getStaffMapByIds(salon.staffIds || []);
+  const [reviews, ratingSummaries] = await Promise.all([
+    getApprovedReviewsByStaffIds(salon.staffIds || [], PUBLIC_SALON_REVIEWS_LIMIT),
+    getApprovedRatingSummariesByStaffIds(salon.staffIds || []),
+  ]);
+  const reviewsByStaff = groupReviewsByStaff(reviews);
+  const publicSalon = {
+    ...stripSensitiveSalonFields(salon),
+    staff: (salon.staffIds || []).map(id => staffMap[id]).filter(Boolean)
+      .map(person => buildStaffPayload(person, reviewsByStaff[person.id] || [], ratingSummaries[person.id])),
+  };
+  const salonPayload = salon.pendingContent ? { ...publicSalon, ...salon.pendingContent } : publicSalon;
+  salonPayload.staff = (salonPayload.staff || [])
+    .map(person => buildStaffPayload(person, reviewsByStaff[person.id] || [], ratingSummaries[person.id]));
+  salonPayload.reviews = reviews;
   return {
-    userId: req.body?.userId || req.query?.userId || 'demo-user',
-    userName: req.body?.userName || 'Demo 用户',
+    ...buildMerchantUserPayload(user),
+    salonName: salon.name || '',
+    publishStatus: salon.publishStatus || 'offline',
+    licenseUrl: privateImageUrl(salon.licenseUrl || ''),
+    legalPersonIdFrontUrl: privateImageUrl(salon.legalPersonIdFrontUrl || ''),
+    legalPersonIdBackUrl: privateImageUrl(salon.legalPersonIdBackUrl || ''),
+    addressProofUrl: privateImageUrl(salon.addressProofUrl || ''),
+    licenseStatus: salon.licenseStatus || 'unsubmitted',
+    licenseRejectReason: salon.licenseRejectReason || '',
+    licenseSubmittedAt: salon.licenseSubmittedAt,
+    licenseReviewedAt: salon.licenseReviewedAt,
+    contentReviewStatus: salon.contentReviewStatus || 'pending',
+    contentRejectReason: salon.contentRejectReason || '',
+    contentReviewedAt: salon.contentReviewedAt,
+    salon: salonPayload,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+    lastLoginAt: user.lastLoginAt,
   };
 };
 
+const socketSubscriptions = new WeakMap();
+const closeSocketsBySessionHash = (sessionHash) => {
+  if (!sessionHash) return;
+  wss.clients.forEach((socket) => {
+    if (socketSubscriptions.get(socket)?.sessionHash === sessionHash) {
+      socket.close(1008, 'Session expired');
+    }
+  });
+};
+const revokeSessionHash = async (sessionHash) => {
+  if (!sessionHash) return;
+  closeSocketsBySessionHash(sessionHash);
+  try {
+    await publishSessionRevocation(sessionHash);
+  } catch (error) {
+    console.error('Session revocation publish error:', error.message);
+  }
+};
+const {
+  loginClientByPhone,
+  logoutSession,
+  requireAdminAuth,
+  requireClientAuth,
+  requireMerchantAuth,
+  rotateSession,
+} = authDomain.createAuthService({ revokeSessionHash });
+
 const sendSocketMessage = (socket, payload) => {
-  if (socket.readyState !== socket.OPEN) return;
+  if (socket.readyState !== WebSocket.OPEN) return;
+  if (socket.bufferedAmount > 1024 * 1024) {
+    socket.close(1013, 'Client is too slow');
+    return;
+  }
   socket.send(JSON.stringify(payload));
 };
 
+const socketCanReceiveBooking = (subscription, booking) => {
+  if (!subscription || !booking) return false;
+  if (subscription.role === 'admin') return true;
+  if (subscription.role === 'merchant') return String(subscription.salonId) === String(booking.salonId);
+  return subscription.role === 'client'
+    && normalizeUserId(subscription.userId) === normalizeUserId(booking.userId);
+};
+
 const broadcastBookingEvent = (event, booking) => {
+  const normalized = normalizeBooking(booking);
   const payload = {
     event,
-    booking: normalizeBooking(booking),
+    booking: normalized,
   };
 
   wss.clients.forEach((client) => {
-    sendSocketMessage(client, payload);
+    if (socketCanReceiveBooking(socketSubscriptions.get(client), normalized)) {
+      sendSocketMessage(client, payload);
+    }
   });
 };
 
-wss.on('connection', (socket) => {
+const authenticateSocket = async (role, token) => {
+  if (role === 'client') {
+    const user = await ClientUser.findOne({
+      ...activeSessionQuery(token),
+      authProvider: 'wechat',
+    }).select('id sessionExpiresAt').lean();
+    return user ? { role, userId: normalizeUserId(user.id), sessionExpiresAt: user.sessionExpiresAt, sessionHash: hashSessionToken(token) } : null;
+  }
+  if (role === 'merchant') {
+    const user = await MerchantUser.findOne(activeSessionQuery(token)).select('salonId sessionExpiresAt').lean();
+    return user ? { role, salonId: user.salonId, sessionExpiresAt: user.sessionExpiresAt, sessionHash: hashSessionToken(token) } : null;
+  }
+  if (role === 'admin') {
+    const user = await AdminUser.findOne(activeSessionQuery(token)).select('id sessionExpiresAt').lean();
+    return user ? { role, sessionExpiresAt: user.sessionExpiresAt, sessionHash: hashSessionToken(token) } : null;
+  }
+  return null;
+};
+
+const socketIpAddress = (request) => {
+  const forwarded = String(request.headers['x-forwarded-for'] || '')
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean);
+  return trustProxyHops > 0 && forwarded.length >= trustProxyHops
+    ? forwarded[forwarded.length - trustProxyHops]
+    : request.socket.remoteAddress || 'unknown';
+};
+
+wss.on('connection', (socket, request) => {
+  const ipAddress = socketIpAddress(request);
+  const connectionCount = socketConnectionCounts.get(ipAddress) || 0;
+  if (connectionCount >= wsMaxConnectionsPerIp) {
+    socket.close(1013, 'Too many connections');
+    return;
+  }
+  socketConnectionCounts.set(ipAddress, connectionCount + 1);
+  socket.on('close', () => {
+    const remaining = (socketConnectionCounts.get(ipAddress) || 1) - 1;
+    if (remaining > 0) socketConnectionCounts.set(ipAddress, remaining);
+    else socketConnectionCounts.delete(ipAddress);
+  });
+
+  socket.isAlive = true;
+  socket.on('pong', () => { socket.isAlive = true; });
+  socket.on('error', () => {});
+
+  const authTimeout = setTimeout(() => socket.close(1008, 'Authentication timeout'), 5000);
+  authTimeout.unref();
+  socket.on('close', () => {
+    clearTimeout(authTimeout);
+    clearTimeout(socket.sessionExpiryTimer);
+  });
+
   sendSocketMessage(socket, {
-    event: 'connected',
-    message: 'Booking updates connected.',
+    event: 'auth.required',
+    message: 'Send {"event":"authenticate","role":"client|merchant|admin","token":"..."}.',
+  });
+
+  socket.on('message', async (raw, isBinary) => {
+    if (socketSubscriptions.has(socket) || socket.authenticating) return;
+    if (isBinary) return socket.close(1003, 'Text messages only');
+
+    let message;
+    try {
+      message = JSON.parse(raw.toString());
+    } catch {
+      return socket.close(1008, 'Invalid authentication message');
+    }
+    const role = String(message?.role || '').trim();
+    const token = String(message?.token || '').trim();
+    if (message?.event !== 'authenticate' || !['client', 'merchant', 'admin'].includes(role) || !token || token.length > 256) {
+      return socket.close(1008, 'Invalid authentication message');
+    }
+
+    socket.authenticating = true;
+    try {
+      const subscription = await authenticateSocket(role, token);
+      if (!subscription) return socket.close(1008, 'Authentication failed');
+      socketSubscriptions.set(socket, subscription);
+      clearTimeout(authTimeout);
+      const closeWhenExpired = () => {
+        const remaining = new Date(subscription.sessionExpiresAt).getTime() - Date.now();
+        if (remaining <= 0) return socket.close(1008, 'Session expired');
+        socket.sessionExpiryTimer = setTimeout(closeWhenExpired, Math.min(remaining, 2147000000));
+        socket.sessionExpiryTimer.unref();
+      };
+      closeWhenExpired();
+      sendSocketMessage(socket, { event: 'authenticated', role: subscription.role });
+    } catch {
+      socket.close(1011, 'Authentication unavailable');
+    } finally {
+      socket.authenticating = false;
+    }
   });
 });
 
-// --- Initial merchant template data ---
-const imageUrl = 'http://localhost:3000/images/云南/1/IMG_1310.JPG';
+const socketHeartbeat = setInterval(() => {
+  wss.clients.forEach((socket) => {
+    if (!socket.isAlive) return socket.terminate();
+    socket.isAlive = false;
+    socket.ping();
+  });
+}, 30000);
+socketHeartbeat.unref();
+server.on('close', () => clearInterval(socketHeartbeat));
 
-const salons = [
-  {
-    id: '1',
-    name: 'Modern Cut Studio',
-    address: 'Tokyo, Shibuya',
-    rating: 4.8,
-    image: imageUrl,
-    images: [],
-    promoImages: [imageUrl],
-    description: '专业极简主义剪发，打造你的个性之美。',
-    fullDescription: 'Modern Cut Studio 致力于将现代极简主义与经典剪裁相结合。',
-    openingHours: '10:00 - 20:00',
-    phone: '03-1234-5678',
-    staffIds: ['1', '2'],
-    services: [
-      { id: 's1', name: '极简修剪', price: '¥5,000', duration: '60min', note: '适合日常维护和快速修整。', imageUrl },
-      { id: 's2', name: '质感染发', price: '¥12,000', duration: '120min', note: '染前会进行发质咨询。', imageUrl },
-      { id: 's3', name: '头皮深层护理', price: '¥8,000', duration: '90min', note: '敏感头皮请提前告知。', imageUrl },
-    ]
-  }
-];
+const normalizeDocument = salonDomain.normalizeDocument;
+const toFiniteNumber = salonDomain.toFiniteNumber;
+const getCoordinates = salonDomain.getCoordinates;
+const buildGeoLocation = salonDomain.buildGeoLocation;
+const calculateDistanceKm = salonDomain.calculateDistanceKm;
 
-const legacyMockSalonNames = new Set([
-  'Elite Glow Salon',
-]);
-
-const staff = {
-  '1': {
-    id: '1',
-    name: 'Sato 先生',
-    role: '首席发型师',
-    experience: '8年专业经验',
-    extraServiceFee: 0,
-    imageUrl: 'https://images.unsplash.com/photo-1500648767791-ced8051cb34c?q=80&w=200',
-    bio: '你好！我是 Sato。我致力于通过精准的剪裁和自然的色彩，挖掘每个人潜藏的独特气质。',
-    rating: 4.8,
-    reviews: [
-      { id: 'r1', user: '田中', rating: 5, comment: '剪发非常精准，完全是我想要的样子！', date: '2026-05-10' },
-      { id: 'r2', user: '佐藤', rating: 4, comment: '技术很好，就是预约稍微有点难。', date: '2026-05-15' },
-      { id: 'r10', user: '小林', rating: 5, comment: '非常专业的首席发型师，细节把控极强。', date: '2026-06-01' },
-      { id: 'r11', user: '美奈', rating: 5, comment: '帮我设计的新发型太适合我了，谢谢Sato先生！', date: '2026-06-05' }
-    ]
-  },
-  '2': {
-    id: '2',
-    name: 'Yumi 小姐',
-    role: '创意总监',
-    experience: '10年经验',
-    extraServiceFee: 0,
-    imageUrl: 'https://images.unsplash.com/photo-1438761681033-724816758d4b?q=80&w=200',
-    bio: '追求自然与流畅的线条感，让发型成为你穿搭的一部分。',
-    rating: 4.9,
-    reviews: [
-      { id: 'r3', user: '小林', rating: 5, comment: '非常有艺术感的剪发，强烈推荐！', date: '2026-05-12' },
-      { id: 'r4', user: '加藤', rating: 5, comment: '细节处理得非常完美。', date: '2026-05-20' },
-      { id: 'r5', user: '铃木', rating: 4, comment: '服务态度非常好，很舒适。', date: '2026-05-22' },
-      { id: 'r12', user: '爱丽', rating: 5, comment: 'Yumi小姐的审美真的绝了，剪完感觉整个人气质提升。', date: '2026-06-02' }
-    ]
-  },
-  '3': {
-    id: '3',
-    name: 'Ken 先生',
-    role: '色彩专家',
-    experience: '6年经验',
-    extraServiceFee: 0,
-    imageUrl: 'https://images.unsplash.com/photo-1472099642232-ed44ee252772?q=80&w=200',
-    bio: '色彩是改变心情最快的方式，我将为你寻找最适合你的那个色调。',
-    rating: 4.7,
-    reviews: [
-      { id: 'r6', user: '山本', rating: 5, comment: '染出的颜色非常高级，不掉色。', date: '2026-05-05' },
-      { id: 'r7', user: '中村', rating: 4, comment: '色彩方案很专业，沟通顺畅。', date: '2026-05-18' },
-      { id: 'r13', user: '宏太', rating: 5, comment: '颜色调得非常自然，非常满意。', date: '2026-06-03' },
-      { id: 'r14', user: '由美', rating: 4, comment: '专业度很高，染发过程非常舒适。', date: '2026-06-07' }
-    ]
-  },
-  '4': {
-    id: '4',
-    name: 'Miki 小姐',
-    role: '资深发型师',
-    experience: '5年经验',
-    extraServiceFee: 0,
-    imageUrl: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=200',
-    bio: '健康的发质是美感的基础，我专注于为您提供最温和的修复方案。',
-    rating: 4.6,
-    reviews: [
-      { id: 'r8', user: '高桥', rating: 4, comment: '护理之后头发顺滑了很多。', date: '2026-05-01' },
-      { id: 'r9', user: '伊藤', rating: 5, comment: '非常温柔的发型师，体验很棒。', date: '2026-05-11' },
-      { id: 'r15', user: '直树', rating: 5, comment: '头皮护理非常舒服，感觉压力都释放了。', date: '2026-06-04' },
-      { id: 'r16', user: '结衣', rating: 4, comment: '发质修复效果很明显，头发亮了很多。', date: '2026-06-08' }
-    ]
-  }
+const normalizeLimit = (value, fallback = 50, max = 100) => {
+  const limit = Math.floor(Number(value));
+  return Number.isFinite(limit) && limit > 0 ? Math.min(limit, max) : fallback;
 };
 
-const normalizeDocument = (document) =>
-  typeof document?.toObject === 'function' ? document.toObject() : document;
+const normalizeRadiusKm = (value, fallback, max, min = 0.1) => {
+  const radius = toFiniteNumber(value);
+  return radius === null ? fallback : Math.min(Math.max(radius, min), max);
+};
 
-const getAllSalons = async () => {
-  const salonList = await Salon.find({ publishStatus: 'online' }).lean();
-  return salonList.sort((a, b) => Number(a.id) - Number(b.id));
+const normalizePagination = (query = {}, fallback = 50, max = 100) => {
+  const requestedPage = Math.floor(Number(query.page));
+  const page = Number.isFinite(requestedPage) && requestedPage > 0 ? Math.min(requestedPage, 10000) : 1;
+  const limit = normalizeLimit(query.limit, fallback, max);
+  return { page, limit, skip: (page - 1) * limit };
+};
+
+const buildMerchantBookingScope = bookingDomain.buildMerchantBookingScope;
+
+const setPaginationHeaders = (res, pagination, total) => {
+  res.set({
+    'X-Total-Count': String(total),
+    'X-Page': String(pagination.page),
+    'X-Page-Size': String(pagination.limit),
+  });
+};
+
+const INPUT_LIMITS = Object.freeze({
+  complaint: 2000,
+  contentStaff: 50,
+  note: 500,
+  review: 1000,
+  reviewReply: 1000,
+  services: 50,
+  closedDates: 500,
+  unavailableSlots: 500,
+});
+
+const findNearbySalons = async (userLocation, radiusKm, limit) => {
+  const query = {
+    publishStatus: 'online',
+    geoLocation: {
+      $nearSphere: {
+        $geometry: {
+          type: 'Point',
+          coordinates: [userLocation.longitude, userLocation.latitude],
+        },
+        ...(radiusKm == null ? {} : { $maxDistance: Math.max(radiusKm, 0.1) * 1000 }),
+      },
+    },
+  };
+  const salonList = await Salon.find(query)
+    .select('-licenseUrl -legalPersonIdFrontUrl -legalPersonIdBackUrl -addressProofUrl -licenseStatus -licenseRejectReason -licenseSubmittedAt -licenseReviewedAt -pendingContent -contentReviewStatus -contentRejectReason -contentReviewedAt')
+    .limit(limit).lean();
+  return salonList
+    .map((salon) => {
+      const salonLocation = getCoordinates(salon.location || salon.geoLocation);
+      return salonLocation
+        ? { ...salon, distanceKm: Number(calculateDistanceKm(userLocation, salonLocation).toFixed(2)) }
+        : salon;
+    });
+};
+
+const getNearbySalons = async (userLocation, _radiusKm, limit, minResults = 10, maxRadiusKm = 50) => {
+  const salonList = await findNearbySalons(userLocation, maxRadiusKm, limit);
+  return salonList.length >= Math.min(limit, minResults)
+    ? salonList
+    : findNearbySalons(userLocation, null, limit);
 };
 
 const getServiceById = async (serviceId) => {
-  const salon = await Salon.findOne({ 'services.id': serviceId }).lean();
+  const salon = await Salon.findOne({ 'services.id': serviceId }).select('services').lean();
   return salon?.services?.find(item => item.id === serviceId) || null;
 };
 
@@ -390,145 +447,497 @@ const getStaffMapByIds = async (staffIds = []) => {
   return Object.fromEntries(profiles.map(profile => [profile.id, profile]));
 };
 
-const parseTimeToMinutes = (time) => {
-  const match = String(time || '').trim().match(/^(\d{1,2}):(\d{2})$/);
-  if (!match) return null;
+const formatMinutesAsTime = bookingDomain.formatMinutesAsTime;
+const parseOpeningHours = bookingDomain.parseOpeningHours;
 
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
-  return hours * 60 + minutes;
+const normalizeDeposit = (deposit) => {
+  const value = Number(String(deposit ?? 0).replace(/[^\d.-]/g, ''));
+  return Number.isFinite(value) && value >= 0 ? value : null;
 };
 
-const formatMinutesAsTime = (value) => {
-  const hours = Math.floor(value / 60);
-  const minutes = value % 60;
-  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
-};
-
-const parseOpeningHours = (openingHours) => {
-  const match = String(openingHours || '').match(/(\d{1,2}:\d{2})\s*[-~—–]\s*(\d{1,2}:\d{2})/);
-  const start = parseTimeToMinutes(match?.[1]) ?? 10 * 60;
-  const end = parseTimeToMinutes(match?.[2]) ?? 20 * 60;
-  return end >= start ? { start, end } : { start: 10 * 60, end: 20 * 60 };
-};
-
-const parsePriceValue = (price) => {
-  const value = Number(String(price || '').replace(/[^\d.-]/g, ''));
-  return Number.isFinite(value) ? value : 0;
-};
-
-const generateHalfHourSlots = (openingHours = '10:00 - 20:00') => {
-  const { start, end } = parseOpeningHours(openingHours);
-  const slots = [];
-  for (let minutes = start; minutes <= end; minutes += 30) {
-    slots.push(formatMinutesAsTime(minutes));
+const fetchJson = async (url, options = {}) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: { 'User-Agent': 'hot-hair-service/1.0', ...(options.headers || {}) },
+    });
+    if (!response.ok) return null;
+    return response.json();
+  } catch (_) {
+    return null;
+  } finally {
+    clearTimeout(timeout);
   }
-  return slots;
 };
 
-const normalizeUnavailableSlots = (slots) => {
-  if (!Array.isArray(slots)) return [];
-  return [...new Set(
-    slots
-      .filter(slot => typeof slot === 'string')
-      .map(slot => slot.trim())
-      .filter(slot => /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(slot))
-  )].sort();
+const parseAmapReverseAddress = (data) => {
+  const raw = data?.regeocode;
+  if (!raw || typeof raw !== 'object') return '';
+  const address = String(raw.formatted_address || '').trim();
+  if (address) return address;
+
+  const component = raw.addressComponent;
+  if (!component || typeof component !== 'object') return '';
+  return [
+    component.province,
+    component.city,
+    component.district,
+    component.township,
+  ].map(part => String(part || '').trim()).filter(Boolean).join('');
 };
+
+const generateHalfHourSlots = bookingDomain.generateHalfHourSlots;
+const normalizeUnavailableSlots = bookingDomain.normalizeUnavailableSlots;
+const normalizeClosedDates = bookingDomain.normalizeClosedDates;
+const normalizeWeeklyClosedDays = bookingDomain.normalizeWeeklyClosedDays;
+const expandedSalonClosedDates = bookingDomain.expandedSalonClosedDates;
+const isSalonClosedOnDate = bookingDomain.isSalonClosedOnDate;
+
+const isSameDayBookingBlocked = bookingDomain.isSameDayBookingBlocked;
 
 const isStaffUnavailable = async (staffId, startTime) => {
   const person = await getStaffById(staffId).lean();
   if (!person) return false;
-  if (typeof startTime !== 'string') return false;
-  const match = startTime.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
-  if (!match) return false;
-  const [, dateKey, timeKey] = match;
+  const parsed = startTime instanceof Date ? startTime : bookingDomain.parseBookingTime(startTime);
+  if (!parsed) return false;
+  const dateKey = bookingDomain.localDateKey(parsed);
+  const timeKey = bookingDomain.formatMinutesAsTime(bookingDomain.localTimeMinutes(parsed));
   return normalizeUnavailableSlots(person.unavailableSlots).includes(`${dateKey} ${timeKey}`);
 };
 
 const findActiveBookingAtTime = (staffId, startTime) =>
   Booking.findOne({
     staffId,
-    startTime: new Date(startTime),
+    startTime: bookingDomain.parseBookingTime(startTime),
     status: { $in: ['pending', 'accepted'] },
   });
 
 const findActiveBookingAtTimeExcluding = (staffId, startTime, bookingId) =>
   Booking.findOne({
     staffId,
-    startTime: new Date(startTime),
+    startTime: bookingDomain.parseBookingTime(startTime),
     id: { $ne: bookingId },
     status: { $in: ['pending', 'accepted'] },
   });
 
-const normalizeBooking = (booking) => ({
-  ...(typeof booking.toObject === 'function' ? booking.toObject() : booking),
-  statusLabel: {
-    pending: '等待商家确认',
-    accepted: '预约成功',
-    canceled: '预约已取消',
-    completed: '已完成',
-    no_show: '爽约',
-    rejected: '预约被拒绝',
-  }[booking.status] || booking.status,
-});
+const parseMerchantRescheduleTime = bookingDomain.parseMerchantRescheduleTime;
+const acceptedBookingAtTimeQuery = bookingDomain.acceptedBookingAtTimeQuery;
+
+const findAcceptedBookingAtTimeExcluding = (staffId, startTime, bookingId) =>
+  Booking.findOne(acceptedBookingAtTimeQuery(staffId, startTime, bookingId));
+
+const normalizeBookingPayload = bookingDomain.normalizeBookingPayload;
+
+const normalizeBooking = booking => normalizeBookingPayload(booking);
+const normalizeMerchantBooking = booking => normalizeBookingPayload(booking, true);
 
 const USER_CANCEL_WINDOW_MS = 3 * 60 * 60 * 1000;
 const BLACKLIST_NO_SHOW_LIMIT = 3;
 
-const getUserPolicy = async (userId) =>
+const getUserPolicy = async (userId, session) =>
   UserPolicy.findOneAndUpdate(
     { userId },
     { $setOnInsert: { userId, noShowCount: 0, isBlacklisted: false } },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, new: true, setDefaultsOnInsert: true, session },
   );
 
-const incrementNoShowCount = async (userId) => {
-  const policy = await getUserPolicy(userId);
-  policy.noShowCount = Number(policy.noShowCount || 0) + 1;
-  policy.isBlacklisted = policy.noShowCount >= BLACKLIST_NO_SHOW_LIMIT;
-  policy.updatedAt = new Date();
-  await policy.save();
-  return policy;
+const incrementNoShowCount = (userId, session) => {
+  const nextCount = { $add: [{ $ifNull: ['$noShowCount', 0] }, 1] };
+  return UserPolicy.findOneAndUpdate(
+    { userId },
+    [{
+      $set: {
+        userId,
+        noShowCount: nextCount,
+        isBlacklisted: { $gte: [nextCount, BLACKLIST_NO_SHOW_LIMIT] },
+        updatedAt: new Date(),
+      },
+    }],
+    { upsert: true, new: true, session },
+  );
 };
 
-const calculateStaffRating = (person) => {
-  if (!person || !Array.isArray(person.reviews) || person.reviews.length === 0) {
-    return 5;
-  }
+const PUBLIC_SALON_REVIEWS_LIMIT = 150;
+const buildStaffPayload = salonDomain.buildStaffPayload;
+const publicReviewFromBooking = salonDomain.publicReviewFromBooking;
 
-  const total = person.reviews.reduce((sum, review) => sum + Number(review.rating || 0), 0);
-  return Number((total / person.reviews.length).toFixed(1));
+const getApprovedReviewsByStaffIds = async (staffIds = [], limit = PUBLIC_SALON_REVIEWS_LIMIT) => {
+  const ids = [...new Set(staffIds.map(String).filter(Boolean))];
+  if (!ids.length) return [];
+  const bookings = await Booking.find({
+    staffId: { $in: ids },
+    'review.reviewStatus': 'approved',
+  })
+    .select('id userId staffId staffName review updatedAt')
+    .sort({ updatedAt: -1 })
+    .limit(limit)
+    .lean();
+  const userIds = [...new Set(bookings.flatMap(booking => userIdAliases(booking.userId)))];
+  const users = userIds.length
+    ? await ClientUser.find({ id: { $in: userIds } }).select('id avatarUrl').lean()
+    : [];
+  const avatars = new Map(users.map(user => [normalizeUserId(user.id), user.avatarUrl]));
+  return bookings.map(booking => publicReviewFromBooking(
+    booking,
+    avatars.get(normalizeUserId(booking.userId)) || '',
+  ));
 };
 
-const buildStaffPayload = (person) => ({
-  ...person,
-  rating: calculateStaffRating(person),
-});
+const getApprovedRatingSummariesByStaffIds = async (staffIds = []) => {
+  const ids = [...new Set(staffIds.map(String).filter(Boolean))];
+  if (!ids.length) return {};
+  const rows = await Booking.aggregate([
+    {
+      $match: {
+        staffId: { $in: ids },
+        'review.reviewStatus': 'approved',
+        'review.rating': { $gte: 1, $lte: 5 },
+      },
+    },
+    {
+      $group: {
+        _id: '$staffId',
+        reviewCount: { $sum: 1 },
+        ratingTotal: { $sum: '$review.rating' },
+      },
+    },
+  ]);
+  return Object.fromEntries(rows.map(row => [
+    String(row._id),
+    salonDomain.ratingSummary(row.reviewCount, row.ratingTotal),
+  ]));
+};
 
-const buildSalonImageList = (salon) => {
-  const images = [
-    ...(Array.isArray(salon?.promoImages) ? salon.promoImages : []),
-    ...(Array.isArray(salon?.images) ? salon.images : []),
-  ];
+const getApprovedReviewTagCountsByStaffIds = async (staffIds = []) => {
+  const ids = [...new Set(staffIds.map(String).filter(Boolean))];
+  if (!ids.length) return [];
+  const rows = await Booking.aggregate([
+    { $match: { staffId: { $in: ids }, 'review.reviewStatus': 'approved' } },
+    { $unwind: '$review.tags' },
+    { $match: { 'review.tags': { $in: salonDomain.REVIEW_TAGS } } },
+    { $group: { _id: '$review.tags', count: { $sum: 1 } } },
+  ]);
+  const counts = Object.fromEntries(rows.map(row => [String(row._id), Number(row.count) || 0]));
+  return salonDomain.REVIEW_TAGS
+    .filter(name => counts[name])
+    .map(name => ({ name, count: counts[name] }));
+};
 
-  return [...new Set(images.filter(image => typeof image === 'string' && image.trim()))]
-    .slice(0, 20);
+const approvedSalonRatingSummary = (salon, summariesByStaffId) => {
+  const totals = (salon.staffIds || []).reduce((totals, staffId) => {
+    const summary = summariesByStaffId[String(staffId)];
+    if (summary) {
+      totals.reviewCount += summary.reviewCount;
+      totals.ratingTotal += summary.ratingTotal;
+    }
+    return totals;
+  }, { reviewCount: 0, ratingTotal: 0 });
+  return salonDomain.ratingSummary(totals.reviewCount, totals.ratingTotal);
+};
+
+const addApprovedSalonRatings = async (salons = []) => {
+  const summaries = await getApprovedRatingSummariesByStaffIds(
+    salons.flatMap(salon => salon.staffIds || []),
+  );
+  return salons.map((salon) => {
+    const { rating, reviewCount } = approvedSalonRatingSummary(salon, summaries);
+    return { ...salon, rating, reviewCount };
+  });
+};
+
+const groupReviewsByStaff = salonDomain.groupReviewsByStaff;
+const buildSalonImageList = salonDomain.buildSalonImageList;
+
+const existingSalonImages = async (salon) => {
+  const images = buildSalonImageList(salon);
+  const exists = await Promise.all(images.map(imageExists));
+  return images.filter((_, index) => exists[index]).map(publicImageUrl);
+};
+
+const salonCoverImage = async (salon) => {
+  const images = [salon?.image, ...buildSalonImageList(salon)]
+    .filter(image => typeof image === 'string' && image.trim());
+  const exists = await Promise.all(images.map(imageExists));
+  return publicImageUrl(images.find((_, index) => exists[index]) || '');
 };
 
 const buildSalonDetail = async (salonDocument) => {
   const salon = normalizeDocument(salonDocument);
   const staffMap = await getStaffMapByIds(salon.staffIds);
+  const staffList = salon.staffIds.map(id => staffMap[id]).filter(Boolean);
+  const [reviews, ratingSummaries, reviewTags] = await Promise.all([
+    getApprovedReviewsByStaffIds(salon.staffIds, PUBLIC_SALON_REVIEWS_LIMIT),
+    getApprovedRatingSummariesByStaffIds(salon.staffIds),
+    getApprovedReviewTagCountsByStaffIds(salon.staffIds),
+  ]);
+  const reviewsByStaff = groupReviewsByStaff(reviews);
+  const images = await existingSalonImages(salon);
+  const staff = staffList.map(person => buildStaffPayload(
+    person,
+    reviewsByStaff[person.id] || [],
+    ratingSummaries[person.id] || salonDomain.ratingSummary(0, 0),
+  ));
+  const publicSalon = stripSensitiveSalonFields(salon);
+  const { rating, reviewCount } = approvedSalonRatingSummary(salon, ratingSummaries);
   return {
-    ...salon,
-    staff: salon.staffIds.map(id => staffMap[id]).filter(Boolean).map(buildStaffPayload),
+    ...publicSalon,
+    rating,
+    reviewCount,
+    services: (publicSalon.services || []).map(salonDomain.servicePayload),
+    image: await salonCoverImage(salon),
+    images,
+    promoImages: images,
+    staff,
+    reviews,
+    reviewTags,
   };
+};
+
+const buildPublicSalonDetail = (salonDocument, builder = buildSalonDetail, now = Date.now()) =>
+  salonDomain.buildPublicSalonDetail(salonDocument, async document => {
+    const detail = await builder(document);
+    if (detail.closedDates === undefined && detail.weeklyClosedDays === undefined) return detail;
+    const { weeklyClosedDays, ...publicDetail } = detail;
+    return {
+      ...publicDetail,
+      closedDates: expandedSalonClosedDates(detail, new Date(now)),
+    };
+  }, now);
+const clearPublicSalonDetailCache = salonDomain.clearPublicSalonDetailCache;
+
+const contentFields = [
+  'name',
+  'address',
+  'addressRegion',
+  'addressDetail',
+  'location',
+  'description',
+  'fullDescription',
+  'image',
+  'images',
+  'promoImages',
+  'openingHours',
+  'acceptsSameDayBooking',
+  'weeklyClosedDays',
+  'closedDates',
+  'phone',
+  'services',
+  'staff',
+];
+
+const normalizeServiceTags = salonDomain.normalizeServiceTags;
+const normalizeSalonTags = salonDomain.normalizeSalonTags;
+
+const hasReviewableContentChanges = (current = {}, payload = {}) => {
+  const changed = (field, normalize = value => value) =>
+    payload[field] !== undefined
+    && JSON.stringify(normalize(payload[field])) !== JSON.stringify(normalize(current[field]));
+  const text = value => String(value || '').trim();
+  const images = value => (Array.isArray(value) ? value : [])
+    .map(item => String(item || '').trim())
+    .filter(Boolean)
+    .slice(0, 20);
+
+  if (['name', 'address', 'addressDetail', 'description', 'fullDescription', 'image'].some(field => changed(field, text))) return true;
+  if (changed('addressRegion') || changed('location')) return true;
+  if (payload.images !== undefined || payload.promoImages !== undefined) {
+    const incoming = payload.promoImages ?? payload.images;
+    const currentImages = new Set(images(current.promoImages ?? current.images));
+    if (images(incoming).some(image => !currentImages.has(image))) return true;
+  }
+
+  const currentServices = new Map((current.services || []).map(item => [String(item.id || ''), item]));
+  if ((payload.services || []).some(service => {
+    const previous = currentServices.get(String(service?.id || '')) || {};
+    const previousImages = new Set(salonDomain.serviceImages(previous));
+    if (salonDomain.incomingServiceImages(service, previous).some(image => !previousImages.has(image))) return true;
+    return ['name', 'note'].some(field =>
+      service?.[field] !== undefined && text(service[field]) !== text(previous[field]));
+  })) return true;
+
+  const currentStaff = new Map((current.staff || []).map(item => [String(item.id || ''), item]));
+  return (payload.staff || []).some(profile => {
+    const previous = currentStaff.get(String(profile?.id || '')) || {};
+    return ['name', 'bio', 'imageUrl'].some(field =>
+      profile?.[field] !== undefined && text(profile[field]) !== text(previous[field]));
+  });
+};
+
+const applyDirectSalonContent = async (salon, payload = {}) => {
+  const set = (key, value) => {
+    if (value !== undefined) salon[key] = value;
+  };
+  set('openingHours', typeof payload.openingHours === 'string' ? payload.openingHours : undefined);
+  set('acceptsSameDayBooking', typeof payload.acceptsSameDayBooking === 'boolean' ? payload.acceptsSameDayBooking : undefined);
+  set('weeklyClosedDays', Array.isArray(payload.weeklyClosedDays)
+    ? normalizeWeeklyClosedDays(payload.weeklyClosedDays)
+    : undefined);
+  set('closedDates', Array.isArray(payload.closedDates) ? normalizeClosedDates(payload.closedDates) : undefined);
+  set('phone', typeof payload.phone === 'string' ? payload.phone : undefined);
+  if (payload.image === '') salon.image = '';
+  if (Array.isArray(payload.promoImages) || Array.isArray(payload.images)) {
+    const currentImages = new Set(buildSalonImageList(salon));
+    const retained = [...new Set((payload.promoImages ?? payload.images)
+      .map(image => String(image || '').trim())
+      .filter(Boolean))]
+      .filter(image => currentImages.has(image));
+    salon.images = retained;
+    salon.promoImages = retained;
+  }
+  if (Array.isArray(payload.services)) {
+    const currentServices = new Map((salon.services || []).map(item => [String(item.id || ''), item]));
+    salon.services = payload.services.flatMap((service, index) => {
+      const id = String(service?.id || `s1-${Date.now()}-${index}`).trim();
+      const previous = currentServices.get(id);
+      if (!previous) return [];
+      const current = normalizeDocument(previous);
+      return [salonDomain.serviceForStorage({
+        ...current,
+        tags: service.tags ?? current.tags,
+        priceFen: service.priceFen ?? current.priceFen,
+        durationMinutes: service.durationMinutes ?? current.durationMinutes,
+        note: service.note === '' ? '' : current.note,
+        imageUrls: salonDomain.incomingServiceImages(service, current)
+          .filter(image => salonDomain.serviceImages(current).includes(image)),
+        id,
+      })];
+    });
+  }
+
+  if (Array.isArray(payload.staff)) {
+    const ids = payload.staff.map(profile => String(profile?.id || '').trim()).filter(Boolean);
+    const currentStaff = await getStaffMapByIds(ids);
+    const directStaff = payload.staff.filter(profile => currentStaff[profile?.id]);
+    salon.staffIds = directStaff.map(profile => profile.id);
+    await Promise.all(directStaff.map(profile => StaffProfile.updateOne(
+      { id: profile.id },
+      { $set: {
+        role: profile.role || '',
+        experience: profile.experience || '',
+        extraServiceFeeFen: profile.extraServiceFeeFen,
+        ...(profile.bio === '' ? { bio: '' } : {}),
+        ...(profile.imageUrl === '' ? { imageUrl: '' } : {}),
+        unavailableSlots: normalizeUnavailableSlots(profile.unavailableSlots),
+      } },
+    )));
+  }
+};
+
+const buildContentDraft = async (salon, payload, liveContent) => {
+  const base = normalizeDocument(salon.pendingContent) || liveContent || await buildSalonDetail(salon);
+  const draft = structuredClone(base);
+  const set = (key, value) => {
+    if (value !== undefined) draft[key] = value;
+  };
+
+  set('name', typeof payload.name === 'string' ? payload.name.trim() : undefined);
+  set('address', typeof payload.address === 'string' ? payload.address : undefined);
+  set('addressRegion', payload.addressRegion && typeof payload.addressRegion === 'object' ? payload.addressRegion : undefined);
+  set('addressDetail', typeof payload.addressDetail === 'string' ? payload.addressDetail : undefined);
+  set('location', payload.location && typeof payload.location === 'object'
+    ? getCoordinates(payload.location)
+    : undefined);
+  set('description', typeof payload.description === 'string' ? payload.description : undefined);
+  set('fullDescription', typeof payload.fullDescription === 'string' ? payload.fullDescription : undefined);
+  set('image', typeof payload.image === 'string' ? payload.image : undefined);
+  set('openingHours', typeof payload.openingHours === 'string' ? payload.openingHours : undefined);
+  set('acceptsSameDayBooking', typeof payload.acceptsSameDayBooking === 'boolean' ? payload.acceptsSameDayBooking : undefined);
+  set('weeklyClosedDays', Array.isArray(payload.weeklyClosedDays)
+    ? normalizeWeeklyClosedDays(payload.weeklyClosedDays)
+    : undefined);
+  set('closedDates', Array.isArray(payload.closedDates) ? normalizeClosedDates(payload.closedDates) : undefined);
+  set('phone', typeof payload.phone === 'string' ? payload.phone : undefined);
+
+  if (Array.isArray(payload.promoImages) || Array.isArray(payload.images)) {
+    const incomingImages = Array.isArray(payload.promoImages) ? payload.promoImages : payload.images;
+    draft.promoImages = [
+      ...new Set(incomingImages.map(item => item?.toString().trim()).filter(Boolean)),
+    ].slice(0, 20);
+    draft.images = draft.promoImages;
+  }
+
+  if (Array.isArray(payload.services)) {
+    draft.services = payload.services
+      .filter(service => service && service.name)
+      .map((service, index) => salonDomain.serviceForStorage(
+        { ...service, imageUrls: salonDomain.incomingServiceImages(service,
+          (base.services || []).find(item => item.id === service.id)) },
+        `s1-${Date.now()}-${index}`,
+      ));
+  }
+
+  if (Array.isArray(payload.staff)) {
+    draft.staff = payload.staff
+      .filter(profile => profile && profile.name)
+      .map((profile, index) => {
+        const id = profile.id || `merchant-staff-${Date.now()}-${index}`;
+        return {
+          id,
+          name: profile.name,
+          role: profile.role || '',
+          experience: profile.experience || '',
+          extraServiceFeeFen: profile.extraServiceFeeFen,
+          imageUrl: profile.imageUrl || '',
+          bio: profile.bio || '',
+          unavailableSlots: normalizeUnavailableSlots(profile.unavailableSlots),
+        };
+      });
+  }
+
+  if (Array.isArray(draft.staff)) {
+    draft.staff = draft.staff.map(({ reviews, rating, ...profile }) => profile);
+  }
+
+  return Object.fromEntries(contentFields.map(key => [key, draft[key]]));
+};
+
+const applyPendingContent = async (salon) => {
+  const draft = normalizeDocument(salon.pendingContent) || {};
+  contentFields
+    .filter(key => key !== 'staff')
+    .forEach(key => {
+      if (draft[key] !== undefined) salon[key] = draft[key];
+    });
+  if (draft.location !== undefined) salon.geoLocation = buildGeoLocation(draft.location);
+
+  if (Array.isArray(draft.staff)) {
+    salon.staffIds = draft.staff.map(profile => profile.id).filter(Boolean);
+    await Promise.all(draft.staff.map(profile =>
+      StaffProfile.findOneAndUpdate(
+        { id: profile.id },
+        profile,
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      )
+    ));
+  }
+
+  salon.pendingContent = undefined;
 };
 
 const buildMerchantSalonPayload = async (salonId = '1') => {
   const salon = await Salon.findOne({ id: salonId });
-  return buildSalonDetail(salon);
+  const payload = await buildSalonDetail(salon);
+  const merged = {
+    ...payload,
+    ...(normalizeDocument(salon.pendingContent) || {}),
+    contentReviewStatus: salon.contentReviewStatus || 'pending',
+    contentRejectReason: salon.contentRejectReason || '',
+    contentReviewedAt: salon.contentReviewedAt,
+  };
+  merged.services = (merged.services || []).map(salonDomain.servicePayload);
+  const reviewsByStaff = groupReviewsByStaff(payload.reviews);
+  const liveStaff = Object.fromEntries((payload.staff || []).map(person => [person.id, person]));
+  merged.staff = (merged.staff || [])
+    .map((person) => {
+      const live = liveStaff[person.id];
+      const summary = live ? { rating: live.rating, reviewCount: live.reviewCount } : undefined;
+      return buildStaffPayload(person, reviewsByStaff[person.id] || [], summary);
+    });
+  merged.reviews = payload.reviews;
+  return merged;
 };
 
 const ensureSalonForMerchant = async ({ salonId, displayName }) => {
@@ -538,1291 +947,314 @@ const ensureSalonForMerchant = async ({ salonId, displayName }) => {
 
   return Salon.create({
     id: normalizedSalonId,
-    name: displayName || `商家店铺 ${normalizedSalonId}`,
+    name: '',
     address: '',
     addressRegion: {},
     addressDetail: '',
-    rating: 4.8,
+    location: null,
+    geoLocation: null,
     image: '',
     images: [],
     promoImages: [],
+    tags: [],
     description: '',
     fullDescription: '',
     openingHours: '10:00 - 20:00',
+    acceptsSameDayBooking: true,
+    weeklyClosedDays: [],
+    closedDates: [],
     phone: '',
     staffIds: [],
     services: [],
     publishStatus: 'offline',
     licenseUrl: '',
+    legalPersonIdFrontUrl: '',
+    legalPersonIdBackUrl: '',
+    addressProofUrl: '',
     licenseStatus: 'unsubmitted',
     licenseRejectReason: '',
   });
 };
 
-const readFavoriteSalonsFromFile = () => {
-  if (!fs.existsSync(favoritesFile)) return [];
-
-  try {
-    const parsed = JSON.parse(fs.readFileSync(favoritesFile, 'utf8'));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (_) {
-    return [];
-  }
-};
-
-const readFavoriteSalons = async (userId = 'demo-user') => {
+const readFavoriteSalonIds = async (userId) => {
   const favorites = await FavoriteSalon
-    .find({ userId })
+    .find({ userId: { $in: userIdAliases(userId) } })
+    .select('salonId')
     .sort({ createdAt: -1 })
     .lean();
-  return favorites.map(favorite => favorite.salon);
+  return [...new Set(favorites.map(favorite => favorite.salonId))];
 };
 
-const migrateFavoriteSalonsFromFile = async () => {
-  const existingCount = await FavoriteSalon.countDocuments({ userId: 'demo-user' });
-  if (existingCount > 0) return;
-
-  const favorites = readFavoriteSalonsFromFile();
-  if (favorites.length === 0) return;
-
-  await FavoriteSalon.insertMany(
-    favorites
-      .filter(salon => salon?.id)
-      .map(salon => ({
-        userId: 'demo-user',
-        salonId: salon.id.toString(),
-        salon,
+const readFavoriteSalons = async (userId) => {
+  const favoriteSalonIds = await readFavoriteSalonIds(userId);
+  const salons = await Salon.find({
+    id: { $in: favoriteSalonIds },
+    publishStatus: 'online',
+  }).select('id name description staffIds image images promoImages').lean();
+  const ratedSalons = await addApprovedSalonRatings(salons);
+  const salonsById = new Map(ratedSalons.map(salon => [salon.id, salon]));
+  return Promise.all(
+    favoriteSalonIds
+      .map(salonId => salonsById.get(salonId))
+      .filter(Boolean)
+      .map(async salon => ({
+        id: salon.id,
+        name: salon.name || '',
+        description: salon.description || '',
+        rating: salon.rating,
+        reviewCount: salon.reviewCount,
+        image: await salonCoverImage(salon),
       })),
-    { ordered: false },
-  ).catch(() => {});
-};
-
-const migrateSeedDataToMongo = async () => {
-  const [salonCount, staffCount, merchantCount, adminCount, clientCount] = await Promise.all([
-    Salon.countDocuments(),
-    StaffProfile.countDocuments(),
-    MerchantUser.countDocuments(),
-    AdminUser.countDocuments(),
-    ClientUser.countDocuments(),
-  ]);
-
-  if (staffCount === 0) {
-    await StaffProfile.insertMany(
-      Object.values(staff).map(profile => ({
-        ...profile,
-        unavailableSlots: normalizeUnavailableSlots(profile.unavailableSlots),
-      })),
-      { ordered: false },
-    ).catch(() => {});
-  }
-
-  if (merchantCount === 0) {
-    const { salt, hash } = hashPassword('123456');
-    await MerchantUser.create({
-      id: 'merchant-1',
-      username: 'merchant',
-      displayName: 'Modern Cut Studio 商家',
-      salonId: '1',
-      role: 'merchant',
-      passwordSalt: salt,
-      passwordHash: hash,
-    });
-  }
-
-  if (salonCount === 0) {
-    await Salon.create({
-      ...salons[0],
-      publishStatus: 'online',
-      licenseStatus: 'unsubmitted',
-      licenseUrl: '',
-      licenseRejectReason: '',
-    }).catch(() => {});
-  }
-
-  const merchantUsers = await MerchantUser.find({}).lean();
-  await Promise.all(merchantUsers.map(user =>
-    ensureSalonForMerchant({ salonId: user.salonId, displayName: user.displayName })
-  ));
-  await Promise.all(merchantUsers.map(async (user) => {
-    if (user.username === 'merchant') return;
-    const salon = await Salon.findOne({ id: user.salonId });
-    if (!salon || !legacyMockSalonNames.has(salon.name)) return;
-
-    salon.name = user.displayName || `${user.username} 店铺`;
-    salon.address = '';
-    salon.addressRegion = {};
-    salon.addressDetail = '';
-    salon.image = '';
-    salon.images = [];
-    salon.promoImages = [];
-    salon.description = '';
-    salon.fullDescription = '';
-    salon.openingHours = '10:00 - 20:00';
-    salon.phone = '';
-    salon.staffIds = [];
-    salon.services = [];
-    salon.publishStatus = 'offline';
-    salon.licenseUrl = '';
-    salon.licenseStatus = 'unsubmitted';
-    salon.licenseRejectReason = '';
-    await salon.save();
-  }));
-
-  const merchantSalonIds = [
-    ...new Set(
-      merchantUsers
-        .map(user => String(user.salonId || '').trim())
-        .filter(Boolean)
-    ),
-  ];
-  if (merchantSalonIds.length > 0) {
-    await Salon.deleteMany({ id: { $nin: merchantSalonIds } });
-    await FavoriteSalon.deleteMany({ salonId: { $nin: merchantSalonIds } });
-  }
-  await Salon.updateMany(
-    { publishStatus: { $exists: false } },
-    { $set: { publishStatus: 'online', licenseStatus: 'unsubmitted', licenseUrl: '' } },
   );
-
-  if (adminCount === 0) {
-    const { salt, hash } = hashPassword('admin123456');
-    await AdminUser.create({
-      id: 'admin-1',
-      username: 'admin',
-      displayName: '平台管理员',
-      role: 'admin',
-      passwordSalt: salt,
-      passwordHash: hash,
-    });
-  }
-
-  if (clientCount === 0) {
-    const { salt, hash } = hashPassword('123456');
-    await ClientUser.create({
-      id: 'user-demo',
-      account: 'demo',
-      displayName: 'Demo 用户',
-      passwordSalt: salt,
-      passwordHash: hash,
-    });
-  }
 };
 
 const generateSlotsForStaffAndDate = async (staffId, date) => {
   const salon = await getSalonByStaffId(staffId).lean();
-  const slots = await Promise.all(generateHalfHourSlots(salon?.openingHours).map(async (time) => {
-    const startTime = `${date}T${time}:00`;
-    const hasBooking = await findActiveBookingAtTime(staffId, startTime);
-    const unavailable = await isStaffUnavailable(staffId, startTime);
+  const times = generateHalfHourSlots(salon?.openingHours);
+  if (isSalonClosedOnDate(salon, date)) {
+    return times.map(time => ({
+      time,
+      startTime: bookingDomain.slotStartTime(date, time),
+      isAvailable: false,
+      reason: '店铺休息日',
+    }));
+  }
+  if (isSameDayBookingBlocked(salon, date)) {
+    return times.map(time => ({
+      time,
+      startTime: bookingDomain.slotStartTime(date, time),
+      isAvailable: false,
+      reason: '当天不可预约',
+    }));
+  }
+  const { start: dayStart, end: dayEnd } = bookingDomain.bookingDayRange(date);
+  const [bookings, person] = await Promise.all([
+    Booking.find({
+      staffId,
+      startTime: { $gte: dayStart, $lt: dayEnd },
+      status: { $in: ['pending', 'accepted'] },
+    }).select({ startTime: 1, _id: 0 }).lean(),
+    getStaffById(staffId).select('unavailableSlots').lean(),
+  ]);
+  const bookedTimes = new Set(bookings.map(booking => {
+    const startTime = new Date(booking.startTime);
+    return formatMinutesAsTime(bookingDomain.localTimeMinutes(startTime));
+  }));
+  const unavailableTimes = new Set(
+    normalizeUnavailableSlots(person?.unavailableSlots)
+      .filter(slot => slot.startsWith(`${date} `))
+      .map(slot => slot.slice(11)),
+  );
+
+  return times.map((time) => {
+    const startTime = bookingDomain.slotStartTime(date, time);
+    const hasBooking = bookedTimes.has(time);
+    const unavailable = unavailableTimes.has(time);
     return {
       time,
       startTime,
       isAvailable: !hasBooking && !unavailable,
       reason: hasBooking ? '已有订单' : unavailable ? '理发师缺勤' : undefined,
     };
-  }));
-  return slots;
+  });
 };
 
-const generateSlotsForNoPreferenceAndDate = async (candidateStaffIds, date) => {
-  const salon = await getSalonByStaffId(candidateStaffIds[0]).lean();
-  const slots = await Promise.all(generateHalfHourSlots(salon?.openingHours).map(async (time) => {
-    const startTime = `${date}T${time}:00`;
-    const availability = await Promise.all(candidateStaffIds.map(async (staffId) => {
-      const hasBooking = await findActiveBookingAtTime(staffId, startTime);
-      const unavailable = await isStaffUnavailable(staffId, startTime);
-      return !hasBooking && !unavailable;
+const generateSlotsForNoPreferenceAndDate = async (salon, date) => {
+  if (isSalonClosedOnDate(salon, date)) {
+    return generateHalfHourSlots(salon?.openingHours).map(time => ({
+      time,
+      startTime: bookingDomain.slotStartTime(date, time),
+      isAvailable: false,
+      reason: '店铺休息日',
     }));
+  }
+  if (isSameDayBookingBlocked(salon, date)) {
+    return generateHalfHourSlots(salon?.openingHours).map(time => ({
+      time,
+      startTime: bookingDomain.slotStartTime(date, time),
+      isAvailable: false,
+      reason: '当天不可预约',
+    }));
+  }
+  const staffIds = salon.staffIds || [];
+  const { start: dayStart, end: dayEnd } = bookingDomain.bookingDayRange(date);
+  const [bookings, staffProfiles] = await Promise.all([
+    Booking.find({
+      staffId: { $in: staffIds },
+      startTime: { $gte: dayStart, $lt: dayEnd },
+      status: { $in: ['pending', 'accepted'] },
+    }).select({ staffId: 1, startTime: 1, _id: 0 }).lean(),
+    StaffProfile.find({ id: { $in: staffIds } })
+      .select({ id: 1, unavailableSlots: 1, _id: 0 })
+      .lean(),
+  ]);
+  const bookedSlots = new Set(bookings.map(booking => {
+    const startTime = new Date(booking.startTime);
+    const time = formatMinutesAsTime(bookingDomain.localTimeMinutes(startTime));
+    return `${booking.staffId}:${time}`;
+  }));
+  const unavailableSlots = new Set(staffProfiles.flatMap(profile =>
+    normalizeUnavailableSlots(profile.unavailableSlots)
+      .filter(slot => slot.startsWith(`${date} `))
+      .map(slot => `${profile.id}:${slot.slice(11)}`)
+  ));
+  const activeStaffIds = staffProfiles.map(profile => profile.id);
+
+  return generateHalfHourSlots(salon?.openingHours).map(time => {
+    const startTime = bookingDomain.slotStartTime(date, time);
+    const isAvailable = activeStaffIds.some(staffId =>
+      !bookedSlots.has(`${staffId}:${time}`) &&
+      !unavailableSlots.has(`${staffId}:${time}`)
+    );
     return {
       time,
       startTime,
-      isAvailable: availability.some(Boolean),
-      reason: availability.some(Boolean) ? undefined : '已有订单',
+      isAvailable,
+      reason: isAvailable ? undefined : '暂无可用理发师',
     };
-  }));
-  return slots;
+  });
 };
 
-app.get('/api/salons', async (req, res) => {
-  const salonList = await getAllSalons();
-  res.json(salonList.map(s => {
-    const { fullDescription, openingHours, phone, staffIds, services, staff, reviews, _id, __v, createdAt, updatedAt, ...basic } = s;
-    return {
-      ...basic,
-      images: buildSalonImageList(s),
-    };
-  }));
-});
 
-app.get('/api/salons/:id', async (req, res) => {
-  const salon = await Salon.findOne({ id: req.params.id, publishStatus: 'online' });
-  if (!salon) return res.status(404).json({ message: 'Salon not found' });
-
-  res.json(await buildSalonDetail(salon));
-});
-
-app.get('/api/favorites', async (req, res) => {
-  const { userId } = await resolveRequestUser(req);
-  res.json(await readFavoriteSalons(userId));
-});
-
-app.post('/api/favorites/toggle', async (req, res) => {
-  const { userId } = await resolveRequestUser(req);
-  const salonId = req.body?.id?.toString();
-  if (!salonId) return res.status(400).json({ message: 'Salon id is required' });
-
-  const existingFavorite = await FavoriteSalon.findOne({ userId, salonId });
-
-  if (existingFavorite) {
-    await existingFavorite.deleteOne();
-  } else {
-    await FavoriteSalon.create({
-      userId,
-      salonId,
-      salon: req.body,
-    });
-  }
-
-  res.json(await readFavoriteSalons(userId));
-});
-
-app.post('/api/auth/sms/request', async (req, res) => {
-  const phone = normalizePhone(req.body.phone);
-  if (!isValidPhone(phone)) {
-    return res.status(400).json({ message: '请输入有效的手机号' });
-  }
-
-  const code = String(Math.floor(100000 + Math.random() * 900000));
-  await SmsVerification.create({
-    phone,
-    codeHash: hashSmsCode(phone, code),
-    expiresAt: new Date(Date.now() + 5 * 60 * 1000),
-  });
-
-  res.json({
-    message: '验证码已发送',
-    expiresInSeconds: 300,
-    debugCode: code,
-  });
-});
-
-app.post('/api/auth/sms/verify', async (req, res) => {
-  const phone = normalizePhone(req.body.phone);
-  const code = String(req.body.code || '').trim();
-  if (!isValidPhone(phone) || !/^\d{6}$/.test(code)) {
-    return res.status(400).json({ message: '手机号或验证码格式不正确' });
-  }
-
-  const verification = await SmsVerification.findOne({
-    phone,
-    codeHash: hashSmsCode(phone, code),
-    consumedAt: { $exists: false },
-    expiresAt: { $gt: new Date() },
-  }).sort({ createdAt: -1 });
-
-  if (!verification) {
-    return res.status(401).json({ message: '验证码错误或已过期' });
-  }
-
-  verification.consumedAt = new Date();
-  await verification.save();
-
-  let user = await ClientUser.findOne({ account: phone });
-  if (!user) {
-    const password = crypto.randomBytes(16).toString('hex');
-    const { salt, hash } = hashPassword(password);
-    user = await ClientUser.create({
-      id: `user-${Date.now()}`,
-      account: phone,
-      displayName: maskPhone(phone),
-      gender: '保密',
-      phone,
-      passwordSalt: salt,
-      passwordHash: hash,
-    });
-  }
-
-  user.sessionToken = crypto.randomBytes(32).toString('hex');
-  user.lastLoginAt = new Date();
-  await user.save();
-
-  res.json({
-    token: user.sessionToken,
-    user: buildClientUserPayload(user),
-  });
-});
-
-app.post('/api/auth/register', async (req, res) => {
-  const account = String(req.body.account || '').trim();
-  const password = String(req.body.password || '');
-  const displayName = String(req.body.displayName || '').trim();
-
-  if (!account || !password || !displayName) {
-    return res.status(400).json({ message: 'account, password and displayName are required' });
-  }
-  if (password.length < 6) {
-    return res.status(400).json({ message: '密码至少 6 位' });
-  }
-
-  const existingUser = await ClientUser.findOne({ account });
-  if (existingUser) return res.status(409).json({ message: '该账号已注册' });
-
-  const { salt, hash } = hashPassword(password);
-  const user = await ClientUser.create({
-    id: `user-${Date.now()}`,
-    account,
-    displayName,
-    passwordSalt: salt,
-    passwordHash: hash,
-    sessionToken: crypto.randomBytes(32).toString('hex'),
-    lastLoginAt: new Date(),
-  });
-
-  res.status(201).json({
-    token: user.sessionToken,
-    user: buildClientUserPayload(user),
-  });
-});
-
-app.post('/api/auth/login', async (req, res) => {
-  const account = String(req.body.account || '').trim();
-  const password = String(req.body.password || '');
-
-  if (!account || !password) {
-    return res.status(400).json({ message: 'account and password are required' });
-  }
-
-  const user = await ClientUser.findOne({ account });
-  if (!user) return res.status(401).json({ message: '账号或密码错误' });
-
-  const { hash } = hashPassword(password, user.passwordSalt);
-  if (hash !== user.passwordHash) {
-    return res.status(401).json({ message: '账号或密码错误' });
-  }
-
-  user.sessionToken = crypto.randomBytes(32).toString('hex');
-  user.lastLoginAt = new Date();
-  await user.save();
-
-  res.json({
-    token: user.sessionToken,
-    user: buildClientUserPayload(user),
-  });
-});
-
-app.get('/api/auth/me', requireClientAuth, async (req, res) => {
-  res.json({ user: buildClientUserPayload(req.clientUser) });
-});
-
-app.patch('/api/auth/profile', requireClientAuth, async (req, res) => {
-  const displayName = String(req.body.displayName || '').trim();
-  const gender = String(req.body.gender || '保密').trim();
-  const phone = normalizePhone(req.body.phone || req.clientUser.phone || req.clientUser.account);
-  const avatarUrl = String(req.body.avatarUrl || '').trim();
-  const allowedGenders = new Set(['男', '女', '其他', '保密']);
-
-  if (!displayName) {
-    return res.status(400).json({ message: '请输入昵称' });
-  }
-  if (!isValidPhone(phone)) {
-    return res.status(400).json({ message: '请输入有效的手机号' });
-  }
-
-  const existingUser = await ClientUser.findOne({
-    account: phone,
-    id: { $ne: req.clientUser.id },
-  });
-  if (existingUser) {
-    return res.status(409).json({ message: '该手机号已被使用' });
-  }
-
-  const user = await ClientUser.findOne({ id: req.clientUser.id });
-  if (!user) {
-    return res.status(404).json({ message: '用户不存在' });
-  }
-
-  user.displayName = displayName;
-  user.gender = allowedGenders.has(gender) ? gender : '保密';
-  user.phone = phone;
-  user.account = phone;
-  user.avatarUrl = avatarUrl;
-  await user.save();
-
-  res.json({
-    token: user.sessionToken,
-    user: buildClientUserPayload(user),
-  });
-});
-
-app.post('/api/merchant/auth/login', async (req, res) => {
-  const username = String(req.body.username || '').trim();
-  const password = String(req.body.password || '');
-
-  if (!username || !password) {
-    return res.status(400).json({ message: 'username and password are required' });
-  }
-
-  const user = await MerchantUser.findOne({ username });
-  if (!user) return res.status(401).json({ message: '账号或密码错误' });
-
-  const { hash } = hashPassword(password, user.passwordSalt);
-  if (hash !== user.passwordHash) {
-    return res.status(401).json({ message: '账号或密码错误' });
-  }
-
-  user.sessionToken = crypto.randomBytes(32).toString('hex');
-  user.lastLoginAt = new Date();
-  await user.save();
-
-  res.json({
-    token: user.sessionToken,
-    user: buildMerchantUserPayload(user),
-  });
-});
-
-app.get('/api/merchant/auth/me', requireMerchantAuth, async (req, res) => {
-  res.json({ user: buildMerchantUserPayload(req.merchantUser) });
-});
-
-app.post('/api/admin/auth/login', async (req, res) => {
-  const username = String(req.body.username || '').trim();
-  const password = String(req.body.password || '');
-
-  if (!username || !password) {
-    return res.status(400).json({ message: 'username and password are required' });
-  }
-
-  const user = await AdminUser.findOne({ username });
-  if (!user) return res.status(401).json({ message: '账号或密码错误' });
-
-  const { hash } = hashPassword(password, user.passwordSalt);
-  if (hash !== user.passwordHash) {
-    return res.status(401).json({ message: '账号或密码错误' });
-  }
-
-  user.sessionToken = crypto.randomBytes(32).toString('hex');
-  user.lastLoginAt = new Date();
-  await user.save();
-
-  res.json({
-    token: user.sessionToken,
-    user: buildAdminUserPayload(user),
-  });
-});
-
-app.get('/api/admin/auth/me', requireAdminAuth, async (req, res) => {
-  res.json({ user: buildAdminUserPayload(req.adminUser) });
-});
-
-app.get('/api/admin/overview', requireAdminAuth, async (req, res) => {
-  const [merchantCount, clientCount, salonCount, bookingCount, pendingCount, acceptedCount] = await Promise.all([
-    MerchantUser.countDocuments(),
-    ClientUser.countDocuments(),
-    Salon.countDocuments(),
-    Booking.countDocuments(),
-    Booking.countDocuments({ status: 'pending' }),
-    Booking.countDocuments({ status: 'accepted' }),
-  ]);
-
-  res.json({
-    merchantCount,
-    clientCount,
-    salonCount,
-    bookingCount,
-    pendingCount,
-    acceptedCount,
-  });
-});
-
-app.get('/api/admin/merchants', requireAdminAuth, async (req, res) => {
-  const merchants = await MerchantUser
-    .find({})
-    .sort({ createdAt: -1 })
-    .lean();
-  const salonsById = Object.fromEntries(
-    (await Salon.find({ id: { $in: merchants.map(user => user.salonId) } }).lean())
-      .map(salon => [salon.id, salon]),
-  );
-
-  res.json(merchants.map(user => ({
-    ...buildMerchantUserPayload(user),
-    salonName: salonsById[user.salonId]?.name || '',
-    publishStatus: salonsById[user.salonId]?.publishStatus || 'offline',
-    licenseUrl: salonsById[user.salonId]?.licenseUrl || '',
-    licenseStatus: salonsById[user.salonId]?.licenseStatus || 'unsubmitted',
-    licenseRejectReason: salonsById[user.salonId]?.licenseRejectReason || '',
-    licenseSubmittedAt: salonsById[user.salonId]?.licenseSubmittedAt,
-    licenseReviewedAt: salonsById[user.salonId]?.licenseReviewedAt,
-    createdAt: user.createdAt,
-    updatedAt: user.updatedAt,
-    lastLoginAt: user.lastLoginAt,
-  })));
-});
-
-app.post('/api/admin/merchants', requireAdminAuth, async (req, res) => {
-  const username = String(req.body.username || '').trim();
-  const password = String(req.body.password || '');
-  const displayName = String(req.body.displayName || '').trim();
-  const salonId = String(req.body.salonId || '1').trim();
-
-  if (!username || !password || !displayName) {
-    return res.status(400).json({ message: 'username, password and displayName are required' });
-  }
-  if (password.length < 6) return res.status(400).json({ message: '密码至少 6 位' });
-  if (await MerchantUser.findOne({ username })) {
-    return res.status(409).json({ message: '该商家账号已存在' });
-  }
-
-  const salon = await ensureSalonForMerchant({ salonId, displayName });
-  const { salt, hash } = hashPassword(password);
-  const user = await MerchantUser.create({
-    id: `merchant-${Date.now()}`,
-    username,
-    displayName,
-    salonId: salon.id,
-    role: 'merchant',
-    passwordSalt: salt,
-    passwordHash: hash,
-  });
-
-  res.status(201).json({ user: buildMerchantUserPayload(user) });
-});
-
-app.patch('/api/admin/merchants/:id', requireAdminAuth, async (req, res) => {
-  const user = await MerchantUser.findOne({ id: req.params.id });
-  if (!user) return res.status(404).json({ message: 'Merchant user not found' });
-
-  const username = String(req.body.username || '').trim();
-  const displayName = String(req.body.displayName || '').trim();
-  const salonId = String(req.body.salonId || '').trim();
-  const password = String(req.body.password || '');
-
-  if (username && username !== user.username) {
-    if (await MerchantUser.findOne({ username })) {
-      return res.status(409).json({ message: '该商家账号已存在' });
-    }
-    user.username = username;
-  }
-  if (displayName) user.displayName = displayName;
-  if (salonId) {
-    const salon = await ensureSalonForMerchant({
-      salonId,
-      displayName: displayName || user.displayName,
-    });
-    user.salonId = salon.id;
-  }
-  if (password) {
-    if (password.length < 6) return res.status(400).json({ message: '密码至少 6 位' });
-    const { salt, hash } = hashPassword(password);
-    user.passwordSalt = salt;
-    user.passwordHash = hash;
-    user.sessionToken = '';
-  }
-
-  await user.save();
-  res.json({ user: buildMerchantUserPayload(user) });
-});
-
-app.patch('/api/admin/merchants/:id/license', requireAdminAuth, async (req, res) => {
-  const action = String(req.body.action || '').trim();
-  const reason = String(req.body.reason || '').trim();
-  if (!['approve', 'reject'].includes(action)) {
-    return res.status(400).json({ message: 'action must be approve or reject' });
-  }
-
-  const user = await MerchantUser.findOne({ id: req.params.id }).lean();
-  if (!user) return res.status(404).json({ message: 'Merchant user not found' });
-  const salon = await Salon.findOne({ id: user.salonId });
-  if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
-  if (!salon.licenseUrl) return res.status(409).json({ message: '营业执照尚未提交' });
-
-  salon.licenseStatus = action === 'approve' ? 'approved' : 'rejected';
-  salon.licenseRejectReason = action === 'reject' ? reason : '';
-  salon.licenseReviewedAt = new Date();
-  await salon.save();
-
-  res.json({
-    merchant: {
-      ...buildMerchantUserPayload(user),
-      salonName: salon.name,
-      publishStatus: salon.publishStatus || 'offline',
-      licenseUrl: salon.licenseUrl || '',
-      licenseStatus: salon.licenseStatus,
-      licenseRejectReason: salon.licenseRejectReason || '',
-      licenseSubmittedAt: salon.licenseSubmittedAt,
-      licenseReviewedAt: salon.licenseReviewedAt,
-    },
-  });
-});
-
-app.patch('/api/admin/merchants/:id/publish', requireAdminAuth, async (req, res) => {
-  const action = String(req.body.action || '').trim();
-  if (!['online', 'offline'].includes(action)) {
-    return res.status(400).json({ message: 'action must be online or offline' });
-  }
-
-  const user = await MerchantUser.findOne({ id: req.params.id }).lean();
-  if (!user) return res.status(404).json({ message: 'Merchant user not found' });
-  const salon = await Salon.findOne({ id: user.salonId });
-  if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
-  if (action === 'online' && salon.licenseStatus !== 'approved') {
-    return res.status(409).json({ message: '营业执照审核通过后才能上架' });
-  }
-
-  salon.publishStatus = action;
-  await salon.save();
-
-  res.json({
-    merchant: {
-      ...buildMerchantUserPayload(user),
-      salonName: salon.name,
-      publishStatus: salon.publishStatus,
-      licenseUrl: salon.licenseUrl || '',
-      licenseStatus: salon.licenseStatus || 'unsubmitted',
-      licenseRejectReason: salon.licenseRejectReason || '',
-      licenseSubmittedAt: salon.licenseSubmittedAt,
-      licenseReviewedAt: salon.licenseReviewedAt,
-    },
-  });
-});
-
-app.get('/api/admin/users', requireAdminAuth, async (req, res) => {
-  const users = await ClientUser
-    .find({})
-    .sort({ createdAt: -1 })
-    .lean();
-
-  res.json(users.map(user => ({
-    ...buildClientUserPayload(user),
-    createdAt: user.createdAt,
-    updatedAt: user.updatedAt,
-    lastLoginAt: user.lastLoginAt,
-  })));
-});
-
-app.get('/api/admin/bookings', requireAdminAuth, async (req, res) => {
-  const bookings = await Booking.find({}).sort({ createdAt: -1 }).limit(100);
-  res.json(bookings.map(normalizeBooking));
-});
-
+const routeContext = {
+  acceptedBookingAtTimeQuery,
+  AdminUser,
+  AdConfig,
+  amapWebServiceKey,
+  applyDirectSalonContent,
+  applyPendingContent,
+  Booking,
+  BookingMessage,
+  SlotOccupancy,
+  broadcastBookingEvent,
+  buildAdminMerchantPayload,
+  addApprovedSalonRatings,
+  buildAdminUserPayload,
+  buildAdPayload,
+  buildClientUserPayload,
+  buildContentDraft,
+  buildMerchantSalonPayload,
+  buildMerchantBookingScope,
+  buildMerchantUserPayload,
+  buildSalonDetail,
+  buildPublicSalonDetail,
+  buildStaffPayload,
+  calculateDistanceKm,
+  clearPublicSalonDetailCache,
+  ClientUser,
+  CouponCampaign,
+  UserCoupon,
+  campaignPayload,
+  couponDiscountForOrder,
+  couponPayload,
+  couponStatus,
+  createModeratedUploadPolicies,
+  createMerchantUploadPolicies,
+  crypto,
+  decryptWechatPhoneNumber,
+  deleteModeratedImages,
+  expandedSalonClosedDates,
+  FavoriteSalon,
+  fetchJson,
+  findAcceptedBookingAtTimeExcluding,
+  findActiveBookingAtTime,
+  findActiveBookingAtTimeExcluding,
+  generateSlotsForNoPreferenceAndDate,
+  generateSlotsForStaffAndDate,
+  getNearbySalons,
+  getApprovedReviewsByStaffIds,
+  getApprovedRatingSummariesByStaffIds,
+  getCoordinates,
+  getSalonByStaffId,
+  getServiceById,
+  getStaffById,
+  getStaffMapByIds,
+  getUserPolicy,
+  getWechatPhoneNumber,
+  getWechatOpenId,
+  hashPassword,
+  hasReviewableContentChanges,
+  ensureSalonForMerchant,
+  existingSalonImages,
+  incrementNoShowCount,
+  isSalonClosedOnDate,
+  isSameDayBookingBlocked,
+  isStaffUnavailable,
+  loginClientByPhone,
+  logoutSession,
+  MerchantUser,
+  mongoose,
+  normalizeBooking,
+  normalizeMerchantBooking,
+  normalizeAdLink,
+  normalizeClosedDates,
+  normalizeDeposit,
+  normalizeLimit,
+  normalizePagination,
+  normalizeRadiusKm,
+  normalizeSalonTags,
+  normalizeUserId,
+  parseAmapReverseAddress,
+  parseMerchantRescheduleTime,
+  parseOpeningHours,
+  publishModeratedImage,
+  readFavoriteSalonIds,
+  readFavoriteSalons,
+  rateLimits,
+  revokeSessionHash,
+  rotateSession,
+  sessionTokenFromRequest,
+  servicePayload: salonDomain.servicePayload,
+  Salon,
+  salonCoverImage,
+  saveBase64Image,
+  setPaginationHeaders,
+  privateImageUrl,
+  SupportMessage,
+  AnalyticsEvent,
+  activeSessionQuery,
+  publicImageUrl,
+  stripSensitiveSalonFields,
+  toFiniteNumber,
+  USER_CANCEL_WINDOW_MS,
+  userIdAliases,
+  verifyPassword,
+  validateCampaignInput,
+  verifyModeratedImageObjects,
+  verifyMerchantQualificationObjects,
+  INPUT_LIMITS,
+  wechatAppId,
+  wechatAppSecret,
+  wechatBookingStatusTemplateId,
+  sendBookingAcceptedNotification,
+  requireQualificationForPublishing,
+};
+
+require('./src/routes/public')(app, routeContext);
+require('./src/routes/auth-entry')(app, routeContext);
+require('./src/routes/analytics')(app, routeContext);
+app.use([
+  '/api/support-messages',
+  '/api/uploads',
+  '/api/auth',
+  '/api/favorites',
+  '/api/bookings',
+  '/api/booking-messages',
+], requireClientAuth);
+require('./src/routes/client')(app, routeContext);
+require('./src/routes/client-bookings')(app, routeContext);
+require('./src/routes/client-messages')(app, routeContext);
 app.use('/api/merchant', requireMerchantAuth);
+require('./src/routes/merchant')(app, routeContext);
+app.use('/api/admin', requireAdminAuth);
+require('./src/routes/admin')(app, routeContext);
 
-app.get('/api/merchant/account', async (req, res) => {
-  res.json({ user: buildMerchantUserPayload(req.merchantUser) });
+app.use((error, req, res, next) => {
+  errorLogger(error, req);
+  if (res.headersSent) return next(error);
+  res.status(500).json({ message: 'Internal server error', requestId: req.requestId });
 });
 
-app.patch('/api/merchant/account', async (req, res) => {
-  const user = await MerchantUser.findOne({ id: req.merchantUser.id });
-  if (!user) return res.status(404).json({ message: 'Merchant user not found' });
-
-  const displayName = String(req.body.displayName || '').trim();
-  const currentPassword = String(req.body.currentPassword || '');
-  const newPassword = String(req.body.newPassword || '');
-
-  if (displayName) user.displayName = displayName;
-
-  if (newPassword) {
-    if (newPassword.length < 6) return res.status(400).json({ message: '新密码至少 6 位' });
-    const { hash } = hashPassword(currentPassword, user.passwordSalt);
-    if (hash !== user.passwordHash) {
-      return res.status(401).json({ message: '当前密码错误' });
-    }
-    const nextPassword = hashPassword(newPassword);
-    user.passwordSalt = nextPassword.salt;
-    user.passwordHash = nextPassword.hash;
-    user.sessionToken = crypto.randomBytes(32).toString('hex');
-  }
-
-  await user.save();
-  res.json({
-    token: user.sessionToken,
-    user: buildMerchantUserPayload(user),
-  });
-});
-
-app.get('/api/merchant/qualification', async (req, res) => {
-  const salon = await Salon.findOne({ id: req.merchantUser.salonId || '1' }).lean();
-  if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
-
-  res.json({
-    salonId: salon.id,
-    salonName: salon.name,
-    publishStatus: salon.publishStatus || 'offline',
-    licenseUrl: salon.licenseUrl || '',
-    licenseStatus: salon.licenseStatus || 'unsubmitted',
-    licenseRejectReason: salon.licenseRejectReason || '',
-    licenseSubmittedAt: salon.licenseSubmittedAt,
-    licenseReviewedAt: salon.licenseReviewedAt,
-  });
-});
-
-app.patch('/api/merchant/qualification', async (req, res) => {
-  const licenseUrl = String(req.body.licenseUrl || '').trim();
-  if (!licenseUrl) return res.status(400).json({ message: 'licenseUrl is required' });
-
-  const salon = await Salon.findOne({ id: req.merchantUser.salonId || '1' });
-  if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
-
-  salon.licenseUrl = licenseUrl;
-  salon.licenseStatus = 'pending';
-  salon.licenseRejectReason = '';
-  salon.licenseSubmittedAt = new Date();
-  await salon.save();
-
-  res.json({
-    salonId: salon.id,
-    salonName: salon.name,
-    publishStatus: salon.publishStatus || 'offline',
-    licenseUrl: salon.licenseUrl || '',
-    licenseStatus: salon.licenseStatus || 'pending',
-    licenseRejectReason: salon.licenseRejectReason || '',
-    licenseSubmittedAt: salon.licenseSubmittedAt,
-    licenseReviewedAt: salon.licenseReviewedAt,
-  });
-});
-
-app.get('/api/merchant/salon', async (req, res) => {
-  res.json(await buildMerchantSalonPayload(req.merchantUser.salonId || '1'));
-});
-
-app.patch('/api/merchant/salon', async (req, res) => {
-  const salon = await Salon.findOne({ id: req.merchantUser.salonId || '1' });
-  if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
-  const {
-    address,
-    addressRegion,
-    addressDetail,
-    description,
-    fullDescription,
-    image,
-    images,
-    promoImages,
-    name,
-    openingHours,
-    phone,
-    services,
-    staff: staffProfiles,
-  } = req.body;
-
-  if (typeof name === 'string') salon.name = name;
-  if (typeof address === 'string') salon.address = address;
-  if (addressRegion && typeof addressRegion === 'object') {
-    salon.addressRegion = addressRegion;
-  }
-  if (typeof addressDetail === 'string') salon.addressDetail = addressDetail;
-  if (typeof description === 'string') salon.description = description;
-  if (typeof fullDescription === 'string') salon.fullDescription = fullDescription;
-  if (typeof image === 'string') salon.image = image;
-  if (Array.isArray(promoImages) || Array.isArray(images)) {
-    const incomingImages = Array.isArray(promoImages) ? promoImages : images;
-    salon.promoImages = [
-      ...new Set(
-        incomingImages
-          .map(item => item?.toString().trim())
-          .filter(Boolean)
-      ),
-    ].slice(0, 20);
-    salon.images = salon.promoImages;
-  }
-  if (typeof openingHours === 'string') salon.openingHours = openingHours;
-  if (typeof phone === 'string') salon.phone = phone;
-
-  if (Array.isArray(services)) {
-    salon.services = services
-      .filter(service => service && service.name)
-      .map((service, index) => ({
-        id: service.id || `s1-${Date.now()}-${index}`,
-        name: service.name,
-        price: service.price || '',
-        duration: service.duration || '',
-        note: service.note || '',
-        imageUrl: service.imageUrl || '',
-      }));
-  }
-
-  if (Array.isArray(staffProfiles)) {
-    const nextStaffIds = [];
-    const incomingStaffIds = staffProfiles
-      .map((profile, index) => profile?.id || `merchant-staff-${Date.now()}-${index}`)
-      .filter(Boolean);
-    const existingStaffMap = await getStaffMapByIds(incomingStaffIds);
-    const staffUpdates = [];
-
-    staffProfiles
-      .filter(profile => profile && profile.name)
-      .forEach((profile, index) => {
-        const id = profile.id || `merchant-staff-${Date.now()}-${index}`;
-        nextStaffIds.push(id);
-        const previousStaff = existingStaffMap[id] || {};
-        staffUpdates.push({
-          id,
-          name: profile.name,
-          role: profile.role || '',
-          experience: profile.experience || '',
-          extraServiceFee: Number(profile.extraServiceFee || 0),
-          imageUrl: profile.imageUrl || '',
-          bio: profile.bio || '',
-          unavailableSlots: normalizeUnavailableSlots(profile.unavailableSlots),
-          rating: Number(profile.rating || previousStaff.rating || 4.8),
-          reviews: Array.isArray(profile.reviews)
-            ? profile.reviews
-            : previousStaff.reviews || [],
-        });
-      });
-    salon.staffIds = nextStaffIds;
-    await Promise.all(staffUpdates.map(profile =>
-      StaffProfile.findOneAndUpdate(
-        { id: profile.id },
-        profile,
-        { upsert: true, new: true, setDefaultsOnInsert: true },
-      )
-    ));
-  }
-
-  await salon.save();
-  res.json(await buildMerchantSalonPayload(req.merchantUser.salonId || '1'));
-});
-
-app.post('/api/merchant/uploads', (req, res) => {
-  const { data, fileName = 'avatar.png' } = req.body;
-  if (typeof data !== 'string' || data.length === 0) {
-    return res.status(400).json({ message: 'Image data is required' });
-  }
-
-  const extension = path.extname(fileName).toLowerCase() || '.png';
-  const safeExtension = ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(extension)
-    ? extension
-    : '.png';
-  const uploadName = `staff-${Date.now()}-${Math.random().toString(36).slice(2)}${safeExtension}`;
-  const base64 = data.includes(',') ? data.split(',').pop() : data;
-  const buffer = Buffer.from(base64, 'base64');
-
-  fs.writeFileSync(path.join(uploadDir, uploadName), buffer);
-  res.status(201).json({ url: `http://localhost:${PORT}/uploads/${uploadName}` });
-});
-
-app.get('/api/staff/:id', async (req, res) => {
-  const person = await getStaffById(req.params.id).lean();
-  if (!person) return res.status(404).json({ message: 'Staff not found' });
-  const salon = await getSalonByStaffId(req.params.id).lean();
-  const staffMap = salon ? await getStaffMapByIds(salon.staffIds) : {};
-  res.json({
-    ...buildStaffPayload(person),
-    salonServices: salon?.services || [],
-    salonStaff: salon ? salon.staffIds.map(id => staffMap[id]).filter(Boolean).map(buildStaffPayload) : [],
-  });
-});
-
-app.get('/api/staff/:id/slots', async (req, res) => {
-  const staffId = req.params.id;
-  const date = req.query.date || '2026-06-01';
-  const candidateStaffIds = String(req.query.candidateStaffIds || '')
-    .split(',')
-    .map(id => id.trim())
-    .filter(Boolean);
-  const slots = staffId === '__no_preference__' && candidateStaffIds.length > 0
-    ? await generateSlotsForNoPreferenceAndDate(candidateStaffIds, date)
-    : await generateSlotsForStaffAndDate(staffId, date);
-  res.json(slots);
-});
-
-app.get('/api/bookings', async (req, res) => {
-  const { userId, staffId, status } = req.query;
-  const requestUser = await resolveRequestUser(req);
-  const query = {};
-  if (userId) {
-    query.userId = userId;
-  } else if (requestUser.userId !== 'demo-user') {
-    query.userId = requestUser.userId;
-  }
-  if (staffId) query.staffId = staffId;
-  if (status) query.status = status;
-  const result = await Booking.find(query).sort({ createdAt: -1 });
-  res.json(result.map(normalizeBooking));
-});
-
-app.patch('/api/bookings/:id/cancel', async (req, res) => {
-  const { userId } = await resolveRequestUser(req);
-  const booking = await Booking.findOne({ id: req.params.id, userId });
-  if (!booking) return res.status(404).json({ message: 'Booking not found' });
-  if (!['pending', 'accepted'].includes(booking.status)) {
-    return res.status(409).json({ message: 'Only pending or accepted bookings can be canceled by user' });
-  }
-  if (
-    booking.status === 'accepted' &&
-    new Date(booking.startTime).getTime() - Date.now() < USER_CANCEL_WINDOW_MS
-  ) {
-    return res.status(409).json({
-      message: '预约开始前3小时内不能直接取消，请电话联系商家协商取消。直接爽约3次账号将被拉黑。',
-    });
-  }
-
-  booking.status = 'canceled';
-  booking.updatedAt = new Date().toISOString();
-  booking.merchantMessage = '用户已取消该预约。';
-  booking.userMessage = '您已取消本次预约。';
-  booking.rejectReason = '';
-  await booking.save();
-  broadcastBookingEvent('booking.updated', booking);
-
-  res.json({
-    message: 'Booking canceled.',
-    booking: normalizeBooking(booking),
-  });
-});
-
-app.post('/api/bookings/:id/review', async (req, res) => {
-  const booking = await Booking.findOne({ id: req.params.id });
-  if (!booking) return res.status(404).json({ message: 'Booking not found' });
-  if (booking.status !== 'completed') {
-    return res.status(409).json({ message: 'Only completed bookings can be reviewed' });
-  }
-  if (booking.reviewed) {
-    return res.status(409).json({ message: 'Booking already reviewed' });
-  }
-
-  const rating = Number(req.body.rating);
-  const comment = String(req.body.comment || '').trim();
-  const images = Array.isArray(req.body.images) ? req.body.images.slice(0, 5) : [];
-
-  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
-    return res.status(400).json({ message: 'rating must be an integer from 1 to 5' });
-  }
-  if (!comment) {
-    return res.status(400).json({ message: 'comment is required' });
-  }
-
-  const imageUrls = images
-    .map((image, index) => {
-      if (!image || typeof image.data !== 'string') return null;
-      const extension = path.extname(image.fileName || '').toLowerCase() || '.png';
-      const safeExtension = ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(extension)
-        ? extension
-        : '.png';
-      const imageName = `review-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}${safeExtension}`;
-      const base64 = image.data.includes(',') ? image.data.split(',').pop() : image.data;
-      fs.writeFileSync(path.join(uploadDir, imageName), Buffer.from(base64, 'base64'));
-      return `http://localhost:${PORT}/uploads/${imageName}`;
-    })
-    .filter(Boolean);
-
-  const review = {
-    id: 'RV' + Date.now(),
-    bookingId: booking.id,
-    userName: booking.userName,
-    user: booking.userName,
-    rating,
-    comment,
-    date: new Date().toISOString().slice(0, 10),
-    serviceName: booking.serviceName,
-    imageUrls,
-  };
-
-  const staffMember = await getStaffById(booking.staffId);
-  if (!staffMember) return res.status(404).json({ message: 'Staff not found' });
-
-  staffMember.reviews = [review, ...(staffMember.reviews || [])];
-  staffMember.rating = calculateStaffRating(staffMember);
-  await staffMember.save();
-  booking.reviewed = true;
-  booking.review = review;
-  booking.updatedAt = new Date().toISOString();
-  await booking.save();
-
-  broadcastBookingEvent('booking.updated', booking);
-  res.status(201).json({ review, booking: normalizeBooking(booking) });
-});
-
-app.post('/api/bookings/:id/complaint', async (req, res) => {
-  const booking = await Booking.findOne({ id: req.params.id });
-  if (!booking) return res.status(404).json({ message: 'Booking not found' });
-  if (booking.status !== 'completed') {
-    return res.status(409).json({ message: 'Only completed bookings can be complained' });
-  }
-  if (booking.complained) {
-    return res.status(409).json({ message: 'Booking already complained' });
-  }
-
-  const description = String(req.body.description || '').trim();
-  const images = Array.isArray(req.body.images) ? req.body.images.slice(0, 5) : [];
-
-  if (!description) {
-    return res.status(400).json({ message: 'description is required' });
-  }
-
-  const imageUrls = images
-    .map((image, index) => {
-      if (!image || typeof image.data !== 'string') return null;
-      const extension = path.extname(image.fileName || '').toLowerCase() || '.png';
-      const safeExtension = ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(extension)
-        ? extension
-        : '.png';
-      const imageName = `complaint-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}${safeExtension}`;
-      const base64 = image.data.includes(',') ? image.data.split(',').pop() : image.data;
-      fs.writeFileSync(path.join(uploadDir, imageName), Buffer.from(base64, 'base64'));
-      return `http://localhost:${PORT}/uploads/${imageName}`;
-    })
-    .filter(Boolean);
-
-  const complaint = {
-    id: 'CP' + Date.now(),
-    bookingId: booking.id,
-    userId: booking.userId,
-    userName: booking.userName,
-    salonId: booking.salonId,
-    salonName: booking.salonName,
-    staffId: booking.staffId,
-    staffName: booking.staffName,
-    serviceName: booking.serviceName,
-    description,
-    imageUrls,
-    date: new Date().toISOString().slice(0, 10),
-    createdAt: new Date().toISOString(),
-    status: 'submitted',
-  };
-
-  booking.complained = true;
-  booking.complaint = complaint;
-  booking.updatedAt = new Date().toISOString();
-  await booking.save();
-
-  broadcastBookingEvent('booking.updated', booking);
-  res.status(201).json({ complaint, booking: normalizeBooking(booking) });
-});
-
-app.post('/api/bookings', async (req, res) => {
-  const {
-    staffId,
-    serviceId,
-    startTime,
-    candidateStaffIds = [],
-    note = '',
-  } = req.body;
-  const { userId, userName } = await resolveRequestUser(req);
-
-  if (!staffId || !serviceId || !startTime) {
-    return res.status(400).json({ message: 'staffId, serviceId and startTime are required' });
-  }
-
-  const requestedStartTime = new Date(startTime);
-  if (Number.isNaN(requestedStartTime.getTime())) {
-    return res.status(400).json({ message: 'startTime must be a valid date time' });
-  }
-  if (requestedStartTime.getTime() <= Date.now()) {
-    return res.status(409).json({ message: 'Only future time slots can be booked' });
-  }
-
-  const userPolicy = await getUserPolicy(userId);
-  if (userPolicy.isBlacklisted) {
-    return res.status(403).json({ message: '该账号已因爽约次数过多被拉黑，无法继续预约。' });
-  }
-
-  const isNoPreference = staffId === '__no_preference__';
-  const requestedCandidateStaffIds = Array.isArray(candidateStaffIds)
-    ? candidateStaffIds.map(id => String(id || '').trim()).filter(Boolean)
-    : [];
-  const bookingStaffId = isNoPreference ? requestedCandidateStaffIds[0] : staffId;
-  if (!bookingStaffId) {
-    return res.status(400).json({ message: 'candidateStaffIds are required when staff is not specified' });
-  }
-
-  let staffMember = await getStaffById(bookingStaffId).lean();
-  const service = await getServiceById(serviceId);
-  const salon = await getSalonByStaffId(bookingStaffId).lean();
-
-  if (!staffMember || !service || !salon) {
-    return res.status(404).json({ message: 'Staff, service or salon not found' });
-  }
-
-  const { start: openingStart, end: openingEnd } = parseOpeningHours(salon.openingHours);
-  const requestedMinutes = requestedStartTime.getHours() * 60 + requestedStartTime.getMinutes();
-  if (requestedMinutes < openingStart || requestedMinutes > openingEnd) {
-    return res.status(409).json({ message: 'This time is outside salon opening hours' });
-  }
-
-  let assignedStaffId = bookingStaffId;
-  if (isNoPreference) {
-    assignedStaffId = null;
-    for (const candidateStaffId of requestedCandidateStaffIds) {
-      const hasCandidateConflict = await findActiveBookingAtTime(candidateStaffId, startTime);
-      const isCandidateUnavailable = await isStaffUnavailable(candidateStaffId, startTime);
-      if (!hasCandidateConflict && !isCandidateUnavailable) {
-        assignedStaffId = candidateStaffId;
-        staffMember = await getStaffById(candidateStaffId).lean();
-        break;
-      }
-    }
-    if (!assignedStaffId || !staffMember) {
-      return res.status(409).json({ message: 'No staff member is available at the selected time' });
-    }
-  }
-
-  const hasConflict = await findActiveBookingAtTime(assignedStaffId, startTime);
-
-  if (hasConflict) {
-    return res.status(409).json({ message: 'This slot already has a pending or accepted booking' });
-  }
-
-  if (await isStaffUnavailable(assignedStaffId, startTime)) {
-    return res.status(409).json({ message: 'This staff member is unavailable at the selected time' });
-  }
-
-  const now = new Date().toISOString();
-  const serviceBasePrice = parsePriceValue(service.price);
-  const staffExtraServiceFee = isNoPreference ? 0 : Number(staffMember.extraServiceFee || 0);
-  const totalPrice = serviceBasePrice + staffExtraServiceFee;
-  const booking = await Booking.create({
-    id: 'BK' + Date.now(),
-    userId,
-    userName,
-    salonId: salon.id,
-    salonName: salon.name,
-    staffId: assignedStaffId,
-    staffName: isNoPreference ? '无需指定' : staffMember.name,
-    serviceId,
-    serviceName: service.name,
-    servicePrice: service.price,
-    serviceDuration: service.duration,
-    serviceBasePrice,
-    staffExtraServiceFee,
-    totalPrice,
-    startTime,
-    note,
-    status: 'pending',
-    merchantMessage: '您有一条新的预约申请，请及时处理。',
-    userMessage: '预约申请已提交，正在等待商家确认。',
-    createdAt: now,
-    updatedAt: now,
-  });
-
-  broadcastBookingEvent('booking.created', booking);
-  res.status(201).json({
-    message: 'Booking request submitted and waiting for merchant confirmation.',
-    booking: normalizeBooking(booking),
-  });
-});
-
-app.patch('/api/merchant/bookings/:id', async (req, res) => {
-  const { action, reason = '', assignedStaffId = '' } = req.body;
-  const booking = await Booking.findOne({ id: req.params.id });
-  if (!booking) return res.status(404).json({ message: 'Booking not found' });
-  if (!['accept', 'cancel', 'complete', 'no_show', 'reject'].includes(action)) {
-    return res.status(400).json({ message: 'action must be accept, cancel, complete, no_show or reject' });
-  }
-  if (['accept', 'reject'].includes(action) && booking.status !== 'pending') {
-    return res.status(409).json({ message: 'Only pending bookings can be accepted or rejected' });
-  }
-  if (['cancel', 'complete', 'no_show'].includes(action) && booking.status !== 'accepted') {
-    return res.status(409).json({ message: 'Only accepted bookings can be canceled, completed or marked no-show' });
-  }
-
-  if (action === 'accept' && booking.staffName === '无需指定') {
-    const selectedStaffId = String(assignedStaffId || '').trim();
-    if (!selectedStaffId) {
-      return res.status(400).json({ message: '无需指定理发师的订单接单前必须指定一位理发师' });
-    }
-
-    const selectedStaff = await getStaffById(selectedStaffId).lean();
-    const selectedSalon = selectedStaff ? await getSalonByStaffId(selectedStaffId).lean() : null;
-    if (!selectedStaff || !selectedSalon || selectedSalon.id !== booking.salonId) {
-      return res.status(404).json({ message: '指定的理发师不属于该店铺' });
-    }
-
-    const hasConflict = await findActiveBookingAtTimeExcluding(
-      selectedStaffId,
-      booking.startTime,
-      booking.id,
-    );
-    if (hasConflict) {
-      return res.status(409).json({ message: '指定理发师在该时间段已有预约' });
-    }
-    if (await isStaffUnavailable(selectedStaffId, booking.startTime.toISOString())) {
-      return res.status(409).json({ message: '指定理发师在该时间段不可预约' });
-    }
-
-    booking.staffId = selectedStaffId;
-    booking.staffName = selectedStaff.name;
-  }
-
-  booking.status = {
-    accept: 'accepted',
-    cancel: 'canceled',
-    complete: 'completed',
-    no_show: 'no_show',
-    reject: 'rejected',
-  }[action];
-  booking.updatedAt = new Date().toISOString();
-  booking.merchantMessage = {
-    accept: '您已接单。',
-    cancel: '您已取消该预约。',
-    complete: '订单已完成。',
-    no_show: '您已将该预约标记为爽约。',
-    reject: '您已拒单。',
-  }[action];
-  booking.userMessage = {
-    accept: '商家已确认，预约成功！',
-    cancel: `商家已取消本次预约${reason ? `：${reason}` : '。'}`,
-    complete: '本次预约已完成，感谢到店。',
-    no_show: '商家已将本次预约标记为爽约。直接爽约3次账号将被拉黑。',
-    reject: `商家已拒绝本次预约${reason ? `：${reason}` : '。'}`,
-  }[action];
-  booking.rejectReason = ['cancel', 'no_show', 'reject'].includes(action) ? reason : '';
-  const userPolicy = action === 'no_show' ? await incrementNoShowCount(booking.userId) : null;
-  await booking.save();
-  broadcastBookingEvent('booking.updated', booking);
-
-  res.json({
-    message: `Booking ${booking.status}.`,
-    booking: normalizeBooking(booking),
-    userPolicy,
-  });
-});
-
-app.patch('/api/merchant/bookings/:id/review-reply', async (req, res) => {
-  const reply = String(req.body.reply || '').trim();
-  if (!reply) return res.status(400).json({ message: 'reply is required' });
-
-  const booking = await Booking.findOne({ id: req.params.id });
-  if (!booking) return res.status(404).json({ message: 'Booking not found' });
-  if (!booking.reviewed || !booking.review) {
-    return res.status(409).json({ message: 'Booking has no review' });
-  }
-
-  const replyPayload = {
-    content: reply,
-    repliedAt: new Date().toISOString(),
-  };
-  booking.review = {
-    ...(booking.review || {}),
-    merchantReply: replyPayload,
-  };
-  booking.markModified('review');
-  booking.updatedAt = new Date().toISOString();
-
-  const staffMember = await getStaffById(booking.staffId);
-  if (staffMember && Array.isArray(staffMember.reviews)) {
-    staffMember.reviews = staffMember.reviews.map(review => {
-      if (review?.bookingId !== booking.id && review?.id !== booking.review?.id) return review;
-      return {
-        ...review,
-        merchantReply: replyPayload,
-      };
-    });
-    staffMember.markModified('reviews');
-    await staffMember.save();
-  }
-
-  await booking.save();
-  broadcastBookingEvent('booking.updated', booking);
-  res.json({ booking: normalizeBooking(booking) });
-});
-
-app.get('/api/merchant/bookings', async (req, res) => {
-  const { status } = req.query;
-  const query = status ? { status } : {};
-  const result = await Booking.find(query).sort({ createdAt: -1 });
-  res.json(result.map(normalizeBooking));
-});
 
 const startServer = async () => {
   const mongoUri = process.env.MONGODB_URI;
@@ -1831,16 +1263,90 @@ const startServer = async () => {
   }
 
   await mongoose.connect(mongoUri);
-  await migrateSeedDataToMongo();
-  await migrateFavoriteSalonsFromFile();
+  // No live users yet: invalidate and remove legacy plaintext sessions instead of maintaining a dual-read migration.
+  await Promise.all([ClientUser, MerchantUser, AdminUser].map(Model =>
+    Model.collection.updateMany(
+      { sessionToken: { $exists: true } },
+      { $unset: { sessionToken: '' }, $set: { sessionTokenHash: '', sessionExpiresAt: null } },
+    )));
+  const redisConnected = await connectRedis();
+  if (redisConnected) {
+    await subscribeSessionRevocations(closeSocketsBySessionHash);
+    console.log('Redis connected');
+  } else {
+    console.warn('REDIS_URL is missing; using process-local rate limits');
+  }
+  await Promise.all([
+    Booking.createIndexes(),
+    BookingMessage.createIndexes(),
+    SlotOccupancy.createIndexes(),
+    ClientUser.createIndexes(),
+    MerchantUser.createIndexes(),
+    Salon.createIndexes(),
+    CouponCampaign.createIndexes(),
+    UserCoupon.createIndexes(),
+    AnalyticsEvent.createIndexes(),
+  ]);
   console.log('MongoDB connected');
 
-  server.listen(PORT, "0.0.0.0", () => {
-    console.log(`Mock Backend running at http://localhost:${PORT}`);
+  server.listen(PORT, listenHost, () => {
+    console.log(`Backend running at http://localhost:${PORT}`);
   });
 };
 
-startServer().catch((error) => {
-  console.error('Failed to start backend:', error.message);
-  process.exit(1);
-});
+if (require.main === module) {
+  startServer().catch((error) => {
+    console.error('Failed to start backend:', error.message);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  activeSessionQuery,
+  acceptedBookingAtTimeQuery,
+  applyDirectSalonContent,
+  buildContentDraft,
+  buildGeoLocation,
+  buildMerchantSalonPayload,
+  buildPublicSalonDetail,
+  buildStaffPayload,
+  addApprovedSalonRatings,
+  clearPublicSalonDetailCache,
+  buildMerchantBookingScope,
+  campaignPayload,
+  calculateDistanceKm,
+  couponDiscountForOrder,
+  couponPayload,
+  couponStatus,
+  getApprovedReviewsByStaffIds,
+  getApprovedRatingSummariesByStaffIds,
+  getApprovedReviewTagCountsByStaffIds,
+  getNearbySalons,
+  getCoordinates,
+  generateSlotsForStaffAndDate,
+  hashPassword,
+  hasReviewableContentChanges,
+  INPUT_LIMITS,
+  normalizeServiceTags,
+  normalizeSalonTags,
+  normalizeClosedDates,
+  ensureSalonForMerchant,
+  normalizeAdLink,
+  normalizePagination,
+  normalizeRadiusKm,
+  createClientUserWithSignupCoupons,
+  createSession,
+  parseMerchantRescheduleTime,
+  readFavoriteSalonIds,
+  readFavoriteSalons,
+  socketCanReceiveBooking,
+  server,
+  isSalonClosedOnDate,
+  isSameDayBookingBlocked,
+  logoutSession,
+  normalizeBooking,
+  normalizeMerchantBooking,
+  stripSensitiveSalonFields,
+  verifyPassword,
+  validateCampaignInput,
+};
