@@ -329,7 +329,6 @@ module.exports = (app, ctx) => {
         startTime: parsed.value,
         updatedAt: new Date(),
         merchantMessage: '您已变更预约时间。',
-        userMessage: `商家已将预约时间变更为 ${startTime}。`,
       };
     } else {
       let selectedStaffId = booking.staffId;
@@ -486,7 +485,7 @@ module.exports = (app, ctx) => {
         if (!['accept', 'reschedule'].includes(action)) {
           await SlotOccupancy.deleteOne({ bookingId: updated.id }, { session });
         }
-        if (action !== 'reschedule' || changed) {
+        if (action !== 'reschedule') {
           await bookingMessages.appendBookingMessage(BookingMessage, updated, action, session);
         }
         return { booking: updated, userPolicy: nextPolicy };

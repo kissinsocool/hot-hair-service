@@ -462,7 +462,13 @@ test('review tag counts use every approved review and keep the configured displa
     assert.deepEqual(pipeline, [
       { $match: { staffId: { $in: ['staff-1'] }, 'review.reviewStatus': 'approved' } },
       { $unwind: '$review.tags' },
-      { $match: { 'review.tags': { $in: ['善于沟通', '环境舒适', '技术一流', '服务周到'] } } },
+      {
+        $match: {
+          'review.tags': {
+            $in: ['善于沟通', '环境舒适', '技术一流', '服务周到', '无推销', '环镜整洁', '效果好评', '好沟通'],
+          },
+        },
+      },
       { $group: { _id: '$review.tags', count: { $sum: 1 } } },
     ]);
     assert.deepEqual(tags, [
@@ -2668,13 +2674,13 @@ test('concurrent review and complaint submissions only update once', async () =>
   const reviewStatuses = await invokeTwice('/api/bookings/:id/review', {
     rating: 5,
     comment: 'good',
-    tags: ['善于沟通', '服务周到'],
+    tags: ['无推销', '环镜整洁', '效果好评', '好沟通'],
     imageObjects: [],
   });
   const complaintStatuses = await invokeTwice('/api/bookings/:id/complaint', { description: 'problem' });
 
   assert.deepEqual(reviewStatuses.sort(), [201, 409]);
-  assert.deepEqual(submittedReview.tags, ['善于沟通', '服务周到']);
+  assert.deepEqual(submittedReview.tags, ['无推销', '环镜整洁', '效果好评', '好沟通']);
   assert.deepEqual(complaintStatuses.sort(), [201, 409]);
 });
 

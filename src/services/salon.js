@@ -3,7 +3,16 @@ const { publicImageUrl } = require('../images');
 const PUBLIC_STAFF_REVIEWS_LIMIT = 50;
 const PUBLIC_SALON_CACHE_TTL_MS = 15_000;
 const PUBLIC_SALON_CACHE_MAX = 100;
-const REVIEW_TAGS = ['善于沟通', '环境舒适', '技术一流', '服务周到'];
+const REVIEW_TAGS = [
+  '善于沟通',
+  '环境舒适',
+  '技术一流',
+  '服务周到',
+  '无推销',
+  '环镜整洁',
+  '效果好评',
+  '好沟通',
+];
 const publicSalonDetailCache = new Map();
 
 const normalizeDocument = document => typeof document?.toObject === 'function'
