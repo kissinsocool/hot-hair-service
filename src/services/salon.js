@@ -3,6 +3,36 @@ const { publicImageUrl } = require('../images');
 const PUBLIC_STAFF_REVIEWS_LIMIT = 50;
 const PUBLIC_SALON_CACHE_TTL_MS = 15_000;
 const PUBLIC_SALON_CACHE_MAX = 100;
+const SERVICE_TAG_IDS = Object.freeze([
+  'wash_cut_blow',
+  'color',
+  'perm',
+  'care',
+  'styling',
+  'scalp_care',
+  'men',
+  'women',
+  'straight',
+  'curly',
+  'nutrition',
+]);
+const SERVICE_TAG_LABELS = Object.freeze({
+  wash_cut_blow: '洗剪吹',
+  color: '染发',
+  perm: '烫发',
+  care: '护理',
+  styling: '发型设计',
+  scalp_care: '头皮护理',
+  men: '男士',
+  women: '女士',
+  straight: '直发',
+  curly: '卷发',
+  nutrition: '营养',
+});
+const SERVICE_TAG_IDS_BY_LABEL = new Map(
+  Object.entries(SERVICE_TAG_LABELS).map(([id, label]) => [label, id]),
+);
+const SERVICE_TAG_ID_SET = new Set(SERVICE_TAG_IDS);
 const REVIEW_TAGS = [
   '善于沟通',
   '环境舒适',
@@ -61,9 +91,38 @@ const calculateDistanceKm = (from, to) => {
   return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
 
-const normalizeServiceTags = (tags) => {
-  const values = Array.isArray(tags) ? tags : typeof tags === 'string' ? tags.split(/[,，、]/) : [];
-  return [...new Set(values.map(tag => String(tag || '').trim()).filter(Boolean))].slice(0, 6);
+const normalizeServiceTagIds = tagIds => Array.isArray(tagIds)
+  ? [...new Set(tagIds.map(id => String(id || '').trim()).filter(id => SERVICE_TAG_ID_SET.has(id)))].slice(0, 3)
+  : [];
+
+const serviceTagIdsFromLegacy = tags => Array.isArray(tags)
+  ? normalizeServiceTagIds(tags.map(tag => SERVICE_TAG_IDS_BY_LABEL.get(String(tag || '').trim())))
+  : [];
+
+const serviceTagLabels = tagIds => normalizeServiceTagIds(tagIds).map(id => SERVICE_TAG_LABELS[id]);
+
+const resolveServiceTagIds = (service = {}, previous = {}) => {
+  const tagIds = normalizeServiceTagIds(service.tagIds);
+  if (tagIds.length) return tagIds;
+  const legacyTagIds = serviceTagIdsFromLegacy(service.tags);
+  if (legacyTagIds.length) return legacyTagIds;
+  const previousTagIds = normalizeServiceTagIds(previous.tagIds);
+  return previousTagIds.length ? previousTagIds : serviceTagIdsFromLegacy(previous.tags);
+};
+
+// Released clients echo unknown tagIds while editing tags; new clients do the inverse.
+const incomingServiceTagIds = (service = {}, previous = {}) => {
+  const current = resolveServiceTagIds(previous);
+  const tagIds = normalizeServiceTagIds(service.tagIds);
+  const legacyTagIds = serviceTagIdsFromLegacy(service.tags);
+  if (service.tags !== undefined
+    && JSON.stringify(tagIds) === JSON.stringify(current)
+    && JSON.stringify(legacyTagIds) !== JSON.stringify(current)) {
+    return legacyTagIds;
+  }
+  if (service.tagIds !== undefined) return tagIds;
+  if (service.tags !== undefined) return legacyTagIds;
+  return current;
 };
 
 const normalizeSalonTags = (tags) => Array.isArray(tags)
@@ -93,16 +152,20 @@ const incomingServiceImages = (service, previous = {}) => {
   return serviceImages({ imageUrls: [service.imageUrl, ...current.slice(1)] });
 };
 
-const serviceForStorage = (service = {}, fallbackId = '') => ({
-  id: String(service.id || fallbackId).trim(),
-  name: String(service.name || '').trim(),
-  tags: normalizeServiceTags(service.tags),
-  priceFen: service.priceFen,
-  durationMinutes: service.durationMinutes,
-  note: String(service.note || ''),
-  imageUrl: serviceImages(service)[0] || '',
-  imageUrls: serviceImages(service),
-});
+const serviceForStorage = (service = {}, fallbackId = '', previous = {}) => {
+  const tagIds = incomingServiceTagIds(service, previous);
+  return {
+    id: String(service.id || fallbackId).trim(),
+    name: String(service.name || '').trim(),
+    tags: serviceTagLabels(tagIds),
+    tagIds,
+    priceFen: service.priceFen,
+    durationMinutes: service.durationMinutes,
+    note: String(service.note || ''),
+    imageUrl: serviceImages(service)[0] || '',
+    imageUrls: serviceImages(service),
+  };
+};
 
 const servicePayload = (service = {}) => {
   const normalized = serviceForStorage(service, service.id);
@@ -229,13 +292,19 @@ module.exports = {
   groupReviewsByStaff,
   normalizeSalonTags,
   normalizeReviewTags,
-  normalizeServiceTags,
+  normalizeServiceTagIds,
   normalizeDocument,
   ratingSummary,
   ratingSummaryFromReviews,
   REVIEW_TAGS,
+  SERVICE_TAG_IDS,
+  SERVICE_TAG_LABELS,
   publicReviewFromBooking,
   serviceImages,
+  serviceTagIdsFromLegacy,
+  serviceTagLabels,
+  resolveServiceTagIds,
+  incomingServiceTagIds,
   incomingServiceImages,
   serviceForStorage,
   servicePayload,

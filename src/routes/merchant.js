@@ -639,7 +639,7 @@ function validateSalonContent(payload = {}, limits) {
   if (typeof payload.phone === 'string' && !/^[0-9+()\- ]*$/.test(payload.phone)) {
     return 'phone contains unsupported characters';
   }
-  if (payload.location !== undefined && !salonService.getCoordinates(payload.location)) {
+  if (payload.location != null && !salonService.getCoordinates(payload.location)) {
     return 'location must contain valid latitude and longitude';
   }
 
@@ -661,8 +661,21 @@ function validateSalonContent(payload = {}, limits) {
     if (!Number.isSafeInteger(service?.durationMinutes) || service.durationMinutes <= 0) {
       return 'service durationMinutes must be a positive integer';
     }
-    if (Array.isArray(service?.tags) && service.tags.length > 6) return 'service tags cannot exceed 6 items';
-    if (typeof service?.tags === 'string' && service.tags.length > 200) return 'service tags are too long';
+    if (service?.tagIds !== undefined && (
+      !Array.isArray(service.tagIds)
+      || service.tagIds.length < 1
+      || service.tagIds.length > 3
+      || service.tagIds.some(id => typeof id !== 'string' || !salonService.SERVICE_TAG_IDS.includes(id))
+    )) return 'service tagIds must contain 1 to 3 supported IDs';
+    if (service?.tags !== undefined && (
+      !Array.isArray(service.tags)
+      || service.tags.length < 1
+      || service.tags.length > 3
+      || salonService.serviceTagIdsFromLegacy(service.tags).length !== new Set(service.tags).size
+    )) return 'service tags must contain 1 to 3 supported legacy labels';
+    if (service?.tagIds === undefined && service?.tags === undefined) {
+      return 'service tagIds or legacy tags is required';
+    }
   }
   for (const profile of Array.isArray(payload.staff) ? payload.staff : []) {
     if (

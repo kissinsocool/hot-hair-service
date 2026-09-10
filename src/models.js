@@ -23,7 +23,9 @@ const addressRegionSchema = new mongoose.Schema({
 const serviceSchema = new mongoose.Schema({
   id: { type: String, required: true },
   name: { type: String, required: true },
-  tags: [String],
+  // Kept during the tagIds rollout so already-released clients can still render and edit services.
+  tags: { type: [String], default: undefined },
+  tagIds: { type: [String], default: [] },
   priceFen: { ...integer(), required: true },
   durationMinutes: { ...integer(1), required: true },
   note: { type: String, default: '' },

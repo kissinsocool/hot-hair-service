@@ -728,8 +728,8 @@ const contentFields = [
   'staff',
 ];
 
-const normalizeServiceTags = salonDomain.normalizeServiceTags;
 const normalizeSalonTags = salonDomain.normalizeSalonTags;
+const normalizeServiceTagIds = salonDomain.normalizeServiceTagIds;
 
 const hasReviewableContentChanges = (current = {}, payload = {}) => {
   const changed = (field, normalize = value => value) =>
@@ -796,14 +796,15 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
       const current = normalizeDocument(previous);
       return [salonDomain.serviceForStorage({
         ...current,
-        tags: service.tags ?? current.tags,
+        tagIds: service.tagIds,
+        tags: service.tags,
         priceFen: service.priceFen ?? current.priceFen,
         durationMinutes: service.durationMinutes ?? current.durationMinutes,
         note: service.note === '' ? '' : current.note,
         imageUrls: salonDomain.incomingServiceImages(service, current)
           .filter(image => salonDomain.serviceImages(current).includes(image)),
         id,
-      })];
+      }, id, current)];
     });
   }
 
@@ -862,11 +863,14 @@ const buildContentDraft = async (salon, payload, liveContent) => {
   if (Array.isArray(payload.services)) {
     draft.services = payload.services
       .filter(service => service && service.name)
-      .map((service, index) => salonDomain.serviceForStorage(
-        { ...service, imageUrls: salonDomain.incomingServiceImages(service,
-          (base.services || []).find(item => item.id === service.id)) },
-        `s1-${Date.now()}-${index}`,
-      ));
+      .map((service, index) => {
+        const previous = (base.services || []).find(item => item.id === service.id) || {};
+        return salonDomain.serviceForStorage(
+          { ...service, imageUrls: salonDomain.incomingServiceImages(service, previous) },
+          `s1-${Date.now()}-${index}`,
+          previous,
+        );
+      });
   }
 
   if (Array.isArray(payload.staff)) {
@@ -1327,8 +1331,8 @@ module.exports = {
   hashPassword,
   hasReviewableContentChanges,
   INPUT_LIMITS,
-  normalizeServiceTags,
   normalizeSalonTags,
+  normalizeServiceTagIds,
   normalizeClosedDates,
   ensureSalonForMerchant,
   normalizeAdLink,

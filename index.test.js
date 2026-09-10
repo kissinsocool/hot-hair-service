@@ -36,7 +36,7 @@ const {
   normalizeBooking,
   normalizeMerchantBooking,
   normalizeClosedDates,
-  normalizeServiceTags,
+  normalizeServiceTagIds,
   normalizeAdLink,
   normalizePagination,
   normalizeRadiusKm,
@@ -312,12 +312,14 @@ test('booking migration derives canonical booking fields', () => {
   assert.deepEqual(serviceForMigration({
     id: 'service-1',
     name: '剪发',
+    tags: ['洗剪吹'],
     price: '¥68',
     durationMinutes: 30,
   }), {
     id: 'service-1',
     name: '剪发',
-    tags: [],
+    tags: ['洗剪吹'],
+    tagIds: ['wash_cut_blow'],
     priceFen: 6800,
     durationMinutes: 30,
     note: '',
@@ -333,6 +335,8 @@ test('service, review, complaint and pending content use child schemas instead o
   assert.ok(Booking.schema.path('complaint').schema);
   assert.equal(Salon.schema.path('services').schema.path('priceFen').instance, 'Number');
   assert.equal(Salon.schema.path('services').schema.path('priceFen').isRequired, true);
+  assert.equal(Salon.schema.path('services').schema.path('tagIds').instance, 'Array');
+  assert.equal(Salon.schema.path('services').schema.path('tags').instance, 'Array');
   assert.equal(Salon.schema.path('services').schema.path('price'), undefined);
   assert.equal(Salon.schema.path('services').schema.path('duration'), undefined);
   assert.equal(Salon.schema.path('services').schema.path('durationMinutes').isRequired, true);
@@ -574,16 +578,13 @@ test('buildGeoLocation stores MongoDB GeoJSON coordinates', () => {
   });
 });
 
-test('normalizeServiceTags trims, deduplicates and limits service tags', () => {
-  assert.deepEqual(normalizeServiceTags([' 洗剪吹 ', '染发', '洗剪吹', '', '烫发', '护理', '发型设计', '头皮护理', '造型']), [
-    '洗剪吹',
-    '染发',
-    '烫发',
-    '护理',
-    '发型设计',
-    '头皮护理',
+test('normalizeServiceTagIds keeps supported unique IDs and limits selections', () => {
+  assert.deepEqual(normalizeServiceTagIds([' men ', 'curly', 'men', '', 'nutrition', 'unknown']), [
+    'men',
+    'curly',
+    'nutrition',
   ]);
-  assert.deepEqual(normalizeServiceTags('洗剪吹，染发、头皮护理'), ['洗剪吹', '染发', '头皮护理']);
+  assert.deepEqual(normalizeServiceTagIds('men,curly'), []);
 });
 
 test('closed dates are normalized and matched by calendar date', () => {
@@ -1638,7 +1639,7 @@ test('content review only covers merchant text and uploaded images', () => {
     phone: '13800000000',
     openingHours: '09:00 - 21:00',
     closedDates: ['2026-07-20'],
-    services: [{ id: 'S1', priceFen: 80000, durationMinutes: 60, tags: ['剪发'] }],
+    services: [{ id: 'S1', priceFen: 80000, durationMinutes: 60, tagIds: ['wash_cut_blow'] }],
     staff: [{ id: 'P1', role: '店长', experience: '10年', extraServiceFeeFen: 20000 }],
   }), false);
   assert.equal(hasReviewableContentChanges(current, { address: '新地址' }), true);
@@ -1674,8 +1675,8 @@ test('merchant deletions publish immediately while additions and edits stay in r
     images: ['a.jpg', 'b.jpg'],
     promoImages: ['a.jpg', 'b.jpg'],
     services: [
-      { id: 'S1', name: '剪发', tags: ['剪发'], priceFen: 8000, durationMinutes: 30, note: '旧备注', imageUrl: 'old.jpg' },
-      { id: 'S2', name: '染发', tags: ['染发'], priceFen: 12000, durationMinutes: 60, note: '', imageUrl: 'dye.jpg' },
+      { id: 'S1', name: '剪发', tagIds: ['wash_cut_blow'], priceFen: 8000, durationMinutes: 30, note: '旧备注', imageUrl: 'old.jpg' },
+      { id: 'S2', name: '染发', tagIds: ['color'], priceFen: 12000, durationMinutes: 60, note: '', imageUrl: 'dye.jpg' },
     ],
   });
   const payload = {
@@ -1683,7 +1684,7 @@ test('merchant deletions publish immediately while additions and edits stay in r
     services: [{
       id: 'S1',
       name: '新名称',
-      tags: ['剪发'],
+      tagIds: ['wash_cut_blow'],
       priceFen: 9000,
       durationMinutes: 30,
       note: '新备注',
@@ -1719,7 +1720,7 @@ test('merchant deletions publish immediately while additions and edits stay in r
     services: [{
       id: 'S3',
       name: '护理',
-      tags: ['护理'],
+      tagIds: ['care'],
       priceFen: 6000,
       durationMinutes: 30,
       note: '',
@@ -2984,11 +2985,53 @@ test('completing a booking atomically redeems its reserved coupon', async () => 
   assert.equal(response.booking.status, 'completed');
 });
 
+test('merchant salon save accepts null location with a manually entered address', async () => {
+  const routes = new Map();
+  const app = { get() {}, post() {}, delete() {}, use() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); } };
+  const salon = new Salon({ id: 'manual-address', name: '手动地址店铺', location: null });
+  salon.save = async () => salon;
+  const live = () => ({ name: salon.name, address: salon.address, location: salon.location, services: [], staff: [] });
+
+  registerMerchantRoutes(app, {
+    Salon: {
+      findOne(query) {
+        return query.name ? { lean: async () => null } : Promise.resolve(salon);
+      },
+    },
+    applyDirectSalonContent, buildContentDraft, hasReviewableContentChanges,
+    buildSalonDetail: async () => live(), buildMerchantSalonPayload: async () => live(),
+    INPUT_LIMITS, rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
+  });
+
+  const response = {
+    statusCode: 200,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; },
+  };
+  await routes.get('/api/merchant/salon')({
+    merchantUser: { salonId: salon.id },
+    body: { address: '北京市朝阳区手动输入地址', location: null },
+  }, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(salon.pendingContent.address, '北京市朝阳区手动输入地址');
+  assert.equal(salon.pendingContent.location, null);
+
+  response.statusCode = 200;
+  await routes.get('/api/merchant/salon')({
+    merchantUser: { salonId: salon.id },
+    body: { address: '北京市朝阳区手动输入地址', location: {} },
+  }, response);
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.body.message, 'location must contain valid latitude and longitude');
+});
+
 test('merchant service gallery contract preserves legacy requests and review isolation', async () => {
   const routes = new Map();
   const app = { get() {}, post() {}, delete() {}, use() {},
     patch(path, ...handlers) { routes.set(path, handlers.at(-1)); } };
-  const oldService = { id: 'S1', name: '剪发', tags: ['洗剪吹'], priceFen: 8000,
+  const oldService = { id: 'S1', name: '剪发', tagIds: ['wash_cut_blow'], priceFen: 8000,
     durationMinutes: 30, note: '简介', imageUrl: 'first.jpg' };
   const salon = new Salon({ id: 'gallery', services: [oldService], staffIds: [] });
   salon.save = async () => salon;
@@ -3006,6 +3049,18 @@ test('merchant service gallery contract preserves legacy requests and review iso
     return status;
   };
   assert.equal(await save(oldService), 200);
+  assert.equal(await save({ ...oldService, tags: ['染发'] }), 200);
+  assert.deepEqual([...salon.services[0].tagIds], ['color']);
+  assert.equal(await save({ ...oldService, tagIds: ['color'], tags: ['洗剪吹'] }), 200);
+  assert.deepEqual([...salon.services[0].tagIds], ['wash_cut_blow']);
+  assert.equal(await save({ ...oldService, tagIds: [] }), 400);
+  assert.equal(await save({ ...oldService, tagIds: ['unknown'] }), 400);
+  const { tagIds, ...requestWithoutTagIds } = oldService;
+  assert.equal(await save({ ...requestWithoutTagIds, tags: ['洗剪吹'] }), 200);
+  assert.deepEqual([...salon.services[0].tagIds], ['wash_cut_blow']);
+  assert.deepEqual([...salon.services[0].tags], ['洗剪吹']);
+  assert.equal(await save({ ...requestWithoutTagIds, tags: ['未知标签'] }), 400);
+  assert.equal(await save({ ...oldService, tags: ['洗剪吹'] }), 200);
   assert.deepEqual(salonDomain.serviceImages(salon.services[0]), ['first.jpg']);
   assert.equal(await save({ ...oldService, imageUrls: ['first.jpg', 'second.jpg'] }), 200);
   assert.equal(salon.contentReviewStatus, 'pending');
