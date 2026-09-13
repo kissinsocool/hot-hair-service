@@ -752,8 +752,16 @@ const hasReviewableContentChanges = (current = {}, payload = {}) => {
   const currentServices = new Map((current.services || []).map(item => [String(item.id || ''), item]));
   if ((payload.services || []).some(service => {
     const previous = currentServices.get(String(service?.id || '')) || {};
+    const previousPromotion = previous.promotionEnabled === true;
+    const incomingPromotion = typeof service?.promotionEnabled === 'boolean'
+      ? service.promotionEnabled
+      : previousPromotion;
     const previousImages = new Set(salonDomain.serviceImages(previous));
     if (salonDomain.incomingServiceImages(service, previous).some(image => !previousImages.has(image))) return true;
+    if (incomingPromotion && !previousPromotion) return true;
+    if (incomingPromotion
+      && JSON.stringify(salonDomain.incomingServiceTagIds(service, previous))
+        !== JSON.stringify(salonDomain.normalizeServiceTagIds(previous.tagIds))) return true;
     return ['name', 'note'].some(field =>
       service?.[field] !== undefined && text(service[field]) !== text(previous[field]));
   })) return true;
@@ -794,10 +802,15 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
       const previous = currentServices.get(id);
       if (!previous) return [];
       const current = normalizeDocument(previous);
+      const incomingPromotion = typeof service.promotionEnabled === 'boolean'
+        ? service.promotionEnabled
+        : current.promotionEnabled === true;
+      const promotionNeedsReview = incomingPromotion;
       return [salonDomain.serviceForStorage({
         ...current,
-        tagIds: service.tagIds,
-        tags: service.tags,
+        promotionEnabled: incomingPromotion && current.promotionEnabled === true,
+        tagIds: promotionNeedsReview ? current.tagIds : service.tagIds,
+        tags: promotionNeedsReview ? current.tags : service.tags,
         priceFen: service.priceFen ?? current.priceFen,
         durationMinutes: service.durationMinutes ?? current.durationMinutes,
         note: service.note === '' ? '' : current.note,

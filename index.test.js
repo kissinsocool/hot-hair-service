@@ -269,6 +269,7 @@ test('booking domain stores fen, minutes and an explicit Shanghai timezone', () 
   const servicePayload = salonDomain.servicePayload(service);
   assert.equal(Object.hasOwn(servicePayload, 'price'), false);
   assert.equal(Object.hasOwn(servicePayload, 'duration'), false);
+  assert.equal(servicePayload.promotionEnabled, false);
   const staffPayload = salonDomain.staffPayload({
     id: 'staff-1',
     extraServiceFeeFen: 20000,
@@ -292,6 +293,54 @@ test('booking domain stores fen, minutes and an explicit Shanghai timezone', () 
   assert.equal(normalized.serviceDurationMinutes, 60);
   assert.equal(normalized.payableAmountFen, 0);
   assert.equal(normalized.timeZone, 'Asia/Shanghai');
+});
+
+test('service promotion is opt-in and old clients preserve its approved value', () => {
+  const previous = {
+    id: 'service-promotion',
+    name: '男士精剪',
+    promotionEnabled: true,
+    tagIds: ['men'],
+    priceFen: 8800,
+    durationMinutes: 45,
+  };
+  assert.equal(
+    salonDomain.serviceForStorage({ ...previous, promotionEnabled: undefined }, previous.id, previous).promotionEnabled,
+    true,
+  );
+  assert.equal(
+    salonDomain.serviceForStorage({ ...previous, promotionEnabled: false }, previous.id, previous).promotionEnabled,
+    false,
+  );
+});
+
+test('enabling promotion keeps its category out of the live salon until review', async () => {
+  const salon = new Salon({
+    id: 'promotion-review',
+    services: [{
+      id: 'service-1',
+      name: '精剪',
+      promotionEnabled: false,
+      tagIds: ['women'],
+      priceFen: 8800,
+      durationMinutes: 45,
+      imageUrls: ['cut.jpg'],
+    }],
+  });
+  const liveBefore = { services: salon.services.map(service => service.toObject()), staff: [] };
+  const payload = {
+    services: [{ ...liveBefore.services[0], promotionEnabled: true, tagIds: ['men'] }],
+  };
+  const draft = await buildContentDraft(salon, payload, liveBefore);
+
+  await applyDirectSalonContent(salon, payload);
+  const liveAfter = { services: salon.services.map(service => service.toObject()), staff: [] };
+
+  assert.equal(liveAfter.services[0].promotionEnabled, false);
+  assert.deepEqual([...liveAfter.services[0].tagIds], ['women']);
+  assert.equal(draft.services[0].promotionEnabled, true);
+  assert.deepEqual(draft.services[0].tagIds, ['men']);
+  assert.equal(hasReviewableContentChanges(liveAfter, draft), true);
 });
 
 test('booking migration derives canonical booking fields', () => {
@@ -318,6 +367,7 @@ test('booking migration derives canonical booking fields', () => {
   }), {
     id: 'service-1',
     name: '剪发',
+    promotionEnabled: false,
     tags: ['洗剪吹'],
     tagIds: ['wash_cut_blow'],
     priceFen: 6800,
@@ -888,6 +938,67 @@ test('current mini-program salon-list request returns an explicit unrated contra
   } finally {
     Booking.aggregate = originalAggregate;
   }
+});
+
+test('promoted service gallery returns only the requested approved live category', async () => {
+  const routes = new Map();
+  const app = {
+    get(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+    post() {},
+    put() {},
+    patch() {},
+    delete() {},
+    use() {},
+  };
+  let query;
+  const salons = [{
+    id: 'salon-1',
+    services: [
+      { id: 'men', promotionEnabled: true, tagIds: ['men'], imageUrls: ['a.jpg', 'b.jpg'] },
+      { id: 'women', promotionEnabled: true, tagIds: ['women'], imageUrls: ['c.jpg'] },
+      { id: 'hidden', promotionEnabled: false, tagIds: ['men'], imageUrls: ['d.jpg'] },
+    ],
+  }];
+  const SalonModel = {
+    find(value) {
+      query = value;
+      return {
+        select() { return this; },
+        sort() { return this; },
+        async lean() { return salons; },
+      };
+    },
+  };
+  registerPublicRoutes(app, {
+    Salon: SalonModel,
+    rateLimits: { publicRead: [] },
+    normalizePagination: () => ({ page: 2, limit: 1, skip: 1 }),
+    setPaginationHeaders(res, _pagination, total) { res.set('X-Total-Count', String(total)); },
+    publicImageUrl: value => `https://media.example/${value}`,
+  });
+
+  const response = {
+    headers: {},
+    set(name, value) { this.headers[name] = value; },
+    status(code) { this.statusCode = code; return this; },
+    json(value) { this.body = value; },
+  };
+  await routes.get('/api/salons/promoted-services')(
+    { query: { category: 'men-cut', page: '2', limit: '1' } },
+    response,
+  );
+
+  assert.deepEqual(query, {
+    publishStatus: 'online',
+    services: { $elemMatch: { promotionEnabled: true, tagIds: 'men' } },
+  });
+  assert.equal(response.headers['X-Total-Count'], '2');
+  assert.deepEqual(response.body, [{
+    id: 'salon-1:men:1',
+    salonId: 'salon-1',
+    serviceId: 'men',
+    imageUrl: 'https://media.example/b.jpg',
+  }]);
 });
 
 test('signup transaction saves a client with its MongoDB session', async () => {
@@ -1648,6 +1759,27 @@ test('content review only covers merchant text and uploaded images', () => {
     services: [{ id: 'S1', note: '新备注' }],
   }), true);
   assert.equal(hasReviewableContentChanges(current, {
+    services: [{ id: 'S1', promotionEnabled: true }],
+  }), true);
+  assert.equal(hasReviewableContentChanges({
+    ...current,
+    services: [{ ...current.services[0], promotionEnabled: true }],
+  }, {
+    services: [{ ...current.services[0], promotionEnabled: false }],
+  }), false);
+  assert.equal(hasReviewableContentChanges({
+    ...current,
+    services: [{ ...current.services[0], promotionEnabled: true, tagIds: ['men'] }],
+  }, {
+    services: [{ ...current.services[0] }],
+  }), false);
+  assert.equal(hasReviewableContentChanges({
+    ...current,
+    services: [{ ...current.services[0], promotionEnabled: true, tagIds: ['women'] }],
+  }, {
+    services: [{ ...current.services[0], promotionEnabled: true, tagIds: ['men'] }],
+  }), true);
+  assert.equal(hasReviewableContentChanges(current, {
     promoImages: ['detail.jpg', 'cover.jpg'],
   }), false);
   assert.equal(hasReviewableContentChanges(current, { promoImages: ['new-cover.jpg'] }), true);
@@ -1666,6 +1798,27 @@ test('reordering existing promo images publishes directly without review', async
   assert.deepEqual(salon.promoImages, payload.promoImages);
   assert.deepEqual(salon.images, payload.promoImages);
   assert.equal(hasReviewableContentChanges(salon, payload), false);
+});
+
+test('turning off service promotion publishes directly without review', async () => {
+  const salon = new Salon({
+    id: 'salon-disable-service-promotion',
+    services: [{
+      id: 'S1',
+      name: '男士精剪',
+      promotionEnabled: true,
+      tagIds: ['men'],
+      priceFen: 8000,
+      durationMinutes: 60,
+      imageUrl: 'service.jpg',
+    }],
+  });
+
+  await applyDirectSalonContent(salon, {
+    services: [{ ...salon.services[0].toObject(), promotionEnabled: false }],
+  });
+
+  assert.equal(salon.services[0].promotionEnabled, false);
 });
 
 test('merchant deletions publish immediately while additions and edits stay in review', async () => {
@@ -3055,6 +3208,7 @@ test('merchant service gallery contract preserves legacy requests and review iso
   assert.deepEqual([...salon.services[0].tagIds], ['wash_cut_blow']);
   assert.equal(await save({ ...oldService, tagIds: [] }), 400);
   assert.equal(await save({ ...oldService, tagIds: ['unknown'] }), 400);
+  assert.equal(await save({ ...oldService, promotionEnabled: 'yes' }), 400);
   const { tagIds, ...requestWithoutTagIds } = oldService;
   assert.equal(await save({ ...requestWithoutTagIds, tags: ['洗剪吹'] }), 200);
   assert.deepEqual([...salon.services[0].tagIds], ['wash_cut_blow']);

@@ -157,6 +157,9 @@ const serviceForStorage = (service = {}, fallbackId = '', previous = {}) => {
   return {
     id: String(service.id || fallbackId).trim(),
     name: String(service.name || '').trim(),
+    promotionEnabled: typeof service.promotionEnabled === 'boolean'
+      ? service.promotionEnabled
+      : previous.promotionEnabled === true,
     tags: serviceTagLabels(tagIds),
     tagIds,
     priceFen: service.priceFen,

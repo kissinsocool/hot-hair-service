@@ -1,7 +1,17 @@
+const PROMOTION_CATEGORY_TAG_IDS = Object.freeze({
+  'men-cut': 'men',
+  'women-cut': 'women',
+  color: 'color',
+  curly: 'curly',
+  straight: 'straight',
+  care: 'care',
+});
+
 module.exports = (app, ctx) => {
   const {
     getNearbySalons,
     normalizeLimit,
+    normalizePagination,
     normalizeRadiusKm,
     buildPublicSalonDetail,
     getCoordinates,
@@ -26,6 +36,7 @@ module.exports = (app, ctx) => {
     expandedSalonClosedDates,
     servicePayload,
     publicImageUrl,
+    setPaginationHeaders,
   } = ctx;
 
   app.get('/api/ad', async (_req, res) => {
@@ -43,6 +54,33 @@ module.exports = (app, ctx) => {
     const promotionImageUrl = publicImageUrl(campaign?.promotionImageUrl || '');
     res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
     res.json({ enabled: Boolean(promotionImageUrl), promotionImageUrl });
+  });
+
+  app.get('/api/salons/promoted-services', ...rateLimits.publicRead, async (req, res) => {
+    const tagId = PROMOTION_CATEGORY_TAG_IDS[String(req.query.category || '')];
+    if (!tagId) return res.status(400).json({ message: '分类不存在' });
+
+    const pagination = normalizePagination(req.query);
+    const salons = await Salon.find({
+      publishStatus: 'online',
+      services: { $elemMatch: { promotionEnabled: true, tagIds: tagId } },
+    }).select('id services updatedAt').sort({ updatedAt: -1, _id: -1 }).lean();
+    // ponytail: paginate after flattening; move this to aggregation if promoted galleries become large.
+    const images = salons.flatMap(salon => (salon.services || []).flatMap(service => {
+      if (service.promotionEnabled !== true || !(service.tagIds || []).includes(tagId)) return [];
+      const imageUrls = Array.isArray(service.imageUrls) && service.imageUrls.length
+        ? service.imageUrls
+        : [service.imageUrl].filter(Boolean);
+      return imageUrls.map((imageUrl, imageIndex) => ({
+        id: `${salon.id}:${service.id}:${imageIndex}`,
+        salonId: salon.id,
+        serviceId: service.id,
+        imageUrl: publicImageUrl(imageUrl),
+      }));
+    }));
+    setPaginationHeaders(res, pagination, images.length);
+    res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
+    res.json(images.slice(pagination.skip, pagination.skip + pagination.limit));
   });
 
   app.get('/api/salons', ...rateLimits.publicRead, async (req, res) => {

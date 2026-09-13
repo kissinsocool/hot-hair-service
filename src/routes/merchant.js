@@ -644,6 +644,9 @@ function validateSalonContent(payload = {}, limits) {
   }
 
   for (const service of Array.isArray(payload.services) ? payload.services : []) {
+    if (service?.promotionEnabled !== undefined && typeof service.promotionEnabled !== 'boolean') {
+      return 'service promotionEnabled must be a boolean';
+    }
     if (service?.imageUrls !== undefined && (
       !Array.isArray(service.imageUrls) || service.imageUrls.length > 20
       || service.imageUrls.some(image => typeof image !== 'string' || !image.trim() || image.length > 2048)
