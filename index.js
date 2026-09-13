@@ -167,6 +167,16 @@ const buildAdminMerchantPayload = async (user, salonDocument = {}) => {
       .map(person => buildStaffPayload(person, reviewsByStaff[person.id] || [], ratingSummaries[person.id])),
   };
   const salonPayload = salon.pendingContent ? { ...publicSalon, ...salon.pendingContent } : publicSalon;
+  const liveServices = new Map((publicSalon.services || []).map(service => [service.id, service]));
+  salonPayload.services = (salonPayload.services || []).map(service => ({
+    ...service,
+    ...(liveServices.has(service.id) ? {
+      promotionEnabled: liveServices.get(service.id).promotionEnabled,
+      promotionReviewStatus: liveServices.get(service.id).promotionReviewStatus,
+      promotionRejectReason: liveServices.get(service.id).promotionRejectReason,
+      promotionReviewedAt: liveServices.get(service.id).promotionReviewedAt,
+    } : {}),
+  }));
   salonPayload.staff = (salonPayload.staff || [])
     .map(person => buildStaffPayload(person, reviewsByStaff[person.id] || [], ratingSummaries[person.id]));
   salonPayload.reviews = reviews;
@@ -752,16 +762,8 @@ const hasReviewableContentChanges = (current = {}, payload = {}) => {
   const currentServices = new Map((current.services || []).map(item => [String(item.id || ''), item]));
   if ((payload.services || []).some(service => {
     const previous = currentServices.get(String(service?.id || '')) || {};
-    const previousPromotion = previous.promotionEnabled === true;
-    const incomingPromotion = typeof service?.promotionEnabled === 'boolean'
-      ? service.promotionEnabled
-      : previousPromotion;
     const previousImages = new Set(salonDomain.serviceImages(previous));
     if (salonDomain.incomingServiceImages(service, previous).some(image => !previousImages.has(image))) return true;
-    if (incomingPromotion && !previousPromotion) return true;
-    if (incomingPromotion
-      && JSON.stringify(salonDomain.incomingServiceTagIds(service, previous))
-        !== JSON.stringify(salonDomain.normalizeServiceTagIds(previous.tagIds))) return true;
     return ['name', 'note'].some(field =>
       service?.[field] !== undefined && text(service[field]) !== text(previous[field]));
   })) return true;
@@ -802,15 +804,41 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
       const previous = currentServices.get(id);
       if (!previous) return [];
       const current = normalizeDocument(previous);
-      const incomingPromotion = typeof service.promotionEnabled === 'boolean'
-        ? service.promotionEnabled
-        : current.promotionEnabled === true;
-      const promotionNeedsReview = incomingPromotion;
+      const promotion = {
+        enabled: current.promotionEnabled === true,
+        status: current.promotionReviewStatus || (current.promotionEnabled ? 'approved' : 'unsubmitted'),
+        reason: current.promotionRejectReason || '',
+        reviewedAt: current.promotionReviewedAt,
+      };
+      const promotionCategoryChanged = JSON.stringify(salonDomain.incomingServiceTagIds(service, current))
+        !== JSON.stringify(salonDomain.resolveServiceTagIds(current));
+      if (typeof service.promotionEnabled === 'boolean') {
+        if (service.promotionEnabled && !promotion.enabled) {
+          promotion.status = 'pending';
+          promotion.reason = '';
+          promotion.reviewedAt = undefined;
+        } else if (!service.promotionEnabled
+          && (promotion.enabled || promotion.status === 'pending')) {
+          promotion.enabled = false;
+          promotion.status = 'unsubmitted';
+          promotion.reason = '';
+          promotion.reviewedAt = undefined;
+        }
+      }
+      if (promotion.enabled && promotionCategoryChanged) {
+        promotion.enabled = false;
+        promotion.status = 'pending';
+        promotion.reason = '';
+        promotion.reviewedAt = undefined;
+      }
       return [salonDomain.serviceForStorage({
         ...current,
-        promotionEnabled: incomingPromotion && current.promotionEnabled === true,
-        tagIds: promotionNeedsReview ? current.tagIds : service.tagIds,
-        tags: promotionNeedsReview ? current.tags : service.tags,
+        promotionEnabled: promotion.enabled,
+        promotionReviewStatus: promotion.status,
+        promotionRejectReason: promotion.reason,
+        promotionReviewedAt: promotion.reviewedAt,
+        tagIds: service.tagIds,
+        tags: service.tags,
         priceFen: service.priceFen ?? current.priceFen,
         durationMinutes: service.durationMinutes ?? current.durationMinutes,
         note: service.note === '' ? '' : current.note,
@@ -914,11 +942,29 @@ const buildContentDraft = async (salon, payload, liveContent) => {
 const applyPendingContent = async (salon) => {
   const draft = normalizeDocument(salon.pendingContent) || {};
   contentFields
-    .filter(key => key !== 'staff')
+    .filter(key => key !== 'staff' && key !== 'services')
     .forEach(key => {
       if (draft[key] !== undefined) salon[key] = draft[key];
     });
   if (draft.location !== undefined) salon.geoLocation = buildGeoLocation(draft.location);
+
+  if (Array.isArray(draft.services)) {
+    const currentServices = new Map((salon.services || [])
+      .map(service => [String(service.id || ''), normalizeDocument(service)]));
+    salon.services = draft.services.map((service, index) => {
+      const id = String(service.id || `s1-${Date.now()}-${index}`);
+      const current = currentServices.get(id);
+      const promotionRequested = !current && service.promotionEnabled === true;
+      return salonDomain.serviceForStorage({
+        ...service,
+        promotionEnabled: current?.promotionEnabled === true,
+        promotionReviewStatus: current?.promotionReviewStatus
+          || (promotionRequested ? 'pending' : 'unsubmitted'),
+        promotionRejectReason: current?.promotionRejectReason || '',
+        promotionReviewedAt: current?.promotionReviewedAt,
+      }, id, current || {});
+    });
+  }
 
   if (Array.isArray(draft.staff)) {
     salon.staffIds = draft.staff.map(profile => profile.id).filter(Boolean);
@@ -944,7 +990,16 @@ const buildMerchantSalonPayload = async (salonId = '1') => {
     contentRejectReason: salon.contentRejectReason || '',
     contentReviewedAt: salon.contentReviewedAt,
   };
-  merged.services = (merged.services || []).map(salonDomain.servicePayload);
+  const liveServices = new Map((payload.services || []).map(service => [service.id, service]));
+  merged.services = (merged.services || []).map(service => salonDomain.servicePayload({
+    ...service,
+    ...(liveServices.has(service.id) ? {
+      promotionEnabled: liveServices.get(service.id).promotionEnabled,
+      promotionReviewStatus: liveServices.get(service.id).promotionReviewStatus,
+      promotionRejectReason: liveServices.get(service.id).promotionRejectReason,
+      promotionReviewedAt: liveServices.get(service.id).promotionReviewedAt,
+    } : {}),
+  }));
   const reviewsByStaff = groupReviewsByStaff(payload.reviews);
   const liveStaff = Object.fromEntries((payload.staff || []).map(person => [person.id, person]));
   merged.staff = (merged.staff || [])
@@ -1322,6 +1377,7 @@ module.exports = {
   activeSessionQuery,
   acceptedBookingAtTimeQuery,
   applyDirectSalonContent,
+  applyPendingContent,
   buildContentDraft,
   buildGeoLocation,
   buildMerchantSalonPayload,

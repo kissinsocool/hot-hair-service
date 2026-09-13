@@ -154,12 +154,20 @@ const incomingServiceImages = (service, previous = {}) => {
 
 const serviceForStorage = (service = {}, fallbackId = '', previous = {}) => {
   const tagIds = incomingServiceTagIds(service, previous);
+  const promotionEnabled = typeof service.promotionEnabled === 'boolean'
+    ? service.promotionEnabled
+    : previous.promotionEnabled === true;
+  const promotionReviewStatus = ['unsubmitted', 'pending', 'approved', 'rejected']
+    .includes(service.promotionReviewStatus)
+    ? service.promotionReviewStatus
+    : previous.promotionReviewStatus || (previous.promotionEnabled ? 'approved' : 'unsubmitted');
   return {
     id: String(service.id || fallbackId).trim(),
     name: String(service.name || '').trim(),
-    promotionEnabled: typeof service.promotionEnabled === 'boolean'
-      ? service.promotionEnabled
-      : previous.promotionEnabled === true,
+    promotionEnabled,
+    promotionReviewStatus,
+    promotionRejectReason: String(service.promotionRejectReason ?? previous.promotionRejectReason ?? ''),
+    promotionReviewedAt: service.promotionReviewedAt ?? previous.promotionReviewedAt,
     tags: serviceTagLabels(tagIds),
     tagIds,
     priceFen: service.priceFen,

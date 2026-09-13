@@ -24,6 +24,13 @@ const serviceSchema = new mongoose.Schema({
   id: { type: String, required: true },
   name: { type: String, required: true },
   promotionEnabled: { type: Boolean, default: false },
+  promotionReviewStatus: {
+    type: String,
+    enum: ['unsubmitted', 'pending', 'approved', 'rejected'],
+    default: 'unsubmitted',
+  },
+  promotionRejectReason: { type: String, default: '' },
+  promotionReviewedAt: Date,
   // Kept during the tagIds rollout so already-released clients can still render and edit services.
   tags: { type: [String], default: undefined },
   tagIds: { type: [String], default: [] },
@@ -267,7 +274,7 @@ const salonSchema = new mongoose.Schema({
 salonSchema.index({ geoLocation: '2dsphere', publishStatus: 1 });
 salonSchema.index({ staffIds: 1 });
 salonSchema.index({ 'services.id': 1 });
-salonSchema.index({ publishStatus: 1, 'services.promotionEnabled': 1 });
+salonSchema.index({ publishStatus: 1, 'services.promotionReviewStatus': 1 });
 
 const staffProfileSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },

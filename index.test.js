@@ -7,6 +7,7 @@ const {
   acceptedBookingAtTimeQuery,
   addApprovedSalonRatings,
   applyDirectSalonContent,
+  applyPendingContent,
   buildContentDraft,
   buildGeoLocation,
   buildMerchantSalonPayload,
@@ -314,7 +315,7 @@ test('service promotion is opt-in and old clients preserve its approved value', 
   );
 });
 
-test('enabling promotion keeps its category out of the live salon until review', async () => {
+test('enabling promotion creates a separate pending promotion review', async () => {
   const salon = new Salon({
     id: 'promotion-review',
     services: [{
@@ -337,10 +338,33 @@ test('enabling promotion keeps its category out of the live salon until review',
   const liveAfter = { services: salon.services.map(service => service.toObject()), staff: [] };
 
   assert.equal(liveAfter.services[0].promotionEnabled, false);
-  assert.deepEqual([...liveAfter.services[0].tagIds], ['women']);
+  assert.equal(liveAfter.services[0].promotionReviewStatus, 'pending');
+  assert.deepEqual([...liveAfter.services[0].tagIds], ['men']);
   assert.equal(draft.services[0].promotionEnabled, true);
   assert.deepEqual(draft.services[0].tagIds, ['men']);
-  assert.equal(hasReviewableContentChanges(liveAfter, draft), true);
+  assert.equal(hasReviewableContentChanges(liveAfter, draft), false);
+});
+
+test('a new promoted service enters promotion review only after content approval', async () => {
+  const salon = new Salon({
+    id: 'new-service-promotion-review',
+    pendingContent: {
+      services: [{
+        id: 'S1',
+        name: '女士精剪',
+        promotionEnabled: true,
+        tagIds: ['women'],
+        priceFen: 8800,
+        durationMinutes: 45,
+        imageUrls: ['cut.jpg'],
+      }],
+    },
+  });
+
+  await applyPendingContent(salon);
+
+  assert.equal(salon.services[0].promotionEnabled, false);
+  assert.equal(salon.services[0].promotionReviewStatus, 'pending');
 });
 
 test('booking migration derives canonical booking fields', () => {
@@ -368,6 +392,9 @@ test('booking migration derives canonical booking fields', () => {
     id: 'service-1',
     name: '剪发',
     promotionEnabled: false,
+    promotionReviewStatus: 'unsubmitted',
+    promotionRejectReason: '',
+    promotionReviewedAt: undefined,
     tags: ['洗剪吹'],
     tagIds: ['wash_cut_blow'],
     priceFen: 6800,
@@ -954,9 +981,9 @@ test('promoted service gallery returns only the requested approved live category
   const salons = [{
     id: 'salon-1',
     services: [
-      { id: 'men', promotionEnabled: true, tagIds: ['men'], imageUrls: ['a.jpg', 'b.jpg'] },
-      { id: 'women', promotionEnabled: true, tagIds: ['women'], imageUrls: ['c.jpg'] },
-      { id: 'hidden', promotionEnabled: false, tagIds: ['men'], imageUrls: ['d.jpg'] },
+      { id: 'men', promotionEnabled: true, promotionReviewStatus: 'approved', tagIds: ['men'], imageUrls: ['a.jpg', 'b.jpg'] },
+      { id: 'women', promotionEnabled: true, promotionReviewStatus: 'approved', tagIds: ['women'], imageUrls: ['c.jpg'] },
+      { id: 'hidden', promotionEnabled: false, promotionReviewStatus: 'pending', tagIds: ['men'], imageUrls: ['d.jpg'] },
     ],
   }];
   const SalonModel = {
@@ -990,7 +1017,7 @@ test('promoted service gallery returns only the requested approved live category
 
   assert.deepEqual(query, {
     publishStatus: 'online',
-    services: { $elemMatch: { promotionEnabled: true, tagIds: 'men' } },
+    services: { $elemMatch: { promotionEnabled: true, promotionReviewStatus: 'approved', tagIds: 'men' } },
   });
   assert.equal(response.headers['X-Total-Count'], '2');
   assert.deepEqual(response.body, [{
@@ -1760,7 +1787,7 @@ test('content review only covers merchant text and uploaded images', () => {
   }), true);
   assert.equal(hasReviewableContentChanges(current, {
     services: [{ id: 'S1', promotionEnabled: true }],
-  }), true);
+  }), false);
   assert.equal(hasReviewableContentChanges({
     ...current,
     services: [{ ...current.services[0], promotionEnabled: true }],
@@ -1778,11 +1805,62 @@ test('content review only covers merchant text and uploaded images', () => {
     services: [{ ...current.services[0], promotionEnabled: true, tagIds: ['women'] }],
   }, {
     services: [{ ...current.services[0], promotionEnabled: true, tagIds: ['men'] }],
-  }), true);
+  }), false);
   assert.equal(hasReviewableContentChanges(current, {
     promoImages: ['detail.jpg', 'cover.jpg'],
   }), false);
   assert.equal(hasReviewableContentChanges(current, { promoImages: ['new-cover.jpg'] }), true);
+});
+
+test('admin promotion review approves only the selected service', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    put() {},
+    delete() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const salon = new Salon({
+    id: 'promotion-admin-review',
+    services: [
+      {
+        id: 'S1', name: '男士精剪', promotionReviewStatus: 'pending',
+        tagIds: ['men'], priceFen: 8000, durationMinutes: 60,
+      },
+      {
+        id: 'S2', name: '女士精剪', promotionReviewStatus: 'pending',
+        tagIds: ['women'], priceFen: 9000, durationMinutes: 60,
+      },
+    ],
+  });
+  salon.save = async () => salon;
+  registerAdminRoutes(app, {
+    MerchantUser: {
+      findOne() { return { async lean() { return { id: 'merchant-1', salonId: salon.id }; } }; },
+    },
+    Salon: { async findOne() { return salon; } },
+    async buildAdminMerchantPayload() { return { id: 'merchant-1' }; },
+    rateLimits: { upload: [] },
+  });
+
+  const response = {
+    status(code) { this.statusCode = code; return this; },
+    json(value) { this.body = value; },
+  };
+  await routes.get('/api/admin/merchants/:id/services/:serviceId/promotion')(
+    {
+      params: { id: 'merchant-1', serviceId: 'S1' },
+      body: { action: 'approve' },
+    },
+    response,
+  );
+
+  assert.equal(salon.services[0].promotionEnabled, true);
+  assert.equal(salon.services[0].promotionReviewStatus, 'approved');
+  assert.equal(salon.services[1].promotionEnabled, false);
+  assert.equal(salon.services[1].promotionReviewStatus, 'pending');
+  assert.deepEqual(response.body, { merchant: { id: 'merchant-1' } });
 });
 
 test('reordering existing promo images publishes directly without review', async () => {
@@ -1819,6 +1897,30 @@ test('turning off service promotion publishes directly without review', async ()
   });
 
   assert.equal(salon.services[0].promotionEnabled, false);
+  assert.equal(salon.services[0].promotionReviewStatus, 'unsubmitted');
+});
+
+test('changing an approved promotion category sends it back to promotion review', async () => {
+  const salon = new Salon({
+    id: 'salon-change-promotion-category',
+    services: [{
+      id: 'S1',
+      name: '男士精剪',
+      promotionEnabled: true,
+      promotionReviewStatus: 'approved',
+      tagIds: ['men'],
+      priceFen: 8000,
+      durationMinutes: 60,
+    }],
+  });
+
+  await applyDirectSalonContent(salon, {
+    services: [{ ...salon.services[0].toObject(), tagIds: ['women'] }],
+  });
+
+  assert.deepEqual([...salon.services[0].tagIds], ['women']);
+  assert.equal(salon.services[0].promotionEnabled, false);
+  assert.equal(salon.services[0].promotionReviewStatus, 'pending');
 });
 
 test('merchant deletions publish immediately while additions and edits stay in review', async () => {

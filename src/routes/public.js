@@ -63,11 +63,13 @@ module.exports = (app, ctx) => {
     const pagination = normalizePagination(req.query);
     const salons = await Salon.find({
       publishStatus: 'online',
-      services: { $elemMatch: { promotionEnabled: true, tagIds: tagId } },
+      services: { $elemMatch: { promotionEnabled: true, promotionReviewStatus: 'approved', tagIds: tagId } },
     }).select('id services updatedAt').sort({ updatedAt: -1, _id: -1 }).lean();
     // ponytail: paginate after flattening; move this to aggregation if promoted galleries become large.
     const images = salons.flatMap(salon => (salon.services || []).flatMap(service => {
-      if (service.promotionEnabled !== true || !(service.tagIds || []).includes(tagId)) return [];
+      if (service.promotionEnabled !== true
+        || service.promotionReviewStatus !== 'approved'
+        || !(service.tagIds || []).includes(tagId)) return [];
       const imageUrls = Array.isArray(service.imageUrls) && service.imageUrls.length
         ? service.imageUrls
         : [service.imageUrl].filter(Boolean);

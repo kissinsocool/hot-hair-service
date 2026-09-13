@@ -357,7 +357,30 @@ module.exports = (app, ctx) => {
     await salon.save();
     res.json({ merchant: await buildAdminMerchantPayload(user, salon) });
   });
-  
+
+  app.patch('/api/admin/merchants/:id/services/:serviceId/promotion', async (req, res) => {
+    const action = String(req.body.action || '').trim();
+    const reason = String(req.body.reason || '').trim();
+    if (!['approve', 'reject'].includes(action)) {
+      return res.status(400).json({ message: 'action must be approve or reject' });
+    }
+
+    const user = await MerchantUser.findOne({ id: req.params.id }).lean();
+    if (!user) return res.status(404).json({ message: 'Merchant user not found' });
+    const salon = await Salon.findOne({ id: user.salonId });
+    if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
+    const service = salon.services.find(item => item.id === req.params.serviceId);
+    if (!service) return res.status(404).json({ message: 'Service not found' });
+
+    service.promotionEnabled = action === 'approve';
+    service.promotionReviewStatus = action === 'approve' ? 'approved' : 'rejected';
+    service.promotionRejectReason = action === 'reject' ? reason : '';
+    service.promotionReviewedAt = new Date();
+    salon.markModified('services');
+    await salon.save();
+    res.json({ merchant: await buildAdminMerchantPayload(user, salon) });
+  });
+
   app.patch('/api/admin/merchants/:id/publish', async (req, res) => {
     const action = String(req.body.action || '').trim();
     if (!['online', 'offline'].includes(action)) {
