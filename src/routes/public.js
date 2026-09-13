@@ -90,12 +90,26 @@ module.exports = (app, ctx) => {
     const userLocation = getCoordinates(req.query);
     if (!userLocation) return res.status(400).json({ message: 'latitude and longitude are required' });
     const radiusKm = normalizeRadiusKm(req.query.radiusKm, 10, 50);
-    const limit = normalizeLimit(req.query.limit);
-    const minResults = normalizeLimit(req.query.minResults, 10, limit);
+    const pagination = normalizePagination(req.query, 10);
+    const minResults = normalizeLimit(req.query.minResults, 10, pagination.limit);
     const maxRadiusKm = normalizeRadiusKm(req.query.maxRadiusKm, 50, 100, radiusKm);
-    const salonList = await addApprovedSalonRatings(
-      await getNearbySalons(userLocation, radiusKm, limit, minResults, maxRadiusKm),
+    const keyword = String(req.query.keyword || '').trim().slice(0, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const salons = await getNearbySalons(
+      userLocation,
+      radiusKm,
+      pagination.limit + 1,
+      minResults,
+      maxRadiusKm,
+      pagination.skip,
+      keyword,
     );
+    const hasMore = salons.length > pagination.limit;
+    const salonList = await addApprovedSalonRatings(salons.slice(0, pagination.limit));
+    res.set({
+      'X-Page': String(pagination.page),
+      'X-Page-Size': String(pagination.limit),
+      'X-Has-More': String(hasMore),
+    });
     res.json(await Promise.all(salonList.map(async (s) => {
       const { fullDescription, openingHours, weeklyClosedDays, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(s);
       const images = await existingSalonImages(s);

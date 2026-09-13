@@ -940,6 +940,7 @@ test('current mini-program salon-list request returns an explicit unrated contra
     getCoordinates,
     normalizeRadiusKm: (_value, fallback) => fallback,
     normalizeLimit: (value, fallback = 50) => Number(value) || fallback,
+    normalizePagination,
     async getNearbySalons() {
       return [{
         id: 'salon-without-reviews',
@@ -956,7 +957,7 @@ test('current mini-program salon-list request returns an explicit unrated contra
   try {
     let payload;
     await routes.get('/api/salons')(
-      { query: { latitude: '39.9042', longitude: '116.4074' } },
+      { query: { latitude: '39.9042', longitude: '116.4074', page: '1', limit: '10' } },
       { set() {}, json(value) { payload = value; } },
     );
     assert.equal(payload[0].rating, null);
@@ -1405,6 +1406,7 @@ test('nearby salons retain expanded-radius results after reaching the minimum co
     queries += 1;
     const chain = {
       select() { return chain; },
+      skip() { return chain; },
       limit() { return chain; },
       async lean() {
         return [
@@ -1425,6 +1427,51 @@ test('nearby salons retain expanded-radius results after reaching the minimum co
   }
 });
 
+test('nearby salon pagination keeps the same location and distance ordering query', async () => {
+  const originalFind = Salon.find;
+  const calls = [];
+  Salon.find = (query) => {
+    const call = { query, skip: null, limit: null };
+    calls.push(call);
+    const chain = {
+      select() { return chain; },
+      skip(value) { call.skip = value; return chain; },
+      limit(value) { call.limit = value; return chain; },
+      async lean() {
+        return Array.from({ length: call.limit }, (_, index) => ({
+          id: `salon-${call.skip + index}`,
+          geoLocation: { type: 'Point', coordinates: [121.4738, 31.2305] },
+        }));
+      },
+    };
+    return chain;
+  };
+
+  try {
+    await getNearbySalons(
+      { latitude: 31.2304, longitude: 121.4737 },
+      10,
+      11,
+      10,
+      50,
+      10,
+      '测试店铺',
+    );
+    assert.deepEqual(calls.map(call => ({
+      coordinates: call.query.geoLocation.$nearSphere.$geometry.coordinates,
+      maxDistance: call.query.geoLocation.$nearSphere.$maxDistance,
+      keyword: call.query.name.$regex,
+      skip: call.skip,
+      limit: call.limit,
+    })), [
+      { coordinates: [121.4737, 31.2304], maxDistance: 50000, keyword: '测试店铺', skip: 0, limit: 10 },
+      { coordinates: [121.4737, 31.2304], maxDistance: 50000, keyword: '测试店铺', skip: 10, limit: 11 },
+    ]);
+  } finally {
+    Salon.find = originalFind;
+  }
+});
+
 test('nearby salons fall back to the nearest online salons when fewer than the minimum are within range', async () => {
   const originalFind = Salon.find;
   const queries = [];
@@ -1432,6 +1479,7 @@ test('nearby salons fall back to the nearest online salons when fewer than the m
     queries.push(query);
     const chain = {
       select() { return chain; },
+      skip() { return chain; },
       limit() { return chain; },
       async lean() {
         return query.geoLocation.$nearSphere.$maxDistance

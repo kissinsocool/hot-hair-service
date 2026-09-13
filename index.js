@@ -114,7 +114,7 @@ app.use(cors({
     if (isAllowedOrigin(origin)) return callback(null, true);
     return callback(new Error('Not allowed by CORS'));
   },
-  exposedHeaders: ['X-Total-Count', 'X-Page', 'X-Page-Size'],
+  exposedHeaders: ['X-Total-Count', 'X-Page', 'X-Page-Size', 'X-Has-More'],
 }));
 app.use(express.json({ limit: process.env.JSON_LIMIT || '10mb' }));
 
@@ -411,9 +411,10 @@ const INPUT_LIMITS = Object.freeze({
   unavailableSlots: 500,
 });
 
-const findNearbySalons = async (userLocation, radiusKm, limit) => {
+const findNearbySalons = async (userLocation, radiusKm, limit, skip = 0, keyword = '') => {
   const query = {
     publishStatus: 'online',
+    ...(keyword ? { name: { $regex: keyword, $options: 'i' } } : {}),
     geoLocation: {
       $nearSphere: {
         $geometry: {
@@ -426,7 +427,7 @@ const findNearbySalons = async (userLocation, radiusKm, limit) => {
   };
   const salonList = await Salon.find(query)
     .select('-licenseUrl -legalPersonIdFrontUrl -legalPersonIdBackUrl -addressProofUrl -licenseStatus -licenseRejectReason -licenseSubmittedAt -licenseReviewedAt -pendingContent -contentReviewStatus -contentRejectReason -contentReviewedAt')
-    .limit(limit).lean();
+    .skip(skip).limit(limit).lean();
   return salonList
     .map((salon) => {
       const salonLocation = getCoordinates(salon.location || salon.geoLocation);
@@ -436,11 +437,13 @@ const findNearbySalons = async (userLocation, radiusKm, limit) => {
     });
 };
 
-const getNearbySalons = async (userLocation, _radiusKm, limit, minResults = 10, maxRadiusKm = 50) => {
-  const salonList = await findNearbySalons(userLocation, maxRadiusKm, limit);
-  return salonList.length >= Math.min(limit, minResults)
-    ? salonList
-    : findNearbySalons(userLocation, null, limit);
+const getNearbySalons = async (userLocation, _radiusKm, limit, minResults = 10, maxRadiusKm = 50, skip = 0, keyword = '') => {
+  const probeLimit = skip ? minResults : limit;
+  const nearbySalons = await findNearbySalons(userLocation, maxRadiusKm, probeLimit, 0, keyword);
+  if (nearbySalons.length < minResults) {
+    return findNearbySalons(userLocation, null, limit, skip, keyword);
+  }
+  return skip ? findNearbySalons(userLocation, maxRadiusKm, limit, skip, keyword) : nearbySalons;
 };
 
 const getServiceById = async (serviceId) => {
