@@ -3506,7 +3506,9 @@ test('merchant service gallery contract preserves legacy requests and review iso
       { status(code) { status = code; return this; }, json() {} });
     return status;
   };
+  assert.equal(salon.contentSubmittedAt, undefined);
   assert.equal(await save(oldService), 200);
+  assert.ok(salon.contentSubmittedAt instanceof Date);
   assert.equal(await save({ ...oldService, tags: ['染发'] }), 200);
   assert.deepEqual([...salon.services[0].tagIds], ['color']);
   assert.equal(await save({ ...oldService, tagIds: ['color'], tags: ['洗剪吹'] }), 200);

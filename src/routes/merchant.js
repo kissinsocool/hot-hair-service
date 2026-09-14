@@ -268,13 +268,13 @@ module.exports = (app, ctx) => {
       salon.markModified('pendingContent');
       salon.contentReviewStatus = 'pending';
       salon.contentRejectReason = '';
-      salon.contentSubmittedAt = new Date();
       salon.contentReviewedAt = null;
     } else {
       salon.pendingContent = undefined;
       salon.contentReviewStatus = 'approved';
       salon.contentRejectReason = '';
     }
+    salon.contentSubmittedAt = new Date();
     await salon.save();
     res.json(await buildMerchantSalonPayload(req.merchantUser.salonId || '1'));
   });
