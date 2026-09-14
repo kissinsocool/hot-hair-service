@@ -267,6 +267,7 @@ const salonSchema = new mongoose.Schema({
   licenseReviewedAt: Date,
   contentReviewStatus: { type: String, default: 'pending', index: true },
   contentRejectReason: { type: String, default: '' },
+  contentSubmittedAt: Date,
   contentReviewedAt: Date,
   pendingContent: { type: pendingContentSchema, default: undefined },
 }, { timestamps: true });

@@ -194,6 +194,7 @@ const buildAdminMerchantPayload = async (user, salonDocument = {}) => {
     licenseReviewedAt: salon.licenseReviewedAt,
     contentReviewStatus: salon.contentReviewStatus || 'pending',
     contentRejectReason: salon.contentRejectReason || '',
+    contentSubmittedAt: salon.contentSubmittedAt || (salon.pendingContent ? salon.updatedAt : undefined),
     contentReviewedAt: salon.contentReviewedAt,
     salon: salonPayload,
     createdAt: user.createdAt,

@@ -230,6 +230,9 @@ module.exports = (app, ctx) => {
     if (await MerchantUser.findOne({ username })) {
       return res.status(409).json({ message: '该商家账号已存在' });
     }
+    if (await MerchantUser.findOne({ salonId })) {
+      return res.status(409).json({ message: '该店铺 ID 已关联其他商家账号' });
+    }
   
     const salon = await ensureSalonForMerchant({ salonId, displayName });
     if (req.body.tags !== undefined) {
@@ -308,6 +311,13 @@ module.exports = (app, ctx) => {
     if (revokedSessionHash) await revokeSessionHash(revokedSessionHash);
     res.json({ user: buildMerchantUserPayload(user) });
   });
+
+  app.delete('/api/admin/merchants/:id', async (req, res) => {
+    const user = await MerchantUser.findOneAndDelete({ id: req.params.id });
+    if (!user) return res.status(404).json({ message: 'Merchant user not found' });
+    await revokeSessionHash(user.sessionTokenHash);
+    res.json({ ok: true });
+  });
   
   app.patch('/api/admin/merchants/:id/license', async (req, res) => {
     const action = String(req.body.action || '').trim();
@@ -319,13 +329,8 @@ module.exports = (app, ctx) => {
     if (!user) return res.status(404).json({ message: 'Merchant user not found' });
     const salon = await Salon.findOne({ id: user.salonId });
     if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
-    if (
-      !salon.licenseUrl
-      || !salon.legalPersonIdFrontUrl
-      || !salon.legalPersonIdBackUrl
-      || !salon.addressProofUrl
-    ) {
-      return res.status(409).json({ message: '商家资质材料尚未提交完整' });
+    if (!salon.licenseUrl) {
+      return res.status(409).json({ message: '商家尚未提交营业执照' });
     }
   
     salon.licenseStatus = action === 'approve' ? 'approved' : 'rejected';

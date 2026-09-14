@@ -212,9 +212,7 @@ module.exports = (app, ctx) => {
     const legalPersonIdFrontUrl = directOrCurrent(req.body.legalPersonIdFrontUrl, salon.legalPersonIdFrontUrl);
     const legalPersonIdBackUrl = directOrCurrent(req.body.legalPersonIdBackUrl, salon.legalPersonIdBackUrl);
     const addressProofUrl = directOrCurrent(req.body.addressProofUrl, salon.addressProofUrl);
-    if (!licenseUrl || !legalPersonIdFrontUrl || !legalPersonIdBackUrl || !addressProofUrl) {
-      return res.status(400).json({ message: '营业执照、法人身份证正反面和地址证明均为必填项' });
-    }
+    if (!licenseUrl) return res.status(400).json({ message: '请上传营业执照' });
   
     salon.licenseUrl = licenseUrl;
     salon.legalPersonIdFrontUrl = legalPersonIdFrontUrl;
@@ -270,6 +268,7 @@ module.exports = (app, ctx) => {
       salon.markModified('pendingContent');
       salon.contentReviewStatus = 'pending';
       salon.contentRejectReason = '';
+      salon.contentSubmittedAt = new Date();
       salon.contentReviewedAt = null;
     } else {
       salon.pendingContent = undefined;

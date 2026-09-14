@@ -408,6 +408,7 @@ test('booking migration derives canonical booking fields', () => {
 test('service, review, complaint and pending content use child schemas instead of Mixed', async () => {
   assert.ok(Salon.schema.path('services').schema);
   assert.ok(Salon.schema.path('pendingContent').schema);
+  assert.equal(Salon.schema.path('contentSubmittedAt').instance, 'Date');
   assert.ok(Booking.schema.path('review').schema);
   assert.ok(Booking.schema.path('complaint').schema);
   assert.equal(Salon.schema.path('services').schema.path('priceFen').instance, 'Number');
@@ -2179,6 +2180,69 @@ test('merchant qualification submission stores all required direct-upload docume
   assert.equal(response.addressProofUrl, 'private:licenses/merchant/address-proof.png');
 });
 
+test('merchant qualification submission requires only a business license', async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post() {},
+    delete() {},
+    use() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  };
+  const salon = { id: 'license-only', async save() {} };
+  registerMerchantRoutes(app, {
+    Salon: { async findOne() { return salon; } },
+    async verifyMerchantQualificationObjects() {},
+    privateImageUrl: value => value,
+    rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
+  });
+  const response = {
+    statusCode: 200,
+    body: null,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return body; },
+  };
+
+  await routes.get('/api/merchant/qualification')({
+    merchantUser: { id: 'merchant-1', salonId: salon.id },
+    body: { licenseUrl: 'licenses/merchant/license.png' },
+  }, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(salon.licenseUrl, 'licenses/merchant/license.png');
+  assert.equal(salon.licenseStatus, 'pending');
+});
+
+test('admin can approve a merchant with only a business license', async () => {
+  const routes = new Map();
+  const app = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map(method => [
+    method,
+    (path, ...handlers) => routes.set(`${method}:${path}`, handlers.at(-1)),
+  ]));
+  const user = { id: 'merchant-1', salonId: 'license-only' };
+  const salon = { id: user.salonId, licenseUrl: 'licenses/merchant/license.png', async save() {} };
+  registerAdminRoutes(app, {
+    MerchantUser: { findOne: () => ({ lean: async () => user }) },
+    Salon: { async findOne() { return salon; } },
+    async buildAdminMerchantPayload() { return { licenseStatus: salon.licenseStatus }; },
+    rateLimits: { upload: [] },
+  });
+  const response = {
+    statusCode: 200,
+    body: null,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return body; },
+  };
+
+  await routes.get('patch:/api/admin/merchants/:id/license')({
+    params: { id: user.id },
+    body: { action: 'approve' },
+  }, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(salon.licenseStatus, 'approved');
+});
+
 test('merchant upload signing is scoped to the authenticated merchant', async () => {
   const routes = new Map();
   const app = {
@@ -2255,11 +2319,96 @@ test('admin merchant creation helper is wired into route context', () => {
   assert.equal(typeof ensureSalonForMerchant, 'function');
 });
 
+test('admin merchant creation rejects a salon already owned by another account', async () => {
+  const routes = new Map();
+  const app = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map(method => [
+    method,
+    (path, ...handlers) => routes.set(`${method}:${path}`, handlers.at(-1)),
+  ]));
+  let created = false;
+  let ensured = false;
+  registerAdminRoutes(app, {
+    MerchantUser: {
+      async findOne(query) {
+        if (query.username) return null;
+        if (query.salonId === '701109') return { username: 'existing-merchant' };
+        return null;
+      },
+      async create() { created = true; },
+    },
+    async ensureSalonForMerchant() { ensured = true; },
+    normalizeDeposit: value => Number(value),
+    normalizeSalonTags,
+    rateLimits: { upload: [] },
+  });
+  const response = {
+    statusCode: 200,
+    body: null,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return body; },
+  };
+
+  await routes.get('post:/api/admin/merchants')({
+    body: {
+      username: 'merchant041945',
+      displayName: 'merchant041945',
+      password: '123456',
+      salonId: '701109',
+      deposit: '0',
+      tags: [],
+    },
+  }, response);
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.message, '该店铺 ID 已关联其他商家账号');
+  assert.equal(ensured, false);
+  assert.equal(created, false);
+});
+
+test('admin merchant deletion removes only the account and revokes its session', async () => {
+  const routes = new Map();
+  const app = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map(method => [
+    method,
+    (path, ...handlers) => routes.set(`${method}:${path}`, handlers.at(-1)),
+  ]));
+  const user = {
+    id: 'merchant-delete',
+    salonId: 'salon-preserved',
+    sessionTokenHash: 'session-hash',
+  };
+  let revokedSessionHash = '';
+  registerAdminRoutes(app, {
+    MerchantUser: {
+      async findOneAndDelete(query) {
+        assert.deepEqual(query, { id: user.id });
+        return user;
+      },
+    },
+    async revokeSessionHash(value) { revokedSessionHash = value; },
+    rateLimits: { upload: [] },
+  });
+  const response = {
+    statusCode: 200,
+    body: null,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return body; },
+  };
+
+  await routes.get('delete:/api/admin/merchants/:id')({
+    params: { id: user.id },
+  }, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, { ok: true });
+  assert.equal(revokedSessionHash, user.sessionTokenHash);
+});
+
 test('approving a review publishes moderated images before making it public', async () => {
   const routes = new Map();
   const app = {
     get() {},
     post() {},
+    delete() {},
     patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
   };
   const booking = {
@@ -2295,6 +2444,7 @@ test('approving a review edit replaces the public review only after approval', a
   const app = {
     get() {},
     post() {},
+    delete() {},
     patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
   };
   const original = {
@@ -2344,6 +2494,7 @@ test('rejecting a review keeps moderated images for preview and later approval',
   const app = {
     get() {},
     post() {},
+    delete() {},
     patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
   };
   const booking = {
@@ -2376,6 +2527,7 @@ test('deleting an approved review removes the single booking review', async () =
   const app = {
     get() {},
     post() {},
+    delete() {},
     patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
   };
   const booking = {
@@ -2501,6 +2653,7 @@ test('approving a merchant reply publishes it without changing the user review s
   const app = {
     get() {},
     post() {},
+    delete() {},
     patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
   };
   const booking = {
@@ -2537,6 +2690,7 @@ test('rejecting an approved merchant reply hides it without rejecting the user r
   const app = {
     get() {},
     post() {},
+    delete() {},
     patch(path, ...handlers) { routes.set(path, handlers.at(-1)); },
   };
   const booking = {
@@ -3320,6 +3474,7 @@ test('merchant salon save accepts null location with a manually entered address'
   assert.equal(response.statusCode, 200);
   assert.equal(salon.pendingContent.address, '北京市朝阳区手动输入地址');
   assert.equal(salon.pendingContent.location, null);
+  assert.ok(salon.contentSubmittedAt instanceof Date);
 
   response.statusCode = 200;
   await routes.get('/api/merchant/salon')({
