@@ -438,7 +438,16 @@ const findNearbySalons = async (userLocation, radiusKm, limit, skip = 0, keyword
     });
 };
 
-const getNearbySalons = async (userLocation, _radiusKm, limit, minResults = 10, maxRadiusKm = 50, skip = 0, keyword = '') => {
+const getNearbySalons = async (userLocation, _radiusKm, limit, minResults = 10, maxRadiusKm = 50, skip = 0, keyword = '', sort = 'distance') => {
+  if (sort === 'rating') {
+    let candidates = await findNearbySalons(userLocation, maxRadiusKm, 0, 0, keyword);
+    if (candidates.length < minResults) candidates = await findNearbySalons(userLocation, null, 0, 0, keyword);
+    const rated = await addApprovedSalonRatings(candidates);
+    rated.sort((a, b) => (b.rating || 0) - (a.rating || 0)
+      || (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity)
+      || String(a.id).localeCompare(String(b.id)));
+    return rated.slice(skip, skip + limit);
+  }
   const probeLimit = skip ? minResults : limit;
   const nearbySalons = await findNearbySalons(userLocation, maxRadiusKm, probeLimit, 0, keyword);
   if (nearbySalons.length < minResults) {

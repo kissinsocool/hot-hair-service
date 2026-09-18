@@ -94,6 +94,7 @@ module.exports = (app, ctx) => {
     const minResults = normalizeLimit(req.query.minResults, 10, pagination.limit);
     const maxRadiusKm = normalizeRadiusKm(req.query.maxRadiusKm, 50, 100, radiusKm);
     const keyword = String(req.query.keyword || '').trim().slice(0, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const sort = req.query.sort === 'rating' ? 'rating' : 'distance';
     const salons = await getNearbySalons(
       userLocation,
       radiusKm,
@@ -102,9 +103,12 @@ module.exports = (app, ctx) => {
       maxRadiusKm,
       pagination.skip,
       keyword,
+      sort,
     );
     const hasMore = salons.length > pagination.limit;
-    const salonList = await addApprovedSalonRatings(salons.slice(0, pagination.limit));
+    const salonList = sort === 'rating'
+      ? salons.slice(0, pagination.limit)
+      : await addApprovedSalonRatings(salons.slice(0, pagination.limit));
     res.set({
       'X-Page': String(pagination.page),
       'X-Page-Size': String(pagination.limit),

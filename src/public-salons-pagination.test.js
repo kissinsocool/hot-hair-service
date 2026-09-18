@@ -50,3 +50,24 @@ test('GET /api/salons returns ten-item pages and a has-more header', async () =>
   assert.equal(headers['X-Page'], '2');
   assert.equal(headers['X-Page-Size'], '10');
 });
+
+test('GET /api/salons forwards optional rating sort without changing default requests', async () => {
+  const routes = new Map();
+  const sorts = [];
+  registerPublicRoutes({ get(path, ...handlers) { routes.set(path, handlers.at(-1)); } }, {
+    rateLimits: { publicRead: [] },
+    getCoordinates: () => ({ latitude: 1, longitude: 2 }),
+    normalizeRadiusKm: (_value, fallback) => fallback,
+    normalizeLimit: (_value, fallback) => fallback,
+    normalizePagination: () => ({ page: 1, limit: 10, skip: 0 }),
+    async getNearbySalons(...args) { sorts.push(args.at(-1)); return []; },
+    addApprovedSalonRatings: async salons => salons,
+    stripSensitiveSalonFields: salon => salon,
+    existingSalonImages: async () => [],
+    salonCoverImage: async () => ''
+  });
+  const response = { set() {}, json() {} };
+  await routes.get('/api/salons')({ query: {} }, response);
+  await routes.get('/api/salons')({ query: { sort: 'rating' } }, response);
+  assert.deepEqual(sorts, ['distance', 'rating']);
+});

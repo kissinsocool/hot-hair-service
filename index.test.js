@@ -1482,6 +1482,40 @@ test('nearby salon pagination keeps the same location and distance ordering quer
   }
 });
 
+test('rating sort pages all nearby salons by approved ratings, then distance', async () => {
+  const originalFind = Salon.find;
+  const originalAggregate = Booking.aggregate;
+  Salon.find = () => {
+    const chain = {
+      select() { return chain; },
+      skip() { return chain; },
+      limit() { return chain; },
+      async lean() {
+        return [
+          { id: 'near', staffIds: ['near'], geoLocation: { type: 'Point', coordinates: [121.474, 31.2304] } },
+          { id: 'high', staffIds: ['high'], geoLocation: { type: 'Point', coordinates: [121.48, 31.2304] } },
+          { id: 'unrated', staffIds: [], geoLocation: { type: 'Point', coordinates: [121.475, 31.2304] } },
+        ];
+      },
+    };
+    return chain;
+  };
+  Booking.aggregate = async () => [
+    { _id: 'near', reviewCount: 1, ratingTotal: 4 },
+    { _id: 'high', reviewCount: 1, ratingTotal: 5 },
+  ];
+  try {
+    const location = { latitude: 31.2304, longitude: 121.4737 };
+    const first = await getNearbySalons(location, 10, 2, 1, 50, 0, '', 'rating');
+    const second = await getNearbySalons(location, 10, 2, 1, 50, 2, '', 'rating');
+    assert.deepEqual(first.map(salon => salon.id), ['high', 'near']);
+    assert.deepEqual(second.map(salon => salon.id), ['unrated']);
+  } finally {
+    Salon.find = originalFind;
+    Booking.aggregate = originalAggregate;
+  }
+});
+
 test('nearby salons fall back to the nearest online salons when fewer than the minimum are within range', async () => {
   const originalFind = Salon.find;
   const queries = [];
