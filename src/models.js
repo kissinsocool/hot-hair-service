@@ -213,10 +213,12 @@ bookingMessageSchema.index({ userId: 1, readAt: 1 });
 const slotOccupancySchema = new mongoose.Schema({
   staffId: { type: String, required: true },
   startTime: { type: Date, required: true },
+  slots: { type: [Date], required: true },
   bookingId: { type: String, required: true, unique: true },
 }, { timestamps: true });
 
 slotOccupancySchema.index({ staffId: 1, startTime: 1 }, { unique: true });
+slotOccupancySchema.index({ staffId: 1, slots: 1 }, { unique: true });
 
 const userPolicySchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true, index: true },

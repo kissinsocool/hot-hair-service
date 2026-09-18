@@ -1244,10 +1244,19 @@ test('no-preference booking can remain unassigned until merchant acceptance', as
 
 test('slot occupancies enforce one booking per staff and start time', () => {
   const uniqueSlotIndex = SlotOccupancy.schema.indexes().find(
-    ([fields]) => fields.staffId === 1 && fields.startTime === 1,
+    ([fields]) => fields.staffId === 1 && fields.slots === 1,
   );
 
   assert.equal(uniqueSlotIndex?.[1]?.unique, true);
+});
+
+test('a 60-minute booking occupies both half-hour slots', () => {
+  assert.deepEqual(
+    bookingDomain.occupiedSlotStarts('2030-01-01T10:00:00+08:00', 60)
+      .map(date => date.toISOString()),
+    ['2030-01-01T02:00:00.000Z', '2030-01-01T02:30:00.000Z'],
+  );
+  assert.equal(bookingDomain.isHalfHourStart(new Date('2030-01-01T02:15:00Z')), false);
 });
 
 test('query indexes match geospatial and filtered booking access patterns', () => {
@@ -1715,6 +1724,51 @@ test('staff slots load daily bookings and unavailability with fixed query count'
     Booking.find = originalBookingFind;
     StaffProfile.findOne = originalStaffFindOne;
   }
+});
+
+test('staff availability checks the full requested service against existing bookings', async () => {
+  const originalSalonFindOne = Salon.findOne;
+  const originalBookingFind = Booking.find;
+  const originalStaffFindOne = StaffProfile.findOne;
+  Salon.findOne = () => ({ lean: async () => ({ openingHours: '10:00 - 12:00' }) });
+  Booking.find = () => ({ select: () => ({ lean: async () => [{
+    startTime: new Date('2030-01-01T02:30:00.000Z'), serviceDurationMinutes: 60,
+  }] }) });
+  StaffProfile.findOne = () => ({ select: () => ({ lean: async () => ({ unavailableSlots: [] }) }) });
+  try {
+    const slots = await generateSlotsForStaffAndDate('staff-1', '2030-01-01', 60);
+    assert.equal(slots.find(slot => slot.time === '10:00').isAvailable, false);
+    assert.equal(slots.find(slot => slot.time === '10:30').isAvailable, false);
+    assert.equal(slots.find(slot => slot.time === '11:00').isAvailable, false);
+    assert.equal(slots.find(slot => slot.time === '11:30').isAvailable, true);
+  } finally {
+    Salon.findOne = originalSalonFindOne;
+    Booking.find = originalBookingFind;
+    StaffProfile.findOne = originalStaffFindOne;
+  }
+});
+
+test('slot endpoint uses the selected service duration for no-preference bookings', async () => {
+  const routes = new Map();
+  const app = { get(path, ...handlers) { routes.set(path, handlers.at(-1)); } };
+  let requestedDuration;
+  registerPublicRoutes(app, {
+    rateLimits: { publicRead: [] },
+    Salon: { findOne: () => ({ lean: async () => ({
+      id: 'salon-1', services: [{ id: 'service-1', durationMinutes: 90 }],
+    }) }) },
+    async generateSlotsForNoPreferenceAndDate(_salon, _date, duration) {
+      requestedDuration = duration;
+      return [];
+    },
+  });
+  let response;
+  await routes.get('/api/staff/:id/slots')({
+    params: { id: '__no_preference__' },
+    query: { date: '2030-01-01', salonId: 'salon-1', serviceId: 'service-1' },
+  }, { json(value) { response = value; } });
+  assert.equal(requestedDuration, 90);
+  assert.deepEqual(response, []);
 });
 
 test('acceptedBookingAtTimeQuery only blocks already accepted bookings', () => {

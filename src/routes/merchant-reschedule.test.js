@@ -18,12 +18,14 @@ test('merchant rescheduling updates the booking without creating a user message'
     salonId: 'salon-1',
     userId: 'user-1',
     status: 'accepted',
-    staffId: '',
+    staffId: 'staff-1',
+    serviceDurationMinutes: 60,
     startTime: new Date('2030-01-01T02:00:00.000Z'),
   };
   let bookingUpdate;
   let messageCount = 0;
   let broadcastBooking;
+  let occupancyUpdate;
 
   registerMerchantRoutes(app, {
     AnalyticsEvent: { async updateOne() {} },
@@ -45,7 +47,9 @@ test('merchant rescheduling updates the booking without creating a user message'
     BookingMessage: {
       async create() { messageCount += 1; return []; },
     },
-    SlotOccupancy: {},
+    SlotOccupancy: {
+      async updateOne(...args) { occupancyUpdate = args; },
+    },
     UserCoupon: {},
     mongoose: { async startSession() { return session; } },
     buildMerchantBookingScope: () => ({ salonId: 'salon-1' }),
@@ -53,6 +57,8 @@ test('merchant rescheduling updates the booking without creating a user message'
     parseMerchantRescheduleTime: bookingService.parseMerchantRescheduleTime,
     parseOpeningHours: bookingService.parseOpeningHours,
     isSalonClosedOnDate: () => false,
+    findActiveBookingAtTimeExcluding: async () => null,
+    isStaffUnavailable: async () => false,
     broadcastBookingEvent(event, value) { broadcastBooking = { event, value }; },
     rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
   });
@@ -70,6 +76,9 @@ test('merchant rescheduling updates the booking without creating a user message'
   assert.equal(messageCount, 0);
   assert.equal(Object.hasOwn(bookingUpdate, 'userMessage'), false);
   assert.equal(bookingUpdate.startTime.toISOString(), '2030-01-01T03:00:00.000Z');
+  assert.deepEqual(occupancyUpdate[1].$set.slots.map(slot => slot.toISOString()), [
+    '2030-01-01T03:00:00.000Z', '2030-01-01T03:30:00.000Z',
+  ]);
   assert.equal(broadcastBooking.event, 'booking.updated');
   assert.equal(response.booking.startTime.toISOString(), '2030-01-01T03:00:00.000Z');
 });

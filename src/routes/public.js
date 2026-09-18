@@ -191,14 +191,21 @@ module.exports = (app, ctx) => {
   app.get('/api/staff/:id/slots', ...rateLimits.publicRead, async (req, res) => {
     const staffId = req.params.id;
     const date = req.query.date || '2026-06-01';
+    const serviceId = String(req.query.serviceId || '').trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return res.status(400).json({ message: 'date must use YYYY-MM-DD format' });
     }
     if (staffId === '__no_preference__') {
       const salon = await Salon.findOne({ id: String(req.query.salonId || '').trim() }).lean();
       if (!salon) return res.status(404).json({ message: 'Salon not found' });
-      return res.json(await generateSlotsForNoPreferenceAndDate(salon, date));
+      const service = serviceId && salon.services?.find(item => item.id === serviceId);
+      if (serviceId && !service) return res.status(404).json({ message: 'Service not found' });
+      return res.json(await generateSlotsForNoPreferenceAndDate(salon, date, service?.durationMinutes || 30));
     }
-    res.json(await generateSlotsForStaffAndDate(staffId, date));
+    if (!serviceId) return res.json(await generateSlotsForStaffAndDate(staffId, date));
+    const salon = await getSalonByStaffId(staffId).lean();
+    const service = salon?.services?.find(item => item.id === serviceId);
+    if (!service) return res.status(404).json({ message: 'Service not found' });
+    res.json(await generateSlotsForStaffAndDate(staffId, date, service.durationMinutes, salon));
   });
 };

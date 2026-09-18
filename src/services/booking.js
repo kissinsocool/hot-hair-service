@@ -151,7 +151,7 @@ const parseMerchantRescheduleTime = (status, startTime, now = Date.now()) => {
   }
   const value = parseBookingTime(startTime);
   if (!value) return { error: 'startTime must be a valid date time', status: 400 };
-  if (localTimeMinutes(value) % 30 !== 0) {
+  if (!isHalfHourStart(value)) {
     return { error: 'startTime must use a 30-minute interval', status: 400 };
   }
   if (value.getTime() <= now) {
@@ -229,12 +229,23 @@ const normalizeBookingPayload = (booking, includePendingMerchantReply = false) =
 const generateBookingId = randomInt => String(randomInt(0, 100000000)).padStart(8, '0');
 const isDuplicateSlotError = error => error?.code === 11000;
 const transactionError = (status, message) => Object.assign(new Error(message), { httpStatus: status });
+const isHalfHourStart = value => localTimeMinutes(value) % 30 === 0
+  && value.getUTCSeconds() === 0 && value.getUTCMilliseconds() === 0;
 
-const reserveBookingSlot = (SlotOccupancy, bookingId, staffId, startTime, session) => {
+const occupiedSlotStarts = (startTime, duration) => {
   const normalizedStartTime = parseBookingTime(startTime);
+  if (!normalizedStartTime || !Number.isSafeInteger(duration) || duration <= 0) {
+    throw new Error('A valid start time and service duration are required');
+  }
+  return Array.from({ length: Math.ceil(duration / 30) }, (_, index) =>
+    new Date(normalizedStartTime.getTime() + index * 30 * 60 * 1000));
+};
+
+const reserveBookingSlot = (SlotOccupancy, bookingId, staffId, startTime, duration, session) => {
+  const slots = occupiedSlotStarts(startTime, duration);
   return SlotOccupancy.updateOne(
-    { bookingId, staffId, startTime: normalizedStartTime },
-    { $setOnInsert: { bookingId, staffId, startTime: normalizedStartTime } },
+    { bookingId, staffId, startTime: slots[0] },
+    { $setOnInsert: { bookingId, staffId, startTime: slots[0], slots } },
     { upsert: true, session },
   );
 };
@@ -265,6 +276,7 @@ module.exports = {
   generateBookingId,
   generateHalfHourSlots,
   isDuplicateSlotError,
+  isHalfHourStart,
   isSalonClosedOnDate,
   isSameDayBookingBlocked,
   localDateKey,
@@ -274,6 +286,7 @@ module.exports = {
   normalizeClosedDates,
   normalizeWeeklyClosedDays,
   normalizeUnavailableSlots,
+  occupiedSlotStarts,
   parseBookingTime,
   parseMerchantRescheduleTime,
   parseOpeningHours,

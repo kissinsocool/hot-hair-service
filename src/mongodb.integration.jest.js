@@ -3,6 +3,7 @@ const path = require('node:path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true });
 const mongoose = require('mongoose');
 const { Booking, SlotOccupancy } = require('./models');
+const { occupiedSlotStarts, reserveBookingSlot } = require('./services/booking');
 
 const mongoUri = String(process.env.TEST_MONGODB_URI || '').trim();
 const describeWithMongo = mongoUri ? describe : describe.skip;
@@ -37,11 +38,7 @@ describeWithMongo('MongoDB replica set booking integration', () => {
 
     try {
       await session.withTransaction(async () => {
-        await new SlotOccupancy({
-          bookingId: 'BK-1',
-          staffId: 'staff-1',
-          startTime,
-        }).save({ session });
+        await reserveBookingSlot(SlotOccupancy, 'BK-1', 'staff-1', startTime, 60, session);
         await new Booking({
           id: 'BK-1',
           serviceId: 'service-1',
@@ -63,20 +60,21 @@ describeWithMongo('MongoDB replica set booking integration', () => {
       bookingId: 'BK-1',
       staffId: 'staff-1',
       startTime,
+      slots: occupiedSlotStarts(startTime, 60),
     });
   });
 
-  test('rejects duplicate occupancy for the same staff member and start time', async () => {
+  test('a 60-minute booking blocks the following half-hour and releases both slots', async () => {
     const startTime = new Date('2030-01-01T10:00:00.000Z');
-    await SlotOccupancy.create({ bookingId: 'BK-1', staffId: 'staff-1', startTime });
+    const nextSlot = new Date(startTime.getTime() + 30 * 60 * 1000);
+    await reserveBookingSlot(SlotOccupancy, 'BK-1', 'staff-1', startTime, 60);
 
-    await expect(SlotOccupancy.create({
-      bookingId: 'BK-2',
-      staffId: 'staff-1',
-      startTime,
-    })).rejects.toMatchObject({ code: 11000 });
+    await expect(reserveBookingSlot(SlotOccupancy, 'BK-2', 'staff-1', nextSlot, 30))
+      .rejects.toMatchObject({ code: 11000 });
+    await expect(SlotOccupancy.countDocuments({ staffId: 'staff-1' })).resolves.toBe(1);
 
-    await expect(SlotOccupancy.countDocuments({ staffId: 'staff-1', startTime }))
-      .resolves.toBe(1);
+    await SlotOccupancy.deleteOne({ bookingId: 'BK-1' });
+    await reserveBookingSlot(SlotOccupancy, 'BK-2', 'staff-1', nextSlot, 30);
+    await expect(SlotOccupancy.countDocuments({ staffId: 'staff-1' })).resolves.toBe(1);
   });
 });

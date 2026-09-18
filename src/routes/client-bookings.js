@@ -435,6 +435,9 @@ module.exports = (app, ctx) => {
     if (!requestedStartTime) {
       return res.status(400).json({ message: 'startTime must be a valid date time' });
     }
+    if (!bookingService.isHalfHourStart(requestedStartTime)) {
+      return res.status(400).json({ message: 'startTime must use a 30-minute interval' });
+    }
     if (requestedStartTime.getTime() <= Date.now()) {
       return res.status(409).json({ message: 'Only future time slots can be booked' });
     }
@@ -474,7 +477,7 @@ module.exports = (app, ctx) => {
       if (hasConflict) {
         return res.status(409).json({ message: 'This slot already has a pending or accepted booking' });
       }
-      if (await isStaffUnavailable(bookingStaffId, startTime)) {
+      if (await isStaffUnavailable(bookingStaffId, startTime, service.durationMinutes)) {
         return res.status(409).json({ message: 'This staff member is unavailable at the selected time' });
       }
     }
@@ -502,7 +505,7 @@ module.exports = (app, ctx) => {
           throw transactionError(403, '该账号已因爽约次数过多被拉黑，无法继续预约。');
         }
         if (!isNoPreference) {
-          await reserveBookingSlot(bookingId, bookingStaffId, requestedStartTime, session);
+          await reserveBookingSlot(bookingId, bookingStaffId, requestedStartTime, serviceDurationMinutes, session);
         }
         let reservedCoupon = null;
         let couponDiscountFen = 0;

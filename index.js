@@ -512,14 +512,12 @@ const isSalonClosedOnDate = bookingDomain.isSalonClosedOnDate;
 
 const isSameDayBookingBlocked = bookingDomain.isSameDayBookingBlocked;
 
-const isStaffUnavailable = async (staffId, startTime) => {
+const isStaffUnavailable = async (staffId, startTime, duration = 30) => {
   const person = await getStaffById(staffId).lean();
   if (!person) return false;
-  const parsed = startTime instanceof Date ? startTime : bookingDomain.parseBookingTime(startTime);
-  if (!parsed) return false;
-  const dateKey = bookingDomain.localDateKey(parsed);
-  const timeKey = bookingDomain.formatMinutesAsTime(bookingDomain.localTimeMinutes(parsed));
-  return normalizeUnavailableSlots(person.unavailableSlots).includes(`${dateKey} ${timeKey}`);
+  const unavailable = new Set(normalizeUnavailableSlots(person.unavailableSlots));
+  return bookingDomain.occupiedSlotStarts(startTime, duration).some(slot =>
+    unavailable.has(`${bookingDomain.localDateKey(slot)} ${bookingDomain.formatMinutesAsTime(bookingDomain.localTimeMinutes(slot))}`));
 };
 
 const findActiveBookingAtTime = (staffId, startTime) =>
@@ -1084,8 +1082,8 @@ const readFavoriteSalons = async (userId) => {
   );
 };
 
-const generateSlotsForStaffAndDate = async (staffId, date) => {
-  const salon = await getSalonByStaffId(staffId).lean();
+const generateSlotsForStaffAndDate = async (staffId, date, duration = 30, salonOverride) => {
+  const salon = salonOverride || await getSalonByStaffId(staffId).lean();
   const times = generateHalfHourSlots(salon?.openingHours);
   if (isSalonClosedOnDate(salon, date)) {
     return times.map(time => ({
@@ -1109,13 +1107,12 @@ const generateSlotsForStaffAndDate = async (staffId, date) => {
       staffId,
       startTime: { $gte: dayStart, $lt: dayEnd },
       status: { $in: ['pending', 'accepted'] },
-    }).select({ startTime: 1, _id: 0 }).lean(),
+    }).select({ startTime: 1, serviceDurationMinutes: 1, _id: 0 }).lean(),
     getStaffById(staffId).select('unavailableSlots').lean(),
   ]);
-  const bookedTimes = new Set(bookings.map(booking => {
-    const startTime = new Date(booking.startTime);
-    return formatMinutesAsTime(bookingDomain.localTimeMinutes(startTime));
-  }));
+  const bookedTimes = new Set(bookings.flatMap(booking =>
+    bookingDomain.occupiedSlotStarts(booking.startTime, booking.serviceDurationMinutes || 30)
+      .map(slot => formatMinutesAsTime(bookingDomain.localTimeMinutes(slot)))));
   const unavailableTimes = new Set(
     normalizeUnavailableSlots(person?.unavailableSlots)
       .filter(slot => slot.startsWith(`${date} `))
@@ -1124,8 +1121,10 @@ const generateSlotsForStaffAndDate = async (staffId, date) => {
 
   return times.map((time) => {
     const startTime = bookingDomain.slotStartTime(date, time);
-    const hasBooking = bookedTimes.has(time);
-    const unavailable = unavailableTimes.has(time);
+    const requestedTimes = bookingDomain.occupiedSlotStarts(startTime, duration)
+      .map(slot => formatMinutesAsTime(bookingDomain.localTimeMinutes(slot)));
+    const hasBooking = requestedTimes.some(slot => bookedTimes.has(slot));
+    const unavailable = requestedTimes.some(slot => unavailableTimes.has(slot));
     return {
       time,
       startTime,
@@ -1135,7 +1134,7 @@ const generateSlotsForStaffAndDate = async (staffId, date) => {
   });
 };
 
-const generateSlotsForNoPreferenceAndDate = async (salon, date) => {
+const generateSlotsForNoPreferenceAndDate = async (salon, date, duration = 30) => {
   if (isSalonClosedOnDate(salon, date)) {
     return generateHalfHourSlots(salon?.openingHours).map(time => ({
       time,
@@ -1159,16 +1158,14 @@ const generateSlotsForNoPreferenceAndDate = async (salon, date) => {
       staffId: { $in: staffIds },
       startTime: { $gte: dayStart, $lt: dayEnd },
       status: { $in: ['pending', 'accepted'] },
-    }).select({ staffId: 1, startTime: 1, _id: 0 }).lean(),
+    }).select({ staffId: 1, startTime: 1, serviceDurationMinutes: 1, _id: 0 }).lean(),
     StaffProfile.find({ id: { $in: staffIds } })
       .select({ id: 1, unavailableSlots: 1, _id: 0 })
       .lean(),
   ]);
-  const bookedSlots = new Set(bookings.map(booking => {
-    const startTime = new Date(booking.startTime);
-    const time = formatMinutesAsTime(bookingDomain.localTimeMinutes(startTime));
-    return `${booking.staffId}:${time}`;
-  }));
+  const bookedSlots = new Set(bookings.flatMap(booking =>
+    bookingDomain.occupiedSlotStarts(booking.startTime, booking.serviceDurationMinutes || 30)
+      .map(slot => `${booking.staffId}:${formatMinutesAsTime(bookingDomain.localTimeMinutes(slot))}`)));
   const unavailableSlots = new Set(staffProfiles.flatMap(profile =>
     normalizeUnavailableSlots(profile.unavailableSlots)
       .filter(slot => slot.startsWith(`${date} `))
@@ -1178,9 +1175,11 @@ const generateSlotsForNoPreferenceAndDate = async (salon, date) => {
 
   return generateHalfHourSlots(salon?.openingHours).map(time => {
     const startTime = bookingDomain.slotStartTime(date, time);
+    const requestedTimes = bookingDomain.occupiedSlotStarts(startTime, duration)
+      .map(slot => formatMinutesAsTime(bookingDomain.localTimeMinutes(slot)));
     const isAvailable = activeStaffIds.some(staffId =>
-      !bookedSlots.has(`${staffId}:${time}`) &&
-      !unavailableSlots.has(`${staffId}:${time}`)
+      requestedTimes.every(slot => !bookedSlots.has(`${staffId}:${slot}`)
+        && !unavailableSlots.has(`${staffId}:${slot}`))
     );
     return {
       time,

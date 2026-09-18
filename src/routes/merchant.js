@@ -318,7 +318,7 @@ module.exports = (app, ctx) => {
         if (await findActiveBookingAtTimeExcluding(booking.staffId, startTime, booking.id)) {
           return res.status(409).json({ message: '该理发师在新时间段已有预约' });
         }
-        if (await isStaffUnavailable(booking.staffId, startTime)) {
+        if (await isStaffUnavailable(booking.staffId, startTime, booking.serviceDurationMinutes)) {
           return res.status(409).json({ message: '该理发师在新时间段不可预约' });
         }
       }
@@ -343,7 +343,7 @@ module.exports = (app, ctx) => {
         if (!selectedStaff || !selectedSalon || selectedSalon.id !== booking.salonId) {
           return res.status(404).json({ message: '指定的理发师不属于该店铺' });
         }
-        if (await isStaffUnavailable(selectedStaffId, booking.startTime.toISOString())) {
+        if (await isStaffUnavailable(selectedStaffId, booking.startTime, booking.serviceDurationMinutes)) {
           return res.status(409).json({ message: '指定理发师在该时间段不可预约' });
         }
   
@@ -457,14 +457,15 @@ module.exports = (app, ctx) => {
           update.couponRedeemedAt = redeemed?.redeemedAt || redeemedAt;
         }
         if (action === 'reschedule' && changed && booking.staffId) {
+          const slots = bookingService.occupiedSlotStarts(update.startTime, booking.serviceDurationMinutes);
           await SlotOccupancy.updateOne(
             { bookingId: booking.id },
-            { $set: { staffId: booking.staffId, startTime: update.startTime } },
+            { $set: { staffId: booking.staffId, startTime: slots[0], slots } },
             { upsert: true, session },
           );
         }
         if (action === 'accept') {
-          await reserveBookingSlot(booking.id, update.staffId, booking.startTime, session);
+          await reserveBookingSlot(booking.id, update.staffId, booking.startTime, booking.serviceDurationMinutes, session);
         }
 
         const updated = await Booking.findOneAndUpdate(
