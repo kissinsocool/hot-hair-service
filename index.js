@@ -144,12 +144,19 @@ app.use('/uploads', express.static(uploadDir));
 
 const normalizeAdLink = (value) => {
   const link = String(value || '').trim();
-  return /^\/pages\/[A-Za-z0-9_/-]+(?:\?[^#\s]*)?$/.test(link) && !link.includes('..') ? link : '';
+  if (link.length > 2048) return '';
+  if (/^\/pages\/[A-Za-z0-9_/-]+(?:\?[^#\s]*)?$/.test(link) && !link.includes('..')) return link;
+  try {
+    const url = new URL(link);
+    return url.protocol === 'https:' && !url.username && !url.password ? link : '';
+  } catch (_) {
+    return '';
+  }
 };
 
 const buildAdPayload = (config) => ({
   imageUrl: publicImageUrl(config?.imageUrl || ''),
-  link: normalizeAdLink(config?.link) || '/pages/ad/ad',
+  link: normalizeAdLink(config?.link),
   enabled: config?.enabled !== false,
 });
 

@@ -366,7 +366,7 @@ clientUserSchema.index({ createdAt: -1 });
 const adConfigSchema = new mongoose.Schema({
   key: { type: String, required: true, unique: true, default: 'main' },
   imageUrl: { type: String, default: '' },
-  link: { type: String, default: '/pages/ad/ad' },
+  link: { type: String, default: '' },
   enabled: { type: Boolean, default: true },
 }, { timestamps: true });
 

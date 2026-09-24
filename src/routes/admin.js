@@ -173,7 +173,7 @@ module.exports = (app, ctx) => {
 
   app.patch('/api/admin/ad', ...rateLimits.upload, async (req, res) => {
     const link = normalizeAdLink(req.body.link);
-    if (!link) return res.status(400).json({ message: '跳转链接必须是 /pages/... 小程序页面路径' });
+    if (!link) return res.status(400).json({ message: '跳转链接必须是 HTTPS H5 地址或 /pages/... 小程序页面路径' });
     if (typeof req.body.enabled !== 'boolean') return res.status(400).json({ message: '是否显示必须是布尔值' });
 
     let imageUrl = String(req.body.imageUrl || '').trim();

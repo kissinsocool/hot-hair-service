@@ -726,10 +726,12 @@ test('same-day booking policy blocks only today', () => {
   assert.equal(isSameDayBookingBlocked({ acceptsSameDayBooking: true }, '2026-07-20T18:00:00', now), false);
 });
 
-test('normalizeAdLink only accepts mini program page paths', () => {
+test('normalizeAdLink accepts HTTPS H5 URLs and legacy mini program page paths', () => {
   assert.equal(normalizeAdLink('/pages/ad/ad'), '/pages/ad/ad');
   assert.equal(normalizeAdLink('/pages/detail/detail?id=1'), '/pages/detail/detail?id=1');
-  assert.equal(normalizeAdLink('https://example.com'), '');
+  assert.equal(normalizeAdLink('https://media.hothaircc.cn/ad/trends.html'), 'https://media.hothaircc.cn/ad/trends.html');
+  assert.equal(normalizeAdLink('http://example.com'), '');
+  assert.equal(normalizeAdLink('https://user@example.com/ad'), '');
   assert.equal(normalizeAdLink('/pages/../admin'), '');
 });
 
