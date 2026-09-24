@@ -9,7 +9,12 @@ const BATCH_SIZE = 200;
 const staffForMigration = (profile = {}) => {
   const roleId = salonDomain.normalizeStaffRoleId(profile.roleId)
     || salonDomain.staffRoleIdFromLegacy(profile.role);
-  if (!roleId) throw new Error(`Unsupported staff role for ${profile.id || 'unknown staff'}`);
+  if (!roleId) {
+    throw new Error(
+      `Unsupported staff role ${JSON.stringify(profile.role || profile.roleId || '')}`
+      + ` for ${profile.id || 'unknown staff'}`,
+    );
+  }
   return {
     id: profile.id,
     name: profile.name,

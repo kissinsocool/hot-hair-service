@@ -3830,3 +3830,10 @@ test('merchant staff contract accepts roleId and rejects the removed role field'
   assert.equal((await save([{ ...profile, roleId: 'unknown' }])).statusCode, 400);
   assert.equal((await save([{ ...profile, weeklyClosedDays: [0] }])).statusCode, 400);
 });
+
+test('legacy-only staff roles migrate into supported canonical roles', () => {
+  assert.equal(salonDomain.staffRoleIdFromLegacy('资深发型师'), 'senior_barber');
+  assert.equal(salonDomain.staffRoleIdFromLegacy('色彩专家'), 'designer');
+  assert.equal(salonDomain.STAFF_ROLE_IDS.includes('senior_stylist'), false);
+  assert.equal(salonDomain.STAFF_ROLE_IDS.includes('color_specialist'), false);
+});

@@ -52,6 +52,10 @@ const STAFF_ROLE_ID_SET = new Set(STAFF_ROLE_IDS);
 const STAFF_ROLE_IDS_BY_LABEL = new Map(
   Object.entries(STAFF_ROLE_LABELS).map(([id, label]) => [label, id]),
 );
+const LEGACY_STAFF_ROLE_IDS_BY_LABEL = new Map([
+  ['资深发型师', 'senior_barber'],
+  ['色彩专家', 'designer'],
+]);
 const REVIEW_TAGS = [
   '善于沟通',
   '环境舒适',
@@ -211,7 +215,10 @@ const normalizeStaffRoleId = roleId => {
   return STAFF_ROLE_ID_SET.has(normalized) ? normalized : '';
 };
 
-const staffRoleIdFromLegacy = role => STAFF_ROLE_IDS_BY_LABEL.get(String(role || '').trim()) || '';
+const staffRoleIdFromLegacy = (role) => {
+  const label = String(role || '').trim();
+  return STAFF_ROLE_IDS_BY_LABEL.get(label) || LEGACY_STAFF_ROLE_IDS_BY_LABEL.get(label) || '';
+};
 
 const staffPayload = (profile = {}) => {
   const normalized = normalizeDocument(profile) || {};
