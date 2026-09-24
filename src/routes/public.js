@@ -61,10 +61,15 @@ module.exports = (app, ctx) => {
     if (!tagId) return res.status(400).json({ message: '分类不存在' });
 
     const pagination = normalizePagination(req.query);
+    const sort = req.query.sort === 'distance' ? 'distance' : 'latest';
+    const userLocation = sort === 'distance' ? getCoordinates(req.query) : null;
+    if (sort === 'distance' && !userLocation) {
+      return res.status(400).json({ message: 'latitude and longitude are required' });
+    }
     const salons = await Salon.find({
       publishStatus: 'online',
       services: { $elemMatch: { promotionEnabled: true, promotionReviewStatus: 'approved', tagIds: tagId } },
-    }).select('id services updatedAt').sort({ updatedAt: -1, _id: -1 }).lean();
+    }).select('id services location geoLocation updatedAt').sort({ updatedAt: -1, _id: -1 }).lean();
     // ponytail: paginate after flattening; move this to aggregation if promoted galleries become large.
     const images = salons.flatMap(salon => (salon.services || []).flatMap(service => {
       if (service.promotionEnabled !== true
@@ -73,16 +78,30 @@ module.exports = (app, ctx) => {
       const imageUrls = Array.isArray(service.imageUrls) && service.imageUrls.length
         ? service.imageUrls
         : [service.imageUrl].filter(Boolean);
+      const salonLocation = userLocation ? getCoordinates(salon.location || salon.geoLocation) : null;
+      const distanceKm = userLocation && salonLocation
+        ? calculateDistanceKm(userLocation, salonLocation)
+        : Infinity;
+      const publishedAt = new Date(service.promotionReviewedAt || salon.updatedAt || 0).getTime();
       return imageUrls.map((imageUrl, imageIndex) => ({
         id: `${salon.id}:${service.id}:${imageIndex}`,
         salonId: salon.id,
         serviceId: service.id,
         imageUrl: publicImageUrl(imageUrl),
+        distanceKm,
+        publishedAt,
+        imageIndex,
       }));
     }));
+    images.sort((left, right) => (sort === 'distance' ? left.distanceKm - right.distanceKm : 0)
+      || right.publishedAt - left.publishedAt
+      || String(left.salonId).localeCompare(String(right.salonId))
+      || String(left.serviceId).localeCompare(String(right.serviceId))
+      || left.imageIndex - right.imageIndex);
+    const publicImages = images.map(({ distanceKm, publishedAt, imageIndex, ...image }) => image);
     setPaginationHeaders(res, pagination, images.length);
     res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
-    res.json(images.slice(pagination.skip, pagination.skip + pagination.limit));
+    res.json(publicImages.slice(pagination.skip, pagination.skip + pagination.limit));
   });
 
   app.get('/api/salons', ...rateLimits.publicRead, async (req, res) => {

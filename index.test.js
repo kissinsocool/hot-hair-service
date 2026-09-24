@@ -1030,6 +1030,75 @@ test('promoted service gallery returns only the requested approved live category
   }]);
 });
 
+test('promoted service gallery sorts by publish time or distance before pagination', async () => {
+  const routes = new Map();
+  const app = {
+    get(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+    post() {},
+    put() {},
+    patch() {},
+    delete() {},
+    use() {},
+  };
+  const salons = [
+    {
+      id: 'far-new',
+      location: { latitude: 39.1, longitude: 116 },
+      updatedAt: new Date('2026-01-01T00:00:00Z'),
+      services: [{
+        id: 'new', promotionEnabled: true, promotionReviewStatus: 'approved', tagIds: ['men'],
+        promotionReviewedAt: new Date('2026-02-01T00:00:00Z'), imageUrls: ['new.jpg'],
+      }],
+    },
+    {
+      id: 'near-old',
+      location: { latitude: 39, longitude: 116 },
+      updatedAt: new Date('2026-01-01T00:00:00Z'),
+      services: [{
+        id: 'old', promotionEnabled: true, promotionReviewStatus: 'approved', tagIds: ['men'],
+        promotionReviewedAt: new Date('2026-01-01T00:00:00Z'), imageUrls: ['old.jpg'],
+      }],
+    },
+  ];
+  const SalonModel = {
+    find() {
+      return {
+        select() { return this; },
+        sort() { return this; },
+        async lean() { return salons; },
+      };
+    },
+  };
+  registerPublicRoutes(app, {
+    Salon: SalonModel,
+    rateLimits: { publicRead: [] },
+    normalizePagination: () => ({ page: 1, limit: 1, skip: 0 }),
+    getCoordinates(value) {
+      const latitude = Number(value?.latitude);
+      const longitude = Number(value?.longitude);
+      return Number.isFinite(latitude) && Number.isFinite(longitude) ? { latitude, longitude } : null;
+    },
+    calculateDistanceKm(from, to) { return Math.abs(from.latitude - to.latitude); },
+    setPaginationHeaders() {},
+    publicImageUrl: value => `https://media.example/${value}`,
+  });
+  const respond = () => ({ set() {}, status(code) { this.statusCode = code; return this; }, json(value) { this.body = value; } });
+
+  const latestResponse = respond();
+  await routes.get('/api/salons/promoted-services')(
+    { query: { category: 'men-cut', sort: 'latest' } },
+    latestResponse,
+  );
+  assert.equal(latestResponse.body[0].salonId, 'far-new');
+
+  const distanceResponse = respond();
+  await routes.get('/api/salons/promoted-services')(
+    { query: { category: 'men-cut', sort: 'distance', latitude: '39', longitude: '116' } },
+    distanceResponse,
+  );
+  assert.equal(distanceResponse.body[0].salonId, 'near-old');
+});
+
 test('signup transaction saves a client with its MongoDB session', async () => {
   const originalStartSession = mongoose.startSession;
   const originalClientSave = ClientUser.prototype.save;
