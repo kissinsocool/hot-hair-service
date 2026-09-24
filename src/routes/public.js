@@ -37,6 +37,8 @@ module.exports = (app, ctx) => {
     servicePayload,
     publicImageUrl,
     setPaginationHeaders,
+    SalonPost,
+    salonPostPayload,
   } = ctx;
 
   app.get('/api/ad', async (_req, res) => {
@@ -178,8 +180,30 @@ module.exports = (app, ctx) => {
       .select('-licenseUrl -legalPersonIdFrontUrl -legalPersonIdBackUrl -addressProofUrl -licenseStatus -licenseRejectReason -licenseSubmittedAt -licenseReviewedAt -pendingContent -contentReviewStatus -contentRejectReason -contentReviewedAt');
     if (!salon) return res.status(404).json({ message: 'Salon not found' });
   
+    const [detail, latestPosts] = await Promise.all([
+      buildPublicSalonDetail(salon),
+      SalonPost.find({ salonId: salon.id }).sort({ createdAt: -1, _id: -1 }).limit(4).lean(),
+    ]);
     res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
-    res.json(await buildPublicSalonDetail(salon));
+    res.json({
+      ...detail,
+      latestPosts: latestPosts.slice(0, 3).map(post => salonPostPayload(post, publicImageUrl)),
+      hasMorePosts: latestPosts.length > 3,
+    });
+  });
+
+  app.get('/api/salons/:id/posts', ...rateLimits.publicRead, async (req, res) => {
+    const salon = await Salon.findOne({ id: req.params.id, publishStatus: 'online' }).select('id').lean();
+    if (!salon) return res.status(404).json({ message: 'Salon not found' });
+    const pagination = normalizePagination(req.query);
+    const [posts, total] = await Promise.all([
+      SalonPost.find({ salonId: salon.id }).sort({ createdAt: -1, _id: -1 })
+        .skip(pagination.skip).limit(pagination.limit).lean(),
+      SalonPost.countDocuments({ salonId: salon.id }),
+    ]);
+    setPaginationHeaders(res, pagination, total);
+    res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
+    res.json(posts.map(post => salonPostPayload(post, publicImageUrl)));
   });
 
   app.get('/api/staff/:id', ...rateLimits.publicRead, async (req, res) => {

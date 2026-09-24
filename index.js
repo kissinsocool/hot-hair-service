@@ -33,6 +33,7 @@ const {
   FavoriteSalon,
   Salon,
   StaffProfile,
+  SalonPost,
   MerchantUser,
   AdminUser,
   ClientUser,
@@ -74,6 +75,7 @@ const { errorLogger, requestLogger } = require('./src/observability');
 const authDomain = require('./src/services/auth');
 const bookingDomain = require('./src/services/booking');
 const salonDomain = require('./src/services/salon');
+const salonPosts = require('./src/services/salon-posts');
 const {
   activeSessionQuery,
   buildAdminUserPayload,
@@ -1303,6 +1305,9 @@ const routeContext = {
   sessionTokenFromRequest,
   servicePayload: salonDomain.servicePayload,
   Salon,
+  SalonPost,
+  salonPostPayload: salonPosts.postPayload,
+  validateSalonPostInput: salonPosts.validatePostInput,
   salonCoverImage,
   saveBase64Image,
   setPaginationHeaders,
@@ -1380,6 +1385,7 @@ const startServer = async () => {
     ClientUser.createIndexes(),
     MerchantUser.createIndexes(),
     Salon.createIndexes(),
+    SalonPost.createIndexes(),
     CouponCampaign.createIndexes(),
     UserCoupon.createIndexes(),
     AnalyticsEvent.createIndexes(),

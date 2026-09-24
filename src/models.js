@@ -293,6 +293,19 @@ const staffProfileSchema = new mongoose.Schema({
   unavailableSlots: [String],
 }, { timestamps: true });
 
+const salonPostSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true, index: true },
+  salonId: { type: String, required: true, index: true },
+  authorStaffId: { type: String, required: true, index: true },
+  authorName: { type: String, required: true },
+  authorRoleId: { type: String, enum: STAFF_ROLE_IDS, required: true },
+  authorImageUrl: { type: String, default: '' },
+  content: { type: String, required: true },
+  imageUrls: { type: [String], default: [] },
+}, { timestamps: true });
+
+salonPostSchema.index({ salonId: 1, createdAt: -1, _id: -1 });
+
 const merchantUserSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
   username: { type: String, required: true, unique: true, index: true },
@@ -424,6 +437,7 @@ module.exports = {
   FavoriteSalon: mongoose.model('FavoriteSalon', favoriteSalonSchema),
   Salon: mongoose.model('Salon', salonSchema),
   StaffProfile: mongoose.model('StaffProfile', staffProfileSchema),
+  SalonPost: mongoose.model('SalonPost', salonPostSchema),
   MerchantUser: mongoose.model('MerchantUser', merchantUserSchema),
   AdminUser: mongoose.model('AdminUser', adminUserSchema),
   ClientUser: mongoose.model('ClientUser', clientUserSchema),

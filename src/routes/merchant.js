@@ -73,6 +73,10 @@ module.exports = (app, ctx) => {
     couponDiscountForOrder,
     sendBookingAcceptedNotification,
     AnalyticsEvent,
+    SalonPost,
+    salonPostPayload,
+    validateSalonPostInput,
+    publicImageUrl,
   } = ctx;
 
   const reserveBookingSlot = (...args) => bookingService.reserveBookingSlot(SlotOccupancy, ...args);
@@ -239,7 +243,15 @@ module.exports = (app, ctx) => {
   });
   
   app.get('/api/merchant/salon', async (req, res) => {
-    res.json(await buildMerchantSalonPayload(req.merchantUser.salonId || '1'));
+    const salonId = req.merchantUser.salonId || '1';
+    const [salon, posts] = await Promise.all([
+      buildMerchantSalonPayload(salonId),
+      SalonPost.find({ salonId }).sort({ createdAt: -1, _id: -1 }).limit(50).lean(),
+    ]);
+    res.json({
+      ...salon,
+      posts: posts.map(post => salonPostPayload(post, publicImageUrl)),
+    });
   });
   
   app.patch('/api/merchant/salon', async (req, res) => {
@@ -277,6 +289,54 @@ module.exports = (app, ctx) => {
     salon.contentSubmittedAt = new Date();
     await salon.save();
     res.json(await buildMerchantSalonPayload(req.merchantUser.salonId || '1'));
+  });
+
+  app.get('/api/merchant/salon-posts', async (req, res) => {
+    const salonId = req.merchantUser.salonId || '1';
+    const pagination = normalizePagination(req.query);
+    const [posts, total] = await Promise.all([
+      SalonPost.find({ salonId }).sort({ createdAt: -1, _id: -1 })
+        .skip(pagination.skip).limit(pagination.limit).lean(),
+      SalonPost.countDocuments({ salonId }),
+    ]);
+    setPaginationHeaders(res, pagination, total);
+    res.json(posts.map(post => salonPostPayload(post, publicImageUrl)));
+  });
+
+  app.post('/api/merchant/salon-posts', async (req, res) => {
+    const parsed = validateSalonPostInput(req.body);
+    if (parsed.error) return res.status(400).json({ message: parsed.error });
+    const salonId = req.merchantUser.salonId || '1';
+    const salon = await Salon.findOne({ id: salonId }).select('staffIds').lean();
+    if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
+    if (!(salon.staffIds || []).map(String).includes(parsed.value.authorStaffId)) {
+      return res.status(400).json({ message: '投稿人不属于该店铺' });
+    }
+    const author = await getStaffById(parsed.value.authorStaffId).lean();
+    if (!author) return res.status(400).json({ message: '投稿人不存在' });
+
+    const post = await SalonPost.create({
+      id: crypto.randomUUID(),
+      salonId,
+      authorStaffId: author.id,
+      authorName: author.name,
+      authorRoleId: author.roleId,
+      authorImageUrl: author.imageUrl || '',
+      content: parsed.value.content,
+      imageUrls: parsed.value.imageUrls,
+    });
+    clearPublicSalonDetailCache(salonId);
+    res.status(201).json(salonPostPayload(post.toObject(), publicImageUrl));
+  });
+
+  app.delete('/api/merchant/salon-posts/:id', async (req, res) => {
+    const deleted = await SalonPost.findOneAndDelete({
+      id: req.params.id,
+      salonId: req.merchantUser.salonId || '1',
+    }).lean();
+    if (!deleted) return res.status(404).json({ message: '动态不存在' });
+    clearPublicSalonDetailCache(deleted.salonId);
+    res.json({ ok: true });
   });
   
   app.patch('/api/merchant/bookings/:id', ...rateLimits.merchantBooking, async (req, res) => {
