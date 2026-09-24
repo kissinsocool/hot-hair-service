@@ -28,11 +28,13 @@ const {
   getApprovedRatingSummariesByStaffIds,
   getApprovedReviewTagCountsByStaffIds,
   getCoordinates,
+  generateSlotsForNoPreferenceAndDate,
   hashPassword,
   hasReviewableContentChanges,
   INPUT_LIMITS,
   isSalonClosedOnDate,
   isSameDayBookingBlocked,
+  isStaffUnavailable,
   logoutSession,
   normalizeBooking,
   normalizeMerchantBooking,
@@ -79,6 +81,7 @@ const registerPublicRoutes = require('./src/routes/public');
 const bookingDomain = require('./src/services/booking');
 const salonDomain = require('./src/services/salon');
 const { bookingPatch, serviceForMigration } = require('./scripts/migrate-booking-domain');
+const { staffForMigration } = require('./scripts/migrate-staff-role-ids');
 
 test('public image URLs use the custom OSS domain', () => {
   assert.equal(
@@ -403,6 +406,23 @@ test('booking migration derives canonical booking fields', () => {
     imageUrl: '',
     imageUrls: [],
   });
+  assert.deepEqual(staffForMigration({
+    id: 'staff-1',
+    name: '理发师',
+    role: '资深设计师',
+    experience: '8年',
+    extraServiceFeeFen: 2000,
+  }), {
+    id: 'staff-1',
+    name: '理发师',
+    roleId: 'senior_designer',
+    experience: '8年',
+    extraServiceFeeFen: 2000,
+    imageUrl: undefined,
+    bio: undefined,
+    weeklyClosedDays: undefined,
+    unavailableSlots: undefined,
+  });
 });
 
 test('service, review, complaint and pending content use child schemas instead of Mixed', async () => {
@@ -420,6 +440,9 @@ test('service, review, complaint and pending content use child schemas instead o
   assert.equal(Salon.schema.path('services').schema.path('durationMinutes').isRequired, true);
   assert.equal(StaffProfile.schema.path('extraServiceFee'), undefined);
   assert.equal(StaffProfile.schema.path('extraServiceFeeFen').isRequired, true);
+  assert.equal(StaffProfile.schema.path('role'), undefined);
+  assert.equal(StaffProfile.schema.path('roleId').isRequired, true);
+  assert.equal(StaffProfile.schema.path('weeklyClosedDays').instance, 'Array');
   assert.equal(Booking.schema.path('serviceDurationMinutes').instance, 'Number');
 
   const invalid = new Booking({
@@ -487,10 +510,17 @@ test('public staff payloads use supplied booking reviews and ignore legacy profi
     rating: 5,
     reviewStatus: 'approved',
   }));
-  const payload = buildStaffPayload({ id: 'staff-1', reviews: [{ rating: 1 }] }, reviews);
+  const payload = buildStaffPayload({
+    id: 'staff-1',
+    roleId: 'technical_director',
+    role: '不应返回的旧字段',
+    reviews: [{ rating: 1 }],
+  }, reviews);
   assert.equal(payload.reviews.length, 50);
   assert.equal(payload.rating, 5);
   assert.equal(payload.reviewCount, 205);
+  assert.equal(payload.roleId, 'technical_director');
+  assert.equal('role' in payload, false);
 });
 
 test('public staff payloads do not invent a rating when there are no approved reviews', () => {
@@ -1851,6 +1881,53 @@ test('staff availability checks the full requested service against existing book
   }
 });
 
+test('staff weekly closed days block direct checks and every displayed slot', async () => {
+  const originalSalonFindOne = Salon.findOne;
+  const originalBookingFind = Booking.find;
+  const originalStaffFindOne = StaffProfile.findOne;
+  Salon.findOne = () => ({ lean: async () => ({ openingHours: '10:00 - 11:00' }) });
+  Booking.find = () => ({ select: () => ({ lean: async () => [] }) });
+  StaffProfile.findOne = () => ({
+    select: () => ({ lean: async () => ({ weeklyClosedDays: [2], unavailableSlots: [] }) }),
+    lean: async () => ({ weeklyClosedDays: [2], unavailableSlots: [] }),
+  });
+  try {
+    assert.equal(await isStaffUnavailable('staff-1', '2030-01-01T10:00:00+08:00'), true);
+    const slots = await generateSlotsForStaffAndDate('staff-1', '2030-01-01');
+    assert.ok(slots.length > 0);
+    assert.ok(slots.every(slot => !slot.isAvailable && slot.reason === '理发师定休日'));
+  } finally {
+    Salon.findOne = originalSalonFindOne;
+    Booking.find = originalBookingFind;
+    StaffProfile.findOne = originalStaffFindOne;
+  }
+});
+
+test('no-preference slots exclude every staff member on their weekly closed day', async () => {
+  const originalBookingFind = Booking.find;
+  const originalStaffFind = StaffProfile.find;
+  Booking.find = () => ({ select: () => ({ lean: async () => [] }) });
+  StaffProfile.find = () => ({
+    select: () => ({
+      lean: async () => [
+        { id: 'staff-1', weeklyClosedDays: [2], unavailableSlots: [] },
+        { id: 'staff-2', weeklyClosedDays: [2], unavailableSlots: [] },
+      ],
+    }),
+  });
+  try {
+    const slots = await generateSlotsForNoPreferenceAndDate({
+      openingHours: '10:00 - 11:00',
+      staffIds: ['staff-1', 'staff-2'],
+    }, '2030-01-01');
+    assert.ok(slots.length > 0);
+    assert.ok(slots.every(slot => !slot.isAvailable && slot.reason === '暂无可用理发师'));
+  } finally {
+    Booking.find = originalBookingFind;
+    StaffProfile.find = originalStaffFind;
+  }
+});
+
 test('slot endpoint uses the selected service duration for no-preference bookings', async () => {
   const routes = new Map();
   const app = { get(path, ...handlers) { routes.set(path, handlers.at(-1)); } };
@@ -1984,7 +2061,7 @@ test('content review only covers merchant text and uploaded images', () => {
     openingHours: '09:00 - 21:00',
     closedDates: ['2026-07-20'],
     services: [{ id: 'S1', priceFen: 80000, durationMinutes: 60, tagIds: ['wash_cut_blow'] }],
-    staff: [{ id: 'P1', role: '店长', experience: '10年', extraServiceFeeFen: 20000 }],
+    staff: [{ id: 'P1', roleId: 'store_manager', experience: '10年', extraServiceFeeFen: 20000 }],
   }), false);
   assert.equal(hasReviewableContentChanges(current, { address: '新地址' }), true);
   assert.equal(hasReviewableContentChanges(current, { description: '新介绍' }), true);
@@ -3704,4 +3781,52 @@ test('merchant service gallery contract preserves legacy requests and review iso
   assert.equal(await save({ ...oldService, imageUrls: [], imageUrl: '' }), 200);
   assert.deepEqual(salonDomain.serviceImages(salon.services[0]), []);
   assert.equal(salon.services[0].imageUrl, '');
+});
+
+test('merchant staff contract accepts roleId and rejects the removed role field', async () => {
+  const routes = new Map();
+  const app = { get() {}, post() {}, delete() {}, use() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); } };
+  const salon = {
+    id: 'staff-role-contract',
+    markModified() {},
+    async save() {},
+  };
+  let draftedStaff;
+  registerMerchantRoutes(app, {
+    Salon: { async findOne() { return salon; } },
+    applyDirectSalonContent: async () => {},
+    buildContentDraft: async (_salon, payload) => {
+      draftedStaff = payload.staff;
+      return payload;
+    },
+    hasReviewableContentChanges: () => false,
+    buildSalonDetail: async () => ({ staff: [] }),
+    buildMerchantSalonPayload: async () => ({ id: salon.id }),
+    INPUT_LIMITS,
+    rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
+  });
+  const save = async (staff) => {
+    const response = {
+      statusCode: 200,
+      status(code) { this.statusCode = code; return this; },
+      json(body) { this.body = body; },
+    };
+    await routes.get('/api/merchant/salon')({
+      merchantUser: { salonId: salon.id },
+      body: { staff },
+    }, response);
+    return response;
+  };
+  const profile = {
+    id: 'P1', name: '理发师', roleId: 'art_director', experience: '8年',
+    extraServiceFeeFen: 2000, imageUrl: 'staff.jpg', bio: '简介',
+    weeklyClosedDays: [1, 7], unavailableSlots: [],
+  };
+
+  assert.equal((await save([profile])).statusCode, 200);
+  assert.deepEqual(draftedStaff, [profile]);
+  assert.equal((await save([{ ...profile, roleId: undefined, role: '艺术总监' }])).statusCode, 400);
+  assert.equal((await save([{ ...profile, roleId: 'unknown' }])).statusCode, 400);
+  assert.equal((await save([{ ...profile, weeklyClosedDays: [0] }])).statusCode, 400);
 });

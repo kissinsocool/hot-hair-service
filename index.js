@@ -524,6 +524,7 @@ const isSameDayBookingBlocked = bookingDomain.isSameDayBookingBlocked;
 const isStaffUnavailable = async (staffId, startTime, duration = 30) => {
   const person = await getStaffById(staffId).lean();
   if (!person) return false;
+  if (isSalonClosedOnDate({ weeklyClosedDays: person.weeklyClosedDays }, startTime)) return true;
   const unavailable = new Set(normalizeUnavailableSlots(person.unavailableSlots));
   return bookingDomain.occupiedSlotStarts(startTime, duration).some(slot =>
     unavailable.has(`${bookingDomain.localDateKey(slot)} ${bookingDomain.formatMinutesAsTime(bookingDomain.localTimeMinutes(slot))}`));
@@ -868,13 +869,14 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
     await Promise.all(directStaff.map(profile => StaffProfile.updateOne(
       { id: profile.id },
       { $set: {
-        role: profile.role || '',
+        roleId: salonDomain.normalizeStaffRoleId(profile.roleId),
         experience: profile.experience || '',
         extraServiceFeeFen: profile.extraServiceFeeFen,
         ...(profile.bio === '' ? { bio: '' } : {}),
         ...(profile.imageUrl === '' ? { imageUrl: '' } : {}),
+        weeklyClosedDays: normalizeWeeklyClosedDays(profile.weeklyClosedDays),
         unavailableSlots: normalizeUnavailableSlots(profile.unavailableSlots),
-      } },
+      }, $unset: { role: '' } },
     )));
   }
 };
@@ -933,11 +935,12 @@ const buildContentDraft = async (salon, payload, liveContent) => {
         return {
           id,
           name: profile.name,
-          role: profile.role || '',
+          roleId: salonDomain.normalizeStaffRoleId(profile.roleId),
           experience: profile.experience || '',
           extraServiceFeeFen: profile.extraServiceFeeFen,
           imageUrl: profile.imageUrl || '',
           bio: profile.bio || '',
+          weeklyClosedDays: normalizeWeeklyClosedDays(profile.weeklyClosedDays),
           unavailableSlots: normalizeUnavailableSlots(profile.unavailableSlots),
         };
       });
@@ -982,7 +985,7 @@ const applyPendingContent = async (salon) => {
     await Promise.all(draft.staff.map(profile =>
       StaffProfile.findOneAndUpdate(
         { id: profile.id },
-        profile,
+        { $set: profile, $unset: { role: '' } },
         { upsert: true, new: true, setDefaultsOnInsert: true },
       )
     ));
@@ -1117,8 +1120,16 @@ const generateSlotsForStaffAndDate = async (staffId, date, duration = 30, salonO
       startTime: { $gte: dayStart, $lt: dayEnd },
       status: { $in: ['pending', 'accepted'] },
     }).select({ startTime: 1, serviceDurationMinutes: 1, _id: 0 }).lean(),
-    getStaffById(staffId).select('unavailableSlots').lean(),
+    getStaffById(staffId).select('weeklyClosedDays unavailableSlots').lean(),
   ]);
+  if (isSalonClosedOnDate({ weeklyClosedDays: person?.weeklyClosedDays }, date)) {
+    return times.map(time => ({
+      time,
+      startTime: bookingDomain.slotStartTime(date, time),
+      isAvailable: false,
+      reason: '理发师定休日',
+    }));
+  }
   const bookedTimes = new Set(bookings.flatMap(booking =>
     bookingDomain.occupiedSlotStarts(booking.startTime, booking.serviceDurationMinutes || 30)
       .map(slot => formatMinutesAsTime(bookingDomain.localTimeMinutes(slot)))));
@@ -1169,7 +1180,7 @@ const generateSlotsForNoPreferenceAndDate = async (salon, date, duration = 30) =
       status: { $in: ['pending', 'accepted'] },
     }).select({ staffId: 1, startTime: 1, serviceDurationMinutes: 1, _id: 0 }).lean(),
     StaffProfile.find({ id: { $in: staffIds } })
-      .select({ id: 1, unavailableSlots: 1, _id: 0 })
+      .select({ id: 1, weeklyClosedDays: 1, unavailableSlots: 1, _id: 0 })
       .lean(),
   ]);
   const bookedSlots = new Set(bookings.flatMap(booking =>
@@ -1180,7 +1191,9 @@ const generateSlotsForNoPreferenceAndDate = async (salon, date, duration = 30) =
       .filter(slot => slot.startsWith(`${date} `))
       .map(slot => `${profile.id}:${slot.slice(11)}`)
   ));
-  const activeStaffIds = staffProfiles.map(profile => profile.id);
+  const activeStaffIds = staffProfiles
+    .filter(profile => !isSalonClosedOnDate({ weeklyClosedDays: profile.weeklyClosedDays }, date))
+    .map(profile => profile.id);
 
   return generateHalfHourSlots(salon?.openingHours).map(time => {
     const startTime = bookingDomain.slotStartTime(date, time);
@@ -1408,6 +1421,7 @@ module.exports = {
   getApprovedReviewTagCountsByStaffIds,
   getNearbySalons,
   getCoordinates,
+  generateSlotsForNoPreferenceAndDate,
   generateSlotsForStaffAndDate,
   hashPassword,
   hasReviewableContentChanges,
@@ -1428,6 +1442,7 @@ module.exports = {
   server,
   isSalonClosedOnDate,
   isSameDayBookingBlocked,
+  isStaffUnavailable,
   logoutSession,
   normalizeBooking,
   normalizeMerchantBooking,

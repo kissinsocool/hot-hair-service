@@ -94,11 +94,12 @@ const migrate = async () => {
           pendingContent.staff = pendingContent.staff.map(profile => ({
             id: profile.id,
             name: profile.name,
-            role: profile.role,
+            roleId: profile.roleId,
             experience: profile.experience,
             extraServiceFeeFen: profile.extraServiceFeeFen,
             imageUrl: profile.imageUrl,
             bio: profile.bio,
+            weeklyClosedDays: profile.weeklyClosedDays,
             unavailableSlots: profile.unavailableSlots,
           }));
         }

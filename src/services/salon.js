@@ -33,6 +33,25 @@ const SERVICE_TAG_IDS_BY_LABEL = new Map(
   Object.entries(SERVICE_TAG_LABELS).map(([id, label]) => [label, id]),
 );
 const SERVICE_TAG_ID_SET = new Set(SERVICE_TAG_IDS);
+const STAFF_ROLE_LABELS = Object.freeze({
+  junior_barber: '初级理发师',
+  intermediate_barber: '中级理发师',
+  senior_barber: '高级理发师',
+  chief_stylist: '首席发型师',
+  creative_director: '创意总监',
+  store_manager: '店长',
+  principal: '主理人',
+  designer: '设计师',
+  senior_designer: '资深设计师',
+  technical_director: '技术总监',
+  art_director: '艺术总监',
+  technical_store_manager: '技术店长',
+});
+const STAFF_ROLE_IDS = Object.freeze(Object.keys(STAFF_ROLE_LABELS));
+const STAFF_ROLE_ID_SET = new Set(STAFF_ROLE_IDS);
+const STAFF_ROLE_IDS_BY_LABEL = new Map(
+  Object.entries(STAFF_ROLE_LABELS).map(([id, label]) => [label, id]),
+);
 const REVIEW_TAGS = [
   '善于沟通',
   '环境舒适',
@@ -187,10 +206,22 @@ const servicePayload = (service = {}) => {
   };
 };
 
-const staffPayload = (profile = {}) => ({
-  ...profile,
-  imageUrl: publicImageUrl(profile.imageUrl || ''),
-});
+const normalizeStaffRoleId = roleId => {
+  const normalized = String(roleId || '').trim();
+  return STAFF_ROLE_ID_SET.has(normalized) ? normalized : '';
+};
+
+const staffRoleIdFromLegacy = role => STAFF_ROLE_IDS_BY_LABEL.get(String(role || '').trim()) || '';
+
+const staffPayload = (profile = {}) => {
+  const normalized = normalizeDocument(profile) || {};
+  const { role: _legacyRole, ...staff } = normalized;
+  return {
+    ...staff,
+    roleId: normalizeStaffRoleId(normalized.roleId),
+    imageUrl: publicImageUrl(normalized.imageUrl || ''),
+  };
+};
 
 const ratingSummary = (reviewCount, ratingTotal) => {
   const count = Number(reviewCount) || 0;
@@ -310,6 +341,9 @@ module.exports = {
   REVIEW_TAGS,
   SERVICE_TAG_IDS,
   SERVICE_TAG_LABELS,
+  STAFF_ROLE_IDS,
+  STAFF_ROLE_LABELS,
+  normalizeStaffRoleId,
   publicReviewFromBooking,
   serviceImages,
   serviceTagIdsFromLegacy,
@@ -319,6 +353,7 @@ module.exports = {
   incomingServiceImages,
   serviceForStorage,
   servicePayload,
+  staffRoleIdFromLegacy,
   staffPayload,
   stripSensitiveSalonFields,
   toFiniteNumber,

@@ -12,6 +12,7 @@
     "load:tokens": "node scripts/create-load-test-users.js",
     "load:cleanup": "node scripts/cleanup-load-test-data.js",
     "migrate:booking-domain": "node scripts/migrate-booking-domain.js",
+    "migrate:staff-role-ids": "node scripts/migrate-staff-role-ids.js",
     "test:performance": "k6 run scripts/k6-booking-flow.js"
   },
   "keywords": [],

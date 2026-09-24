@@ -681,9 +681,11 @@ function validateSalonContent(payload = {}, limits) {
     }
   }
   for (const profile of Array.isArray(payload.staff) ? payload.staff : []) {
+    if (!salonService.normalizeStaffRoleId(profile?.roleId)) {
+      return 'staff roleId is unsupported';
+    }
     if (
       String(profile?.name || '').length > 100
-      || String(profile?.role || '').length > 100
       || String(profile?.experience || '').length > 100
       || String(profile?.imageUrl || '').length > 2048
       || String(profile?.bio || '').length > 1000
@@ -693,6 +695,10 @@ function validateSalonContent(payload = {}, limits) {
     if (!Number.isSafeInteger(profile?.extraServiceFeeFen) || profile.extraServiceFeeFen < 0) {
       return 'staff extraServiceFeeFen must be a non-negative integer';
     }
+    if (profile?.weeklyClosedDays !== undefined && (
+      !Array.isArray(profile.weeklyClosedDays)
+      || profile.weeklyClosedDays.some(day => !Number.isInteger(day) || day < 1 || day > 7)
+    )) return 'staff weeklyClosedDays must contain integers between 1 and 7';
     if (Array.isArray(profile?.unavailableSlots) && profile.unavailableSlots.length > limits.unavailableSlots) {
       return `unavailableSlots cannot exceed ${limits.unavailableSlots} items`;
     }

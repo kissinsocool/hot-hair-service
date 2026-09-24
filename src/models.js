@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { DEMO_USER_ID } = require('./config');
+const { STAFF_ROLE_IDS } = require('./services/salon');
 
 const integer = (minimum = 0) => ({
   type: Number,
@@ -104,11 +105,12 @@ const complaintSchema = new mongoose.Schema({
 const staffDraftSchema = new mongoose.Schema({
   id: String,
   name: String,
-  role: String,
+  roleId: { type: String, enum: STAFF_ROLE_IDS, required: true },
   experience: String,
   extraServiceFeeFen: { ...integer(), required: true, default: 0 },
   imageUrl: String,
   bio: String,
+  weeklyClosedDays: [Number],
   unavailableSlots: [String],
 }, { _id: false });
 
@@ -282,11 +284,12 @@ salonSchema.index({ publishStatus: 1, 'services.promotionReviewStatus': 1 });
 const staffProfileSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
   name: String,
-  role: String,
+  roleId: { type: String, enum: STAFF_ROLE_IDS, required: true },
   experience: String,
   extraServiceFeeFen: { ...integer(), required: true, default: 0 },
   imageUrl: String,
   bio: String,
+  weeklyClosedDays: [Number],
   unavailableSlots: [String],
 }, { timestamps: true });
 
