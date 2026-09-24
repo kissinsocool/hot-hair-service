@@ -115,7 +115,7 @@ const calculateDistanceKm = (from, to) => {
 };
 
 const normalizeServiceTagIds = tagIds => Array.isArray(tagIds)
-  ? [...new Set(tagIds.map(id => String(id || '').trim()).filter(id => SERVICE_TAG_ID_SET.has(id)))].slice(0, 3)
+  ? [...new Set(tagIds.map(id => String(id || '').trim()).filter(id => SERVICE_TAG_ID_SET.has(id)))].slice(0, 4)
   : [];
 
 const serviceTagIdsFromLegacy = tags => Array.isArray(tags)

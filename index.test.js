@@ -687,10 +687,11 @@ test('buildGeoLocation stores MongoDB GeoJSON coordinates', () => {
 });
 
 test('normalizeServiceTagIds keeps supported unique IDs and limits selections', () => {
-  assert.deepEqual(normalizeServiceTagIds([' men ', 'curly', 'men', '', 'nutrition', 'unknown']), [
+  assert.deepEqual(normalizeServiceTagIds([' men ', 'curly', 'men', '', 'nutrition', 'care', 'color', 'unknown']), [
     'men',
     'curly',
     'nutrition',
+    'care',
   ]);
   assert.deepEqual(normalizeServiceTagIds('men,curly'), []);
 });
@@ -3749,6 +3750,8 @@ test('merchant service gallery contract preserves legacy requests and review iso
   assert.deepEqual([...salon.services[0].tagIds], ['wash_cut_blow']);
   assert.equal(await save({ ...oldService, tagIds: [] }), 400);
   assert.equal(await save({ ...oldService, tagIds: ['unknown'] }), 400);
+  assert.equal(await save({ ...oldService, tagIds: ['men', 'women', 'straight', 'curly'] }), 200);
+  assert.equal(await save({ ...oldService, tagIds: ['men', 'women', 'straight', 'curly', 'nutrition'] }), 400);
   assert.equal(await save({ ...oldService, promotionEnabled: 'yes' }), 400);
   const { tagIds, ...requestWithoutTagIds } = oldService;
   assert.equal(await save({ ...requestWithoutTagIds, tags: ['洗剪吹'] }), 200);

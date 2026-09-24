@@ -667,15 +667,15 @@ function validateSalonContent(payload = {}, limits) {
     if (service?.tagIds !== undefined && (
       !Array.isArray(service.tagIds)
       || service.tagIds.length < 1
-      || service.tagIds.length > 3
+      || service.tagIds.length > 4
       || service.tagIds.some(id => typeof id !== 'string' || !salonService.SERVICE_TAG_IDS.includes(id))
-    )) return 'service tagIds must contain 1 to 3 supported IDs';
+    )) return 'service tagIds must contain 1 to 4 supported IDs';
     if (service?.tags !== undefined && (
       !Array.isArray(service.tags)
       || service.tags.length < 1
-      || service.tags.length > 3
+      || service.tags.length > 4
       || salonService.serviceTagIdsFromLegacy(service.tags).length !== new Set(service.tags).size
-    )) return 'service tags must contain 1 to 3 supported legacy labels';
+    )) return 'service tags must contain 1 to 4 supported legacy labels';
     if (service?.tagIds === undefined && service?.tags === undefined) {
       return 'service tagIds or legacy tags is required';
     }
