@@ -182,7 +182,8 @@ module.exports = (app, ctx) => {
   
     const [detail, latestPosts] = await Promise.all([
       buildPublicSalonDetail(salon),
-      SalonPost.find({ salonId: salon.id }).sort({ createdAt: -1, _id: -1 }).limit(4).lean(),
+      SalonPost.find({ salonId: salon.id, reviewStatus: 'approved' })
+        .sort({ createdAt: -1, _id: -1 }).limit(4).lean(),
     ]);
     res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
     res.json({
@@ -197,9 +198,9 @@ module.exports = (app, ctx) => {
     if (!salon) return res.status(404).json({ message: 'Salon not found' });
     const pagination = normalizePagination(req.query);
     const [posts, total] = await Promise.all([
-      SalonPost.find({ salonId: salon.id }).sort({ createdAt: -1, _id: -1 })
+      SalonPost.find({ salonId: salon.id, reviewStatus: 'approved' }).sort({ createdAt: -1, _id: -1 })
         .skip(pagination.skip).limit(pagination.limit).lean(),
-      SalonPost.countDocuments({ salonId: salon.id }),
+      SalonPost.countDocuments({ salonId: salon.id, reviewStatus: 'approved' }),
     ]);
     setPaginationHeaders(res, pagination, total);
     res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');

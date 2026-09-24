@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const registerMerchantRoutes = require('./merchant');
 const registerPublicRoutes = require('./public');
+const registerAdminRoutes = require('./admin');
 const { validatePostInput } = require('../services/salon-posts');
 
 const response = () => ({
@@ -70,6 +71,7 @@ test('merchant can publish only as a staff member from the same salon', async ()
   assert.equal(res.statusCode, 201);
   assert.equal(created[0].authorName, '小林');
   assert.equal(created[0].salonId, 'salon-1');
+  assert.equal(created[0].reviewStatus, 'pending');
   assert.equal(res.body.id, 'post-1');
 });
 
@@ -91,7 +93,10 @@ test('public salon posts are scoped to an online salon and paginated newest firs
       },
     },
     SalonPost: {
-      find: filter => { assert.deepEqual(filter, { salonId: 'salon-1' }); return query; },
+      find: filter => {
+        assert.deepEqual(filter, { salonId: 'salon-1', reviewStatus: 'approved' });
+        return query;
+      },
       countDocuments: async () => 11,
     },
     normalizePagination: () => ({ page: 2, limit: 10, skip: 10 }),
@@ -106,4 +111,34 @@ test('public salon posts are scoped to an online salon and paginated newest firs
   await routes.get('/api/salons/:id/posts')({ params: { id: 'salon-1' }, query: {} }, res);
   assert.deepEqual(res.headers, { page: 2, total: 11 });
   assert.equal(res.body[0].id, 'post-11');
+});
+
+test('admin approval changes a pending salon post to approved', async () => {
+  const routes = new Map();
+  const app = Object.fromEntries(['get', 'post', 'patch', 'delete'].map(method => [
+    method,
+    (path, ...handlers) => routes.set(`${method}:${path}`, handlers.at(-1)),
+  ]));
+  let update;
+  registerAdminRoutes(app, {
+    rateLimits: new Proxy({}, { get: () => [] }),
+    SalonPost: {
+      findOneAndUpdate(filter, nextUpdate) {
+        assert.deepEqual(filter, { id: 'post-1' });
+        update = nextUpdate;
+        return { lean: async () => ({ id: 'post-1', ...nextUpdate.$set, imageUrls: [] }) };
+      },
+    },
+    salonPostPayload: post => post,
+    publicImageUrl: value => value,
+    clearPublicSalonDetailCache: () => {},
+  });
+  const res = response();
+  await routes.get('patch:/api/admin/salon-posts/:id')({
+    params: { id: 'post-1' },
+    body: { action: 'approve' },
+  }, res);
+  assert.equal(update.$set.reviewStatus, 'approved');
+  assert.ok(update.$set.reviewedAt instanceof Date);
+  assert.equal(res.body.post.reviewStatus, 'approved');
 });

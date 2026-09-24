@@ -40,6 +40,9 @@ module.exports = (app, ctx) => {
     validateCampaignInput,
     AnalyticsEvent,
     requireQualificationForPublishing = false,
+    SalonPost,
+    salonPostPayload,
+    publicImageUrl,
   } = ctx;
 
   const buildCampaignResponse = async (campaign) => {
@@ -86,7 +89,7 @@ module.exports = (app, ctx) => {
     await logoutSession(AdminUser, req.adminUser, req);
     res.json({ ok: true });
   });
-  
+
   app.get('/api/admin/overview', async (req, res) => {
     const today = bookingDayRange();
     const yesterday = {
@@ -509,6 +512,49 @@ module.exports = (app, ctx) => {
     ]);
     setPaginationHeaders(res, pagination, total);
     res.json(bookings.map(normalizeBooking));
+  });
+
+  app.get('/api/admin/salon-posts', async (req, res) => {
+    const pagination = normalizePagination(req.query);
+    const [posts, total] = await Promise.all([
+      SalonPost.find({}).sort({ createdAt: -1, _id: -1 })
+        .skip(pagination.skip).limit(pagination.limit).lean(),
+      SalonPost.countDocuments(),
+    ]);
+    const salonIds = [...new Set(posts.map(post => post.salonId).filter(Boolean))];
+    const salons = salonIds.length
+      ? await Salon.find({ id: { $in: salonIds } }).select('id name').lean()
+      : [];
+    const salonNames = new Map(salons.map(salon => [salon.id, salon.name]));
+    setPaginationHeaders(res, pagination, total);
+    res.json(posts.map(post => ({
+      ...salonPostPayload(post, publicImageUrl),
+      salonName: salonNames.get(post.salonId) || '',
+    })));
+  });
+
+  app.patch('/api/admin/salon-posts/:id', async (req, res) => {
+    const action = String(req.body.action || '').trim();
+    if (!['approve', 'reject', 'delete'].includes(action)) {
+      return res.status(400).json({ message: 'action must be approve, reject or delete' });
+    }
+    if (action === 'delete') {
+      const deleted = await SalonPost.findOneAndDelete({ id: req.params.id }).lean();
+      if (!deleted) return res.status(404).json({ message: '动态不存在' });
+      clearPublicSalonDetailCache?.();
+      return res.json({ ok: true });
+    }
+    const post = await SalonPost.findOneAndUpdate(
+      { id: req.params.id },
+      { $set: {
+        reviewStatus: action === 'approve' ? 'approved' : 'rejected',
+        reviewedAt: new Date(),
+      } },
+      { new: true },
+    ).lean();
+    if (!post) return res.status(404).json({ message: '动态不存在' });
+    clearPublicSalonDetailCache?.();
+    res.json({ post: salonPostPayload(post, publicImageUrl) });
   });
 
   app.get('/api/admin/user-images', async (_req, res) => {

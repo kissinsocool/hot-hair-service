@@ -302,9 +302,17 @@ const salonPostSchema = new mongoose.Schema({
   authorImageUrl: { type: String, default: '' },
   content: { type: String, required: true },
   imageUrls: { type: [String], default: [] },
+  reviewStatus: {
+    type: String,
+    enum: ['pending', 'approved', 'rejected'],
+    default: 'pending',
+    index: true,
+  },
+  reviewedAt: Date,
 }, { timestamps: true });
 
 salonPostSchema.index({ salonId: 1, createdAt: -1, _id: -1 });
+salonPostSchema.index({ reviewStatus: 1, createdAt: -1 });
 
 const merchantUserSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },

@@ -324,6 +324,7 @@ module.exports = (app, ctx) => {
       authorImageUrl: author.imageUrl || '',
       content: parsed.value.content,
       imageUrls: parsed.value.imageUrls,
+      reviewStatus: 'pending',
     });
     clearPublicSalonDetailCache(salonId);
     res.status(201).json(salonPostPayload(post.toObject(), publicImageUrl));

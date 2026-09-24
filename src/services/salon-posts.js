@@ -28,6 +28,8 @@ const postPayload = (post, publicImageUrl = value => value) => ({
   authorImageUrl: publicImageUrl(post.authorImageUrl || ''),
   content: post.content,
   imageUrls: (post.imageUrls || []).map(publicImageUrl).filter(Boolean),
+  reviewStatus: post.reviewStatus || 'pending',
+  reviewedAt: post.reviewedAt,
   createdAt: post.createdAt,
   updatedAt: post.updatedAt,
 });
