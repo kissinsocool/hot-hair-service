@@ -695,7 +695,7 @@ function validateSalonContent(payload = {}, limits) {
     if (!Number.isSafeInteger(profile?.extraServiceFeeFen) || profile.extraServiceFeeFen < 0) {
       return 'staff extraServiceFeeFen must be a non-negative integer';
     }
-    if (profile?.weeklyClosedDays !== undefined && (
+    if (profile?.weeklyClosedDays != null && (
       !Array.isArray(profile.weeklyClosedDays)
       || profile.weeklyClosedDays.some(day => !Number.isInteger(day) || day < 1 || day > 7)
     )) return 'staff weeklyClosedDays must contain integers between 1 and 7';

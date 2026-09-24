@@ -3826,6 +3826,7 @@ test('merchant staff contract accepts roleId and rejects the removed role field'
 
   assert.equal((await save([profile])).statusCode, 200);
   assert.deepEqual(draftedStaff, [profile]);
+  assert.equal((await save([{ ...profile, weeklyClosedDays: null }])).statusCode, 200);
   assert.equal((await save([{ ...profile, roleId: undefined, role: '艺术总监' }])).statusCode, 400);
   assert.equal((await save([{ ...profile, roleId: 'unknown' }])).statusCode, 400);
   assert.equal((await save([{ ...profile, weeklyClosedDays: [0] }])).statusCode, 400);
