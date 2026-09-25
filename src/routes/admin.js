@@ -357,7 +357,12 @@ module.exports = (app, ctx) => {
     if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
   
     if (action === 'approve') {
-      await applyPendingContent(salon);
+      try {
+        await applyPendingContent(salon);
+      } catch (error) {
+        if (error.httpStatus) return res.status(error.httpStatus).json({ message: error.message });
+        throw error;
+      }
     }
     salon.contentReviewStatus = action === 'approve' ? 'approved' : 'rejected';
     salon.contentRejectReason = action === 'reject' ? reason : '';

@@ -449,13 +449,48 @@ const findNearbySalons = async (userLocation, radiusKm, limit, skip = 0, keyword
 
 const getNearbySalons = async (userLocation, _radiusKm, limit, minResults = 10, maxRadiusKm = 50, skip = 0, keyword = '', sort = 'distance') => {
   if (sort === 'rating') {
-    let candidates = await findNearbySalons(userLocation, maxRadiusKm, 0, 0, keyword);
-    if (candidates.length < minResults) candidates = await findNearbySalons(userLocation, null, 0, 0, keyword);
-    const rated = await addApprovedSalonRatings(candidates);
-    rated.sort((a, b) => (b.rating || 0) - (a.rating || 0)
-      || (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity)
-      || String(a.id).localeCompare(String(b.id)));
-    return rated.slice(skip, skip + limit);
+    const geoNear = radiusKm => ({ $geoNear: {
+      near: { type: 'Point', coordinates: [userLocation.longitude, userLocation.latitude] },
+      distanceField: 'distanceMeters',
+      spherical: true,
+      key: 'geoLocation',
+      query: {
+        publishStatus: 'online',
+        ...(keyword ? { name: { $regex: keyword, $options: 'i' } } : {}),
+      },
+      ...(radiusKm == null ? {} : { maxDistance: Math.max(radiusKm, 0.1) * 1000 }),
+    } });
+    const probe = await Salon.aggregate([geoNear(maxRadiusKm), { $limit: minResults }, { $count: 'count' }]);
+    const radiusKm = (probe[0]?.count || 0) < minResults ? null : maxRadiusKm;
+    return Salon.aggregate([
+      geoNear(radiusKm),
+      { $lookup: {
+        from: Booking.collection.name,
+        localField: 'staffIds',
+        foreignField: 'staffId',
+        pipeline: [
+          { $match: { 'review.reviewStatus': 'approved', 'review.rating': { $gte: 1, $lte: 5 } } },
+          { $group: { _id: null, reviewCount: { $sum: 1 }, ratingTotal: { $sum: '$review.rating' } } },
+        ],
+        as: 'ratingRows',
+      } },
+      { $set: {
+        reviewCount: { $ifNull: [{ $first: '$ratingRows.reviewCount' }, 0] },
+        rating: { $cond: [
+          { $gt: [{ $first: '$ratingRows.reviewCount' }, 0] },
+          { $round: [{ $divide: [{ $first: '$ratingRows.ratingTotal' }, { $first: '$ratingRows.reviewCount' }] }, 1] },
+          null,
+        ] },
+        distanceKm: { $round: [{ $divide: ['$distanceMeters', 1000] }, 2] },
+      } },
+      { $sort: { rating: -1, distanceKm: 1, id: 1 } },
+      { $skip: skip },
+      { $limit: limit },
+      { $unset: ['ratingRows', 'distanceMeters', 'licenseUrl', 'legalPersonIdFrontUrl',
+        'legalPersonIdBackUrl', 'addressProofUrl', 'licenseStatus', 'licenseRejectReason',
+        'licenseSubmittedAt', 'licenseReviewedAt', 'pendingContent', 'contentReviewStatus',
+        'contentRejectReason', 'contentReviewedAt', 'bookingCreationFence'] },
+    ]).option({ maxTimeMS: 5000, allowDiskUse: true });
   }
   const probeLimit = skip ? minResults : limit;
   const nearbySalons = await findNearbySalons(userLocation, maxRadiusKm, probeLimit, 0, keyword);
@@ -477,6 +512,25 @@ const getStaffById = (staffId) => StaffProfile.findOne({ id: staffId });
 const getStaffMapByIds = async (staffIds = []) => {
   const profiles = await StaffProfile.find({ id: { $in: staffIds } }).lean();
   return Object.fromEntries(profiles.map(profile => [profile.id, profile]));
+};
+
+const validateSalonStaffIds = async (salon, profiles, allowPending = false) => {
+  const ids = profiles.map(profile => String(profile?.id || '').trim()).filter(Boolean);
+  if (new Set(ids).size !== ids.length) return '理发师 ID 不能重复';
+  const owned = new Set((salon.staffIds || []).map(String));
+  const allowed = new Set(owned);
+  if (allowPending) {
+    (salon.pendingContent?.staff || []).forEach(profile => allowed.add(String(profile.id)));
+  }
+  if (ids.some(id => !allowed.has(id))) return '理发师不属于当前店铺';
+  if (ids.length && await Salon.exists({ id: { $ne: salon.id }, staffIds: { $in: ids } })) {
+    return '理发师已关联其他店铺';
+  }
+  const notYetOwned = ids.filter(id => !owned.has(id));
+  if (notYetOwned.length && await StaffProfile.exists({ id: { $in: notYetOwned } })) {
+    return '理发师 ID 已存在';
+  }
+  return '';
 };
 
 const formatMinutesAsTime = bookingDomain.formatMinutesAsTime;
@@ -940,7 +994,7 @@ const buildContentDraft = async (salon, payload, liveContent) => {
     draft.staff = payload.staff
       .filter(profile => profile && profile.name)
       .map((profile, index) => {
-        const id = profile.id || `merchant-staff-${Date.now()}-${index}`;
+        const id = profile.id || `merchant-staff-${crypto.randomUUID()}`;
         return {
           id,
           name: profile.name,
@@ -964,6 +1018,10 @@ const buildContentDraft = async (salon, payload, liveContent) => {
 
 const applyPendingContent = async (salon) => {
   const draft = normalizeDocument(salon.pendingContent) || {};
+  if (Array.isArray(draft.staff)) {
+    const staffError = await validateSalonStaffIds(salon, draft.staff, true);
+    if (staffError) throw Object.assign(new Error(staffError), { httpStatus: 409 });
+  }
   contentFields
     .filter(key => key !== 'staff' && key !== 'services')
     .forEach(key => {
@@ -990,8 +1048,13 @@ const applyPendingContent = async (salon) => {
   }
 
   if (Array.isArray(draft.staff)) {
-    salon.staffIds = draft.staff.map(profile => profile.id).filter(Boolean);
-    await Promise.all(draft.staff.map(profile =>
+    const owned = new Set((salon.staffIds || []).map(String));
+    const approvedStaff = draft.staff.map(profile => ({
+      ...profile,
+      id: owned.has(String(profile.id)) ? profile.id : `merchant-staff-${crypto.randomUUID()}`,
+    }));
+    salon.staffIds = approvedStaff.map(profile => profile.id).filter(Boolean);
+    await Promise.all(approvedStaff.map(profile =>
       StaffProfile.findOneAndUpdate(
         { id: profile.id },
         { $set: profile, $unset: { role: '' } },
@@ -1228,6 +1291,7 @@ const routeContext = {
   AdConfig,
   amapWebServiceKey,
   applyDirectSalonContent,
+  validateSalonStaffIds,
   applyPendingContent,
   Booking,
   BookingMessage,
@@ -1415,6 +1479,7 @@ module.exports = {
   activeSessionQuery,
   acceptedBookingAtTimeQuery,
   applyDirectSalonContent,
+  validateSalonStaffIds,
   applyPendingContent,
   buildContentDraft,
   buildGeoLocation,

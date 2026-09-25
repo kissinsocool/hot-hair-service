@@ -457,6 +457,9 @@ module.exports = (app, ctx) => {
     if ((!isNoPreference && !staffMember) || !service || !salon) {
       return res.status(404).json({ message: 'Staff, service or salon not found' });
     }
+    if (salon.publishStatus !== 'online') {
+      return res.status(409).json({ message: '该店铺已下架，暂不可预约' });
+    }
     if (isSalonClosedOnDate(salon, startTime)) {
       return res.status(409).json({ message: '该日期为店铺休息日' });
     }
@@ -500,6 +503,13 @@ module.exports = (app, ctx) => {
     let booking;
     try {
       booking = await runBookingTransaction(async (session) => {
+        // Writing the salon serializes booking creation with an admin unpublish.
+        const onlineSalon = await Salon.updateOne(
+          { id: salon.id, publishStatus: 'online' },
+          { $inc: { bookingCreationFence: 1 } },
+          { session, timestamps: false },
+        );
+        if (!onlineSalon.matchedCount) throw transactionError(409, '该店铺已下架，暂不可预约');
         const userPolicy = await getUserPolicy(userId, session);
         if (userPolicy.isBlacklisted) {
           throw transactionError(403, '该账号已因爽约次数过多被拉黑，无法继续预约。');

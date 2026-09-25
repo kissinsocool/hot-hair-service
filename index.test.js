@@ -52,6 +52,7 @@ const {
   stripSensitiveSalonFields,
   verifyPassword,
   validateCampaignInput,
+  validateSalonStaffIds,
 } = require('./index');
 const { issueSignupCoupons } = require('./src/coupons');
 const {
@@ -1012,23 +1013,14 @@ test('promoted service gallery returns only the requested approved live category
     delete() {},
     use() {},
   };
-  let query;
-  const salons = [{
-    id: 'salon-1',
-    services: [
-      { id: 'men', promotionEnabled: true, promotionReviewStatus: 'approved', tagIds: ['men'], imageUrls: ['a.jpg', 'b.jpg'] },
-      { id: 'women', promotionEnabled: true, promotionReviewStatus: 'approved', tagIds: ['women'], imageUrls: ['c.jpg'] },
-      { id: 'hidden', promotionEnabled: false, promotionReviewStatus: 'pending', tagIds: ['men'], imageUrls: ['d.jpg'] },
-    ],
-  }];
+  let pipeline;
   const SalonModel = {
-    find(value) {
-      query = value;
-      return {
-        select() { return this; },
-        sort() { return this; },
-        async lean() { return salons; },
-      };
+    aggregate(value) {
+      pipeline = value;
+      return { async option() { return [{
+        items: [{ salonId: 'salon-1', serviceId: 'men', imageIndex: 1, imageUrl: 'b.jpg' }],
+        total: [{ count: 2 }],
+      }]; } };
     },
   };
   registerPublicRoutes(app, {
@@ -1050,10 +1042,11 @@ test('promoted service gallery returns only the requested approved live category
     response,
   );
 
-  assert.deepEqual(query, {
+  assert.deepEqual(pipeline[0].$match, {
     publishStatus: 'online',
     services: { $elemMatch: { promotionEnabled: true, promotionReviewStatus: 'approved', tagIds: 'men' } },
   });
+  assert.deepEqual(pipeline.at(-1).$facet.items.slice(0, 2), [{ $skip: 1 }, { $limit: 1 }]);
   assert.equal(response.headers['X-Total-Count'], '2');
   assert.deepEqual(response.body, [{
     id: 'salon-1:men:1',
@@ -1073,33 +1066,16 @@ test('promoted service gallery sorts by publish time or distance before paginati
     delete() {},
     use() {},
   };
-  const salons = [
-    {
-      id: 'far-new',
-      location: { latitude: 39.1, longitude: 116 },
-      updatedAt: new Date('2026-01-01T00:00:00Z'),
-      services: [{
-        id: 'new', promotionEnabled: true, promotionReviewStatus: 'approved', tagIds: ['men'],
-        promotionReviewedAt: new Date('2026-02-01T00:00:00Z'), imageUrls: ['new.jpg'],
-      }],
-    },
-    {
-      id: 'near-old',
-      location: { latitude: 39, longitude: 116 },
-      updatedAt: new Date('2026-01-01T00:00:00Z'),
-      services: [{
-        id: 'old', promotionEnabled: true, promotionReviewStatus: 'approved', tagIds: ['men'],
-        promotionReviewedAt: new Date('2026-01-01T00:00:00Z'), imageUrls: ['old.jpg'],
-      }],
-    },
-  ];
+  const sorts = [];
   const SalonModel = {
-    find() {
-      return {
-        select() { return this; },
-        sort() { return this; },
-        async lean() { return salons; },
-      };
+    aggregate(pipeline) {
+      const sort = pipeline.find(stage => stage.$sort).$sort;
+      sorts.push(sort);
+      const salonId = sort.distanceKm ? 'near-old' : 'far-new';
+      return { async option() { return [{
+        items: [{ salonId, serviceId: 'service', imageIndex: 0, imageUrl: 'image.jpg' }],
+        total: [{ count: 2 }],
+      }]; } };
     },
   };
   registerPublicRoutes(app, {
@@ -1130,6 +1106,8 @@ test('promoted service gallery sorts by publish time or distance before paginati
     distanceResponse,
   );
   assert.equal(distanceResponse.body[0].salonId, 'near-old');
+  assert.deepEqual(sorts[0], { publishedAt: -1, salonId: 1, serviceId: 1, imageIndex: 1 });
+  assert.equal(sorts[1].distanceKm, 1);
 });
 
 test('signup transaction saves a client with its MongoDB session', async () => {
@@ -1497,12 +1475,74 @@ test('merchant booking list includes the current user phone', async () => {
 
 test('merchant active booking scope follows current salon staff ownership', () => {
   assert.deepEqual(buildMerchantBookingScope('1', ['tina']), {
+    salonId: '1',
     $or: [
       { staffId: { $in: ['tina'] }, status: { $in: ['pending', 'accepted'] } },
       { salonId: '1', staffId: '' },
       { salonId: '1', status: { $nin: ['pending', 'accepted'] } },
     ],
   });
+});
+
+test('salon staff IDs accept own live and pending staff but reject foreign and duplicate IDs', async () => {
+  const originalSalonExists = Salon.exists;
+  const originalStaffExists = StaffProfile.exists;
+  let foreignIds = [];
+  let existingIds = [];
+  Salon.exists = async query => {
+    assert.deepEqual(query.id, { $ne: 'salon-1' });
+    return query.staffIds.$in.some(id => foreignIds.includes(id)) ? { _id: 'foreign' } : null;
+  };
+  StaffProfile.exists = async query =>
+    query.id.$in.some(id => existingIds.includes(id)) ? { _id: 'existing' } : null;
+  try {
+    const salon = new Salon({
+      id: 'salon-1', staffIds: ['own-staff'],
+      pendingContent: { staff: [{ id: 'pending-staff', name: 'New', roleId: 'barber' }] },
+    });
+    assert.equal(await validateSalonStaffIds(salon, [{ id: 'own-staff' }]), '');
+    assert.equal(await validateSalonStaffIds(salon, [{ id: 'pending-staff' }], true), '');
+    assert.equal(await validateSalonStaffIds(salon, [{ id: '' }], true), '');
+    assert.equal(await validateSalonStaffIds(salon, [{ id: 'pending-staff' }]), '理发师不属于当前店铺');
+    assert.equal(await validateSalonStaffIds(salon, [{ id: 'foreign-staff' }], true), '理发师不属于当前店铺');
+    assert.equal(await validateSalonStaffIds(salon, [{ id: 'own-staff' }, { id: 'own-staff' }], true), '理发师 ID 不能重复');
+    foreignIds = ['own-staff'];
+    assert.equal(await validateSalonStaffIds(salon, [{ id: 'own-staff' }]), '理发师已关联其他店铺');
+    foreignIds = [];
+    existingIds = ['pending-staff'];
+    assert.equal(await validateSalonStaffIds(salon, [{ id: 'pending-staff' }], true), '理发师 ID 已存在');
+  } finally {
+    Salon.exists = originalSalonExists;
+    StaffProfile.exists = originalStaffExists;
+  }
+});
+
+test('approval gives independent new staff IDs to simultaneous drafts with the same legacy ID', async () => {
+  const originalSalonExists = Salon.exists;
+  const originalStaffExists = StaffProfile.exists;
+  const originalUpsert = StaffProfile.findOneAndUpdate;
+  const updatedIds = [];
+  Salon.exists = async () => null;
+  StaffProfile.exists = async () => null;
+  StaffProfile.findOneAndUpdate = async (query, update) => {
+    assert.equal(query.id, update.$set.id);
+    updatedIds.push(query.id);
+    return update.$set;
+  };
+  try {
+    const draft = { staff: [{ id: 'merchant-staff-legacy-collision', name: 'New', roleId: 'barber' }] };
+    const first = new Salon({ id: 'first', pendingContent: draft });
+    const second = new Salon({ id: 'second', pendingContent: draft });
+    await Promise.all([applyPendingContent(first), applyPendingContent(second)]);
+    assert.equal(first.staffIds.length, 1);
+    assert.equal(second.staffIds.length, 1);
+    assert.notEqual(first.staffIds[0], second.staffIds[0]);
+    assert.deepEqual(updatedIds.sort(), [first.staffIds[0], second.staffIds[0]].sort());
+  } finally {
+    Salon.exists = originalSalonExists;
+    StaffProfile.exists = originalStaffExists;
+    StaffProfile.findOneAndUpdate = originalUpsert;
+  }
 });
 
 test('normalizeRadiusKm applies defaults and bounds', () => {
@@ -1585,36 +1625,26 @@ test('nearby salon pagination keeps the same location and distance ordering quer
 });
 
 test('rating sort pages all nearby salons by approved ratings, then distance', async () => {
-  const originalFind = Salon.find;
-  const originalAggregate = Booking.aggregate;
-  Salon.find = () => {
-    const chain = {
-      select() { return chain; },
-      skip() { return chain; },
-      limit() { return chain; },
-      async lean() {
-        return [
-          { id: 'near', staffIds: ['near'], geoLocation: { type: 'Point', coordinates: [121.474, 31.2304] } },
-          { id: 'high', staffIds: ['high'], geoLocation: { type: 'Point', coordinates: [121.48, 31.2304] } },
-          { id: 'unrated', staffIds: [], geoLocation: { type: 'Point', coordinates: [121.475, 31.2304] } },
-        ];
-      },
-    };
-    return chain;
+  const originalAggregate = Salon.aggregate;
+  const pipelines = [];
+  Salon.aggregate = pipeline => {
+    pipelines.push(pipeline);
+    if (pipeline.some(stage => stage.$count)) return Promise.resolve([{ count: 3 }]);
+    const skip = pipeline.find(stage => Object.hasOwn(stage, '$skip')).$skip;
+    return { option: async () => (skip ? [{ id: 'unrated' }] : [{ id: 'high' }, { id: 'near' }]) };
   };
-  Booking.aggregate = async () => [
-    { _id: 'near', reviewCount: 1, ratingTotal: 4 },
-    { _id: 'high', reviewCount: 1, ratingTotal: 5 },
-  ];
   try {
     const location = { latitude: 31.2304, longitude: 121.4737 };
     const first = await getNearbySalons(location, 10, 2, 1, 50, 0, '', 'rating');
     const second = await getNearbySalons(location, 10, 2, 1, 50, 2, '', 'rating');
     assert.deepEqual(first.map(salon => salon.id), ['high', 'near']);
     assert.deepEqual(second.map(salon => salon.id), ['unrated']);
+    assert.equal(pipelines[1][0].$geoNear.maxDistance, 50000);
+    assert.equal(pipelines[1].find(stage => stage.$lookup).$lookup.foreignField, 'staffId');
+    assert.deepEqual(pipelines[1].find(stage => stage.$sort).$sort, { rating: -1, distanceKm: 1, id: 1 });
+    assert.deepEqual(pipelines[3].slice(-3, -1), [{ $skip: 2 }, { $limit: 2 }]);
   } finally {
-    Salon.find = originalFind;
-    Booking.aggregate = originalAggregate;
+    Salon.aggregate = originalAggregate;
   }
 });
 
@@ -2044,6 +2074,7 @@ test('stripSensitiveSalonFields removes license fields from public salon payload
     licenseReviewedAt: new Date(),
     pendingContent: { name: 'unreviewed' },
     contentRejectReason: 'internal reason',
+    bookingCreationFence: 42,
   });
 
   assert.deepEqual(payload, { id: '1', name: 'Hot Hair' });
@@ -2335,6 +2366,7 @@ test('merchant salon route publishes weekly and exceptional closures without rev
   });
   registerMerchantRoutes(app, {
     Salon: { async findOne() { return salon; } },
+    validateSalonStaffIds: async () => '',
     applyDirectSalonContent,
     buildContentDraft,
     buildSalonDetail: async () => livePayload(),
@@ -3479,6 +3511,8 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
   let couponUpdate;
   let savedBooking;
   let messageCreate;
+  let salonStatus = 'online';
+  let onlineInTransaction = true;
   class Booking {
     constructor(value) { Object.assign(this, value); }
     async save(options) {
@@ -3511,6 +3545,15 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
     SlotOccupancy: {
       async updateOne() {},
     },
+    Salon: {
+      async updateOne(query, update, options) {
+        assert.deepEqual(query, { id: 'salon-1', publishStatus: 'online' });
+        assert.deepEqual(update, { $inc: { bookingCreationFence: 1 } });
+        assert.equal(options.session, session);
+        assert.equal(options.timestamps, false);
+        return { matchedCount: onlineInTransaction ? 1 : 0 };
+      },
+    },
     mongoose: {
       async startSession() { return session; },
     },
@@ -3528,6 +3571,7 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
           return {
             id: 'salon-1',
             name: 'Salon',
+            publishStatus: salonStatus,
             openingHours: '09:00-22:00',
             services: [{
               id: 'service-1',
@@ -3582,6 +3626,26 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
   assert.equal(messageCreate[0][0].type, 'created');
   assert.equal(messageCreate[1].session, session);
   assert.equal(response.booking.id, '12345678');
+
+  const request = {
+    clientUser: { id: 'user-1', displayName: 'User' },
+    body: { staffId: 'staff-1', serviceId: 'service-1', startTime: '2030-01-01T10:00:00.000Z' },
+  };
+  salonStatus = 'offline';
+  status = 200;
+  await routes.get('/api/bookings')(request, {
+    status(value) { status = value; return this; }, json(value) { response = value; },
+  });
+  assert.equal(status, 409);
+  assert.match(response.message, /下架/);
+  salonStatus = 'online';
+  onlineInTransaction = false;
+  status = 200;
+  await routes.get('/api/bookings')(request, {
+    status(value) { status = value; return this; }, json(value) { response = value; },
+  });
+  assert.equal(status, 409);
+  assert.match(response.message, /下架/);
 });
 
 test('completing a booking atomically redeems its reserved coupon', async () => {
@@ -3800,6 +3864,10 @@ test('merchant staff contract accepts roleId and rejects the removed role field'
   let draftedStaff;
   registerMerchantRoutes(app, {
     Salon: { async findOne() { return salon; } },
+    validateSalonStaffIds: async (_salon, _staff, allowPending) => {
+      assert.equal(allowPending, true);
+      return '';
+    },
     applyDirectSalonContent: async () => {},
     buildContentDraft: async (_salon, payload) => {
       draftedStaff = payload.staff;

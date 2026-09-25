@@ -168,6 +168,7 @@ const acceptedBookingAtTimeQuery = (staffId, startTime, bookingId) => ({
 });
 
 const buildMerchantBookingScope = (salonId, staffIds = []) => ({
+  salonId,
   $or: [
     { staffId: { $in: staffIds }, status: { $in: ['pending', 'accepted'] } },
     { salonId, staffId: '' },

@@ -300,6 +300,7 @@ const stripSensitiveSalonFields = (salon = {}) => {
     contentReviewStatus,
     contentRejectReason,
     contentReviewedAt,
+    bookingCreationFence,
     ...publicSalon
   } = salon || {};
   return publicSalon;

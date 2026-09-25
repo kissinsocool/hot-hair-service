@@ -3,6 +3,23 @@ const test = require('node:test');
 const registerMerchantRoutes = require('./merchant');
 const bookingService = require('../services/booking');
 
+test('merchant booking reason is bounded before accessing booking data', async () => {
+  let handler;
+  const app = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map(method => [
+    method,
+    (path, ...handlers) => {
+      if (method === 'patch' && path === '/api/merchant/bookings/:id') handler = handlers.at(-1);
+    },
+  ]));
+  registerMerchantRoutes(app, { rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] } });
+  for (const reason of ['x'.repeat(501), { nested: 'value' }]) {
+    const response = { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(value) { this.body = value; } };
+    await handler({ body: { action: 'reject', reason } }, response);
+    assert.equal(response.statusCode, 400);
+    assert.match(response.body.message, /reason/);
+  }
+});
+
 test('merchant rescheduling updates the booking without creating a user message', async () => {
   const routes = new Map();
   const app = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map(method => [

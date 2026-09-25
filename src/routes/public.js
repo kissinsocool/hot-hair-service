@@ -68,42 +68,69 @@ module.exports = (app, ctx) => {
     if (sort === 'distance' && !userLocation) {
       return res.status(400).json({ message: 'latitude and longitude are required' });
     }
-    const salons = await Salon.find({
-      publishStatus: 'online',
-      services: { $elemMatch: { promotionEnabled: true, promotionReviewStatus: 'approved', tagIds: tagId } },
-    }).select('id services location geoLocation updatedAt').sort({ updatedAt: -1, _id: -1 }).lean();
-    // ponytail: paginate after flattening; move this to aggregation if promoted galleries become large.
-    const images = salons.flatMap(salon => (salon.services || []).flatMap(service => {
-      if (service.promotionEnabled !== true
-        || service.promotionReviewStatus !== 'approved'
-        || !(service.tagIds || []).includes(tagId)) return [];
-      const imageUrls = Array.isArray(service.imageUrls) && service.imageUrls.length
-        ? service.imageUrls
-        : [service.imageUrl].filter(Boolean);
-      const salonLocation = userLocation ? getCoordinates(salon.location || salon.geoLocation) : null;
-      const distanceKm = userLocation && salonLocation
-        ? calculateDistanceKm(userLocation, salonLocation)
-        : Infinity;
-      const publishedAt = new Date(service.promotionReviewedAt || salon.updatedAt || 0).getTime();
-      return imageUrls.map((imageUrl, imageIndex) => ({
-        id: `${salon.id}:${service.id}:${imageIndex}`,
-        salonId: salon.id,
-        serviceId: service.id,
-        imageUrl: publicImageUrl(imageUrl),
-        distanceKm,
-        publishedAt,
-        imageIndex,
-      }));
+    const pipeline = [
+      { $match: {
+        publishStatus: 'online',
+        services: { $elemMatch: { promotionEnabled: true, promotionReviewStatus: 'approved', tagIds: tagId } },
+      } },
+      { $unwind: '$services' },
+      { $match: {
+        'services.promotionEnabled': true,
+        'services.promotionReviewStatus': 'approved',
+        'services.tagIds': tagId,
+      } },
+      { $project: {
+        salonId: '$id',
+        serviceId: '$services.id',
+        imageUrls: { $cond: [
+          { $gt: [{ $size: { $ifNull: ['$services.imageUrls', []] } }, 0] },
+          '$services.imageUrls',
+          ['$services.imageUrl'],
+        ] },
+        publishedAt: { $ifNull: ['$services.promotionReviewedAt', { $ifNull: ['$updatedAt', new Date(0)] }] },
+        location: 1,
+        geoLocation: 1,
+      } },
+      { $unwind: { path: '$imageUrls', includeArrayIndex: 'imageIndex' } },
+      { $match: { imageUrls: { $nin: ['', null] } } },
+    ];
+    if (sort === 'distance') {
+      const lat = { $ifNull: ['$location.latitude', { $arrayElemAt: ['$geoLocation.coordinates', 1] }] };
+      const lon = { $ifNull: ['$location.longitude', { $arrayElemAt: ['$geoLocation.coordinates', 0] }] };
+      const radians = value => ({ $degreesToRadians: value });
+      const cosine = { $add: [
+        { $multiply: [{ $sin: radians(userLocation.latitude) }, { $sin: radians(lat) }] },
+        { $multiply: [{ $cos: radians(userLocation.latitude) }, { $cos: radians(lat) },
+          { $cos: radians({ $subtract: [lon, userLocation.longitude] }) }] },
+      ] };
+      pipeline.push({ $set: { distanceKm: { $cond: [
+        { $and: [{ $ne: [lat, null] }, { $ne: [lon, null] }] },
+        { $multiply: [6371, { $acos: { $min: [1, { $max: [-1, cosine] }] } }] },
+        1e12,
+      ] } } });
+    }
+    pipeline.push(
+      { $sort: { ...(sort === 'distance' ? { distanceKm: 1 } : {}), publishedAt: -1,
+        salonId: 1, serviceId: 1, imageIndex: 1 } },
+      { $facet: {
+        items: [
+          { $skip: pagination.skip },
+          { $limit: pagination.limit },
+          { $project: { _id: 0, salonId: 1, serviceId: 1, imageUrl: '$imageUrls', imageIndex: 1 } },
+        ],
+        total: [{ $count: 'count' }],
+      } },
+    );
+    const [gallery] = await Salon.aggregate(pipeline).option({ maxTimeMS: 5000, allowDiskUse: true });
+    const images = (gallery?.items || []).map(image => ({
+      id: `${image.salonId}:${image.serviceId}:${image.imageIndex}`,
+      salonId: image.salonId,
+      serviceId: image.serviceId,
+      imageUrl: publicImageUrl(image.imageUrl),
     }));
-    images.sort((left, right) => (sort === 'distance' ? left.distanceKm - right.distanceKm : 0)
-      || right.publishedAt - left.publishedAt
-      || String(left.salonId).localeCompare(String(right.salonId))
-      || String(left.serviceId).localeCompare(String(right.serviceId))
-      || left.imageIndex - right.imageIndex);
-    const publicImages = images.map(({ distanceKm, publishedAt, imageIndex, ...image }) => image);
-    setPaginationHeaders(res, pagination, images.length);
+    setPaginationHeaders(res, pagination, gallery?.total?.[0]?.count || 0);
     res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
-    res.json(publicImages.slice(pagination.skip, pagination.skip + pagination.limit));
+    res.json(images);
   });
 
   app.get('/api/salons', ...rateLimits.publicRead, async (req, res) => {

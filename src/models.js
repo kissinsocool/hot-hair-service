@@ -261,6 +261,7 @@ const salonSchema = new mongoose.Schema({
   staffIds: [String],
   services: [serviceSchema],
   publishStatus: { type: String, default: 'online', index: true },
+  bookingCreationFence: { type: Number, default: 0, select: false },
   licenseUrl: { type: String, default: '' },
   legalPersonIdFrontUrl: { type: String, default: '' },
   legalPersonIdBackUrl: { type: String, default: '' },

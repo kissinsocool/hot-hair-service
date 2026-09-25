@@ -27,6 +27,7 @@ module.exports = (app, ctx) => {
     buildMerchantBookingScope,
     buildContentDraft,
     applyDirectSalonContent,
+    validateSalonStaffIds,
     hasReviewableContentChanges,
     saveBase64Image,
     verifyModeratedImageObjects,
@@ -261,6 +262,10 @@ module.exports = (app, ctx) => {
     const payload = req.body || {};
     const validationError = validateSalonContent(payload, INPUT_LIMITS);
     if (validationError) return res.status(400).json({ message: validationError });
+    if (Array.isArray(payload.staff)) {
+      const staffError = await validateSalonStaffIds(salon, payload.staff, true);
+      if (staffError) return res.status(409).json({ message: staffError });
+    }
 
     const draft = await buildContentDraft(salon, payload, await buildSalonDetail(salon));
     await applyDirectSalonContent(salon, payload);
@@ -342,6 +347,9 @@ module.exports = (app, ctx) => {
   
   app.patch('/api/merchant/bookings/:id', ...rateLimits.merchantBooking, async (req, res) => {
     const { action, reason = '', assignedStaffId = '', startTime } = req.body;
+    if (typeof reason !== 'string' || reason.length > 500) {
+      return res.status(400).json({ message: 'reason must be a string of at most 500 characters' });
+    }
     const merchantSalon = await Salon.findOne({ id: req.merchantUser.salonId })
       .select('staffIds openingHours weeklyClosedDays closedDates')
       .lean();
