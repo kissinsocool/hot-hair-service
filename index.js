@@ -92,6 +92,7 @@ const {
   userIdAliases,
 } = authDomain;
 const { sendBookingAcceptedNotification } = require('./src/services/wechat-subscriptions');
+const { completeDueBookings } = require('./src/services/auto-complete-bookings');
 
 const app = express();
 const server = http.createServer(app);
@@ -1466,6 +1467,24 @@ const startServer = async () => {
   server.listen(PORT, listenHost, () => {
     console.log(`Backend running at http://localhost:${PORT}`);
   });
+
+  let completingBookings = false;
+  const runBookingCompletion = async () => {
+    if (completingBookings) return;
+    completingBookings = true;
+    try {
+      await completeDueBookings({
+        mongoose, Booking, BookingMessage, SlotOccupancy, UserCoupon,
+        AnalyticsEvent, broadcastBookingEvent,
+      });
+    } catch (error) {
+      console.error('Automatic booking completion failed:', error);
+    } finally {
+      completingBookings = false;
+    }
+  };
+  void runBookingCompletion();
+  setInterval(runBookingCompletion, 60 * 1000).unref();
 };
 
 if (require.main === module) {

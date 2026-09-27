@@ -179,6 +179,7 @@ const bookingSchema = new mongoose.Schema({
 }, { id: false });
 
 bookingSchema.index({ staffId: 1, startTime: 1, status: 1 });
+bookingSchema.index({ status: 1, startTime: 1 });
 bookingSchema.index({ salonId: 1, createdAt: -1 });
 bookingSchema.index({ salonId: 1, status: 1, createdAt: -1 });
 bookingSchema.index({ salonId: 1, startTime: 1, status: 1 });
