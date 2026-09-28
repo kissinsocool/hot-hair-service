@@ -3513,6 +3513,10 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
   let messageCreate;
   let salonStatus = 'online';
   let onlineInTransaction = true;
+  let serviceTags = [];
+  let legacyServiceTags = [];
+  let staffFeeFen = 0;
+  let minimumSpendFen = 9900;
   class Booking {
     constructor(value) { Object.assign(this, value); }
     async save(options) {
@@ -3537,7 +3541,7 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
           id: 'coupon-1',
           code: 'ABCD-EFGH-IJKL',
           title: '满99减20',
-          minimumSpendFen: 9900,
+          minimumSpendFen,
           discountFen: 2000,
         };
       },
@@ -3563,7 +3567,7 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
     normalizeUserId: value => value,
     userIdAliases: value => [value],
     getStaffById() {
-      return { async lean() { return { id: 'staff-1', name: 'Stylist', extraServiceFeeFen: 0 }; } };
+      return { async lean() { return { id: 'staff-1', name: 'Stylist', extraServiceFeeFen: staffFeeFen }; } };
     },
     getSalonByStaffId() {
       return {
@@ -3576,6 +3580,8 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
             services: [{
               id: 'service-1',
               name: 'Cut',
+              tagIds: serviceTags,
+              tags: legacyServiceTags,
               priceFen: 12000,
               durationMinutes: 60,
             }],
@@ -3626,6 +3632,48 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
   assert.equal(messageCreate[0][0].type, 'created');
   assert.equal(messageCreate[1].session, session);
   assert.equal(response.booking.id, '12345678');
+
+  // Replay the released mini-program's request: the server owns all price fields.
+  const pricingRequest = {
+    clientUser: { id: 'user-1', displayName: 'User' },
+    body: {
+      salonId: 'salon-1', staffId: 'staff-1', serviceId: 'service-1',
+      startTime: '2030-01-01T10:00:00.000+08:00', couponId: 'coupon-1',
+    },
+  };
+  const pricingResponse = {
+    status(value) { status = value; return this; }, json(value) { response = value; },
+  };
+  staffFeeFen = 2000;
+  for (const tags of [
+    ['wash_cut_blow'], ['color'], ['perm'], ['scalp_care'], ['care'], ['nutrition'],
+    ['wash_cut_blow', 'color'], ['color', 'scalp_care'], [],
+  ]) {
+    serviceTags = tags;
+    const expectedFee = tags.length === 0 || tags.join() === 'wash_cut_blow' ? 2000 : 0;
+    await routes.get('/api/bookings')(pricingRequest, pricingResponse);
+    assert.equal(status, 201);
+    assert.equal(savedBooking.staffExtraServiceFeeFen, expectedFee, tags.join());
+    assert.equal(response.booking.originalAmountFen, 12000 + expectedFee);
+    assert.equal(response.booking.payableAmountFen, 10000 + expectedFee);
+  }
+  for (const tag of ['染发', '烫发', '头皮护理', '护理', '营养']) {
+    serviceTags = [];
+    legacyServiceTags = [tag];
+    await routes.get('/api/bookings')(pricingRequest, pricingResponse);
+    assert.equal(status, 201);
+    assert.equal(response.booking.staffExtraServiceFeeFen, 0, `Legacy tag: ${tag}`);
+    assert.equal(response.booking.originalAmountFen, 12000);
+  }
+  legacyServiceTags = [];
+  minimumSpendFen = 13000;
+  serviceTags = ['color'];
+  await routes.get('/api/bookings')(pricingRequest, pricingResponse);
+  assert.equal(status, 409, 'Package-only price must not qualify using the staff surcharge');
+  serviceTags = ['wash_cut_blow'];
+  await routes.get('/api/bookings')(pricingRequest, pricingResponse);
+  assert.equal(status, 201);
+  assert.equal(savedBooking.payableAmountFen, 12000);
 
   const request = {
     clientUser: { id: 'user-1', displayName: 'User' },

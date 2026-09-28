@@ -1,6 +1,6 @@
 const bookingService = require('../services/booking');
 const bookingMessages = require('../services/booking-messages');
-const { normalizeReviewTags } = require('../services/salon');
+const { normalizeReviewTags, resolveServiceTagIds } = require('../services/salon');
 const { bookingEvent, recordAnalyticsEvent } = require('../services/analytics');
 const {
   generateBookingId,
@@ -488,7 +488,10 @@ module.exports = (app, ctx) => {
     const now = new Date().toISOString();
     const servicePriceFen = service.priceFen;
     const serviceDurationMinutes = service.durationMinutes;
-    const staffExtraServiceFeeFen = isNoPreference
+    // Color, perm and care packages include the stylist's service fee.
+    const isPackagePricedService = resolveServiceTagIds(service)
+      .some(id => ['color', 'perm', 'scalp_care', 'care', 'nutrition'].includes(id));
+    const staffExtraServiceFeeFen = isNoPreference || isPackagePricedService
       ? 0
       : staffMember.extraServiceFeeFen;
     const originalAmountFen = servicePriceFen + staffExtraServiceFeeFen;
