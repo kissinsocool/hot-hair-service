@@ -61,6 +61,9 @@ module.exports = (app, ctx) => {
   app.get('/api/salons/promoted-services', ...rateLimits.publicRead, async (req, res) => {
     const tagId = PROMOTION_CATEGORY_TAG_IDS[String(req.query.category || '')];
     if (!tagId) return res.status(400).json({ message: '分类不存在' });
+    const tagFilter = req.query.category === 'women-cut'
+      ? { $all: ['wash_cut_blow', 'women'], $nin: ['perm', 'color', 'curly', 'straight'] }
+      : tagId;
 
     const pagination = normalizePagination(req.query);
     const sort = req.query.sort === 'distance' ? 'distance' : 'latest';
@@ -71,13 +74,13 @@ module.exports = (app, ctx) => {
     const pipeline = [
       { $match: {
         publishStatus: 'online',
-        services: { $elemMatch: { promotionEnabled: true, promotionReviewStatus: 'approved', tagIds: tagId } },
+        services: { $elemMatch: { promotionEnabled: true, promotionReviewStatus: 'approved', tagIds: tagFilter } },
       } },
       { $unwind: '$services' },
       { $match: {
         'services.promotionEnabled': true,
         'services.promotionReviewStatus': 'approved',
-        'services.tagIds': tagId,
+        'services.tagIds': tagFilter,
       } },
       { $project: {
         salonId: '$id',

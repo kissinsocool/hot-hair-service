@@ -1056,6 +1056,51 @@ test('promoted service gallery returns only the requested approved live category
   }]);
 });
 
+test('women-cut gallery requires wash-cut-blow and women tags and excludes perm, color, curly and straight', async () => {
+  const routes = new Map();
+  let pipeline;
+  registerPublicRoutes({
+    get(path, ...handlers) { routes.set(path, handlers.at(-1)); },
+  }, {
+    Salon: {
+      aggregate(value) {
+        pipeline = value;
+        return { async option() { return [{ items: [], total: [] }]; } };
+      },
+    },
+    rateLimits: { publicRead: [] },
+    normalizePagination,
+    getCoordinates,
+    setPaginationHeaders() {},
+  });
+
+  for (const query of [
+    { category: 'women-cut', sort: 'latest', page: '1', limit: '30' },
+    { category: 'women-cut', sort: 'distance', latitude: '39.9', longitude: '116.4', page: '2', limit: '30' },
+  ]) {
+    await routes.get('/api/salons/promoted-services')(
+      { query },
+      { set() {}, json() {} },
+    );
+    const tagFilter = {
+      $all: ['wash_cut_blow', 'women'],
+      $nin: ['perm', 'color', 'curly', 'straight'],
+    };
+    // Filter the same service both before and after unwind so sibling packages cannot leak in.
+    assert.deepEqual(pipeline[0].$match, {
+      publishStatus: 'online',
+      services: { $elemMatch: {
+        promotionEnabled: true, promotionReviewStatus: 'approved', tagIds: tagFilter,
+      } },
+    });
+    assert.deepEqual(pipeline[2].$match, {
+      'services.promotionEnabled': true,
+      'services.promotionReviewStatus': 'approved',
+      'services.tagIds': tagFilter,
+    });
+  }
+});
+
 test('promoted service gallery sorts by publish time or distance before pagination', async () => {
   const routes = new Map();
   const app = {
