@@ -430,6 +430,8 @@ test('service, review, complaint and pending content use child schemas instead o
   assert.ok(Salon.schema.path('services').schema);
   assert.ok(Salon.schema.path('pendingContent').schema);
   assert.equal(Salon.schema.path('contentSubmittedAt').instance, 'Date');
+  assert.equal(Salon.schema.path('afterSalesPolicyIds').instance, 'Array');
+  assert.equal(Salon.schema.path('pendingContent').schema.path('afterSalesPolicyIds').instance, 'Array');
   assert.ok(Booking.schema.path('review').schema);
   assert.ok(Booking.schema.path('complaint').schema);
   assert.equal(Salon.schema.path('services').schema.path('priceFen').instance, 'Number');
@@ -486,7 +488,7 @@ test('public salon details share a bounded short-lived cache entry', async () =>
   clearPublicSalonDetailCache();
 });
 
-test('public salon details fold weekly closures into the existing closedDates contract', async () => {
+test('public salon details expose weekly closures and fold them into closedDates', async () => {
   clearPublicSalonDetailCache();
   const now = Date.parse('2026-07-20T01:00:00Z');
   const result = await buildPublicSalonDetail(
@@ -495,12 +497,14 @@ test('public salon details fold weekly closures into the existing closedDates co
       updatedAt: new Date('2026-07-19T00:00:00Z'),
       closedDates: ['2026-07-25'],
       weeklyClosedDays: [1, 3],
+      afterSalesPolicyIds: ['haircut_7_day_adjustment'],
     },
     async salon => salon,
     now,
   );
 
-  assert.equal(Object.hasOwn(result, 'weeklyClosedDays'), false);
+  assert.deepEqual(result.weeklyClosedDays, [1, 3]);
+  assert.deepEqual(result.afterSalesPolicyIds, ['haircut_7_day_adjustment']);
   assert.deepEqual(result.closedDates.slice(0, 3), ['2026-07-20', '2026-07-22', '2026-07-25']);
   clearPublicSalonDetailCache();
 });
@@ -2374,6 +2378,7 @@ test('merchant salon route publishes weekly and exceptional closures without rev
     images: ['approved.jpg', 'second.jpg'],
     promoImages: ['approved.jpg', 'second.jpg'],
     weeklyClosedDays: [],
+    afterSalesPolicyIds: [],
     services: [],
     staffIds: [],
     contentReviewStatus: 'pending',
@@ -2404,6 +2409,7 @@ test('merchant salon route publishes weekly and exceptional closures without rev
     openingHours: salon.openingHours,
     acceptsSameDayBooking: salon.acceptsSameDayBooking,
     weeklyClosedDays: [...salon.weeklyClosedDays],
+    afterSalesPolicyIds: [...salon.afterSalesPolicyIds],
     closedDates: [...salon.closedDates],
     phone: salon.phone,
     services: salon.services.map(service => service.toObject()),
@@ -2426,12 +2432,26 @@ test('merchant salon route publishes weekly and exceptional closures without rev
 
   let response;
   try {
+    let invalidStatus;
+    await routes.get('/api/merchant/salon')(
+      {
+        merchantUser: { salonId: salon.id },
+        body: { ...livePayload(), afterSalesPolicyIds: ['unsupported-policy'] },
+      },
+      {
+        status(value) { invalidStatus = value; return this; },
+        json() {},
+      },
+    );
+    assert.equal(invalidStatus, 400);
+
     await routes.get('/api/merchant/salon')(
       {
         merchantUser: { salonId: salon.id },
         body: {
           ...livePayload(),
           weeklyClosedDays: [1, 3],
+          afterSalesPolicyIds: ['haircut_7_day_adjustment', 'color_perm_15_day_redo'],
           closedDates: ['2026-09-15'],
           images: ['second.jpg', 'approved.jpg'],
           promoImages: ['second.jpg', 'approved.jpg'],
@@ -2446,6 +2466,7 @@ test('merchant salon route publishes weekly and exceptional closures without rev
   assert.equal(salon.pendingContent, undefined);
   assert.equal(salon.contentReviewStatus, 'approved');
   assert.deepEqual(salon.weeklyClosedDays, [1, 3]);
+  assert.deepEqual(salon.afterSalesPolicyIds, ['haircut_7_day_adjustment', 'color_perm_15_day_redo']);
   assert.deepEqual(salon.closedDates, ['2026-09-15']);
   assert.deepEqual(response.promoImages, ['second.jpg', 'approved.jpg']);
 });

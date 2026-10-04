@@ -166,7 +166,7 @@ module.exports = (app, ctx) => {
       'X-Has-More': String(hasMore),
     });
     res.json(await Promise.all(salonList.map(async (s) => {
-      const { fullDescription, openingHours, weeklyClosedDays, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(s);
+      const { fullDescription, openingHours, weeklyClosedDays, afterSalesPolicyIds, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(s);
       const images = await existingSalonImages(s);
       return {
         ...basic,
@@ -193,7 +193,7 @@ module.exports = (app, ctx) => {
       const distanceKm = userLocation && coordinates
         ? Number(calculateDistanceKm(userLocation, coordinates).toFixed(2))
         : undefined;
-      const { fullDescription, openingHours, weeklyClosedDays, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(salon);
+      const { fullDescription, openingHours, weeklyClosedDays, afterSalesPolicyIds, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(salon);
       const images = await existingSalonImages(salon);
       return {
         ...basic,

@@ -659,6 +659,13 @@ module.exports = (app, ctx) => {
 };
 
 function validateSalonContent(payload = {}, limits) {
+  if (payload.afterSalesPolicyIds !== undefined && (
+    !Array.isArray(payload.afterSalesPolicyIds)
+    || payload.afterSalesPolicyIds.some(id => typeof id !== 'string' || !salonService.AFTER_SALES_POLICY_IDS.includes(id))
+    || new Set(payload.afterSalesPolicyIds).size !== payload.afterSalesPolicyIds.length
+  )) {
+    return 'afterSalesPolicyIds must contain unique supported IDs';
+  }
   if (payload.acceptsSameDayBooking !== undefined && typeof payload.acceptsSameDayBooking !== 'boolean') {
     return 'acceptsSameDayBooking must be a boolean';
   }
@@ -675,6 +682,7 @@ function validateSalonContent(payload = {}, limits) {
     ['promoImages', 20],
     ['closedDates', limits.closedDates],
     ['weeklyClosedDays', 7],
+    ['afterSalesPolicyIds', salonService.AFTER_SALES_POLICY_IDS.length],
   ];
   for (const [field, max] of arrays) {
     if (Array.isArray(payload[field]) && payload[field].length > max) return `${field} cannot exceed ${max} items`;

@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 const { DEMO_USER_ID } = require('./config');
-const { STAFF_ROLE_IDS } = require('./services/salon');
+const { AFTER_SALES_POLICY_IDS, STAFF_ROLE_IDS } = require('./services/salon');
 
 const integer = (minimum = 0) => ({
   type: Number,
@@ -122,6 +122,7 @@ const pendingContentSchema = new mongoose.Schema({
   location: { type: locationSchema, default: undefined },
   description: String,
   fullDescription: String,
+  afterSalesPolicyIds: [{ type: String, enum: AFTER_SALES_POLICY_IDS }],
   image: String,
   images: [String],
   promoImages: [String],
@@ -253,6 +254,7 @@ const salonSchema = new mongoose.Schema({
   promoImages: [String],
   description: String,
   fullDescription: String,
+  afterSalesPolicyIds: [{ type: String, enum: AFTER_SALES_POLICY_IDS }],
   tags: { type: [String], default: [] },
   openingHours: String,
   acceptsSameDayBooking: { type: Boolean, default: true },

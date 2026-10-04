@@ -3,6 +3,11 @@ const { publicImageUrl } = require('../images');
 const PUBLIC_STAFF_REVIEWS_LIMIT = 50;
 const PUBLIC_SALON_CACHE_TTL_MS = 15_000;
 const PUBLIC_SALON_CACHE_MAX = 100;
+const AFTER_SALES_POLICY_IDS = Object.freeze([
+  'haircut_7_day_adjustment',
+  'color_perm_15_day_redo',
+]);
+const AFTER_SALES_POLICY_ID_SET = new Set(AFTER_SALES_POLICY_IDS);
 const SERVICE_TAG_IDS = Object.freeze([
   'wash_cut_blow',
   'color',
@@ -116,6 +121,12 @@ const calculateDistanceKm = (from, to) => {
 
 const normalizeServiceTagIds = tagIds => Array.isArray(tagIds)
   ? [...new Set(tagIds.map(id => String(id || '').trim()).filter(id => SERVICE_TAG_ID_SET.has(id)))].slice(0, 4)
+  : [];
+
+const normalizeAfterSalesPolicyIds = policyIds => Array.isArray(policyIds)
+  ? [...new Set(policyIds
+    .map(id => String(id || '').trim())
+    .filter(id => AFTER_SALES_POLICY_ID_SET.has(id)))]
   : [];
 
 const serviceTagIdsFromLegacy = tags => Array.isArray(tags)
@@ -332,6 +343,7 @@ const buildPublicSalonDetail = async (salonDocument, builder, now = Date.now()) 
 const clearPublicSalonDetailCache = () => publicSalonDetailCache.clear();
 
 module.exports = {
+  AFTER_SALES_POLICY_IDS,
   buildGeoLocation,
   buildPublicSalonDetail,
   buildSalonImageList,
@@ -341,6 +353,7 @@ module.exports = {
   getCoordinates,
   groupReviewsByStaff,
   normalizeSalonTags,
+  normalizeAfterSalesPolicyIds,
   normalizeReviewTags,
   normalizeServiceTagIds,
   normalizeDocument,

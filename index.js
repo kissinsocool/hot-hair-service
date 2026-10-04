@@ -786,9 +786,9 @@ const buildPublicSalonDetail = (salonDocument, builder = buildSalonDetail, now =
   salonDomain.buildPublicSalonDetail(salonDocument, async document => {
     const detail = await builder(document);
     if (detail.closedDates === undefined && detail.weeklyClosedDays === undefined) return detail;
-    const { weeklyClosedDays, ...publicDetail } = detail;
     return {
-      ...publicDetail,
+      ...detail,
+      weeklyClosedDays: normalizeWeeklyClosedDays(detail.weeklyClosedDays),
       closedDates: expandedSalonClosedDates(detail, new Date(now)),
     };
   }, now);
@@ -802,6 +802,7 @@ const contentFields = [
   'location',
   'description',
   'fullDescription',
+  'afterSalesPolicyIds',
   'image',
   'images',
   'promoImages',
@@ -815,6 +816,7 @@ const contentFields = [
 ];
 
 const normalizeSalonTags = salonDomain.normalizeSalonTags;
+const normalizeAfterSalesPolicyIds = salonDomain.normalizeAfterSalesPolicyIds;
 const normalizeServiceTagIds = salonDomain.normalizeServiceTagIds;
 
 const hasReviewableContentChanges = (current = {}, payload = {}) => {
@@ -858,6 +860,9 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
   };
   set('openingHours', typeof payload.openingHours === 'string' ? payload.openingHours : undefined);
   set('acceptsSameDayBooking', typeof payload.acceptsSameDayBooking === 'boolean' ? payload.acceptsSameDayBooking : undefined);
+  set('afterSalesPolicyIds', Array.isArray(payload.afterSalesPolicyIds)
+    ? normalizeAfterSalesPolicyIds(payload.afterSalesPolicyIds)
+    : undefined);
   set('weeklyClosedDays', Array.isArray(payload.weeklyClosedDays)
     ? normalizeWeeklyClosedDays(payload.weeklyClosedDays)
     : undefined);
@@ -961,6 +966,9 @@ const buildContentDraft = async (salon, payload, liveContent) => {
     : undefined);
   set('description', typeof payload.description === 'string' ? payload.description : undefined);
   set('fullDescription', typeof payload.fullDescription === 'string' ? payload.fullDescription : undefined);
+  set('afterSalesPolicyIds', Array.isArray(payload.afterSalesPolicyIds)
+    ? normalizeAfterSalesPolicyIds(payload.afterSalesPolicyIds)
+    : undefined);
   set('image', typeof payload.image === 'string' ? payload.image : undefined);
   set('openingHours', typeof payload.openingHours === 'string' ? payload.openingHours : undefined);
   set('acceptsSameDayBooking', typeof payload.acceptsSameDayBooking === 'boolean' ? payload.acceptsSameDayBooking : undefined);
@@ -1118,6 +1126,7 @@ const ensureSalonForMerchant = async ({ salonId, displayName }) => {
     tags: [],
     description: '',
     fullDescription: '',
+    afterSalesPolicyIds: [],
     openingHours: '10:00 - 20:00',
     acceptsSameDayBooking: true,
     weeklyClosedDays: [],
@@ -1524,6 +1533,7 @@ module.exports = {
   hasReviewableContentChanges,
   INPUT_LIMITS,
   normalizeSalonTags,
+  normalizeAfterSalesPolicyIds,
   normalizeServiceTagIds,
   normalizeClosedDates,
   ensureSalonForMerchant,
