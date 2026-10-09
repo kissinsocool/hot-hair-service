@@ -2451,7 +2451,7 @@ test('merchant salon route publishes weekly and exceptional closures without rev
         body: {
           ...livePayload(),
           weeklyClosedDays: [1, 3],
-          afterSalesPolicyIds: ['haircut_7_day_adjustment', 'color_perm_15_day_redo'],
+          afterSalesPolicyIds: ['haircut_7_day_adjustment', 'color_perm_15_day_redo', 'no_active_sales', 'unsatisfied_no_charge'],
           closedDates: ['2026-09-15'],
           images: ['second.jpg', 'approved.jpg'],
           promoImages: ['second.jpg', 'approved.jpg'],
@@ -2466,7 +2466,7 @@ test('merchant salon route publishes weekly and exceptional closures without rev
   assert.equal(salon.pendingContent, undefined);
   assert.equal(salon.contentReviewStatus, 'approved');
   assert.deepEqual(salon.weeklyClosedDays, [1, 3]);
-  assert.deepEqual(salon.afterSalesPolicyIds, ['haircut_7_day_adjustment', 'color_perm_15_day_redo']);
+  assert.deepEqual(salon.afterSalesPolicyIds, ['haircut_7_day_adjustment', 'color_perm_15_day_redo', 'no_active_sales', 'unsatisfied_no_charge']);
   assert.deepEqual(salon.closedDates, ['2026-09-15']);
   assert.deepEqual(response.promoImages, ['second.jpg', 'approved.jpg']);
 });
