@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+region=${OSS_REGION:-cn-beijing}
+ossutil=${OSSUTIL_BIN:-/usr/local/bin/ossutil-v2}
+oss_config=${OSSUTIL_CONFIG:-/root/.ossutilconfig}
+
+bucket_for_domain() {
+  case "$1" in
+    oss.hothaircc.cn) printf 'hothairapp' ;;
+    media.hothaircc.cn) printf 'hothairmedia' ;;
+    *) return 1 ;;
+  esac
+}
+
+object_uri() {
+  domain=${CERTBOT_DOMAIN:?}
+  bucket=$(bucket_for_domain "$domain")
+  [[ "${CERTBOT_TOKEN:-}" =~ ^[A-Za-z0-9_-]+$ ]]
+  printf 'oss://%s/.well-known/acme-challenge/%s' "$bucket" "$CERTBOT_TOKEN"
+}
+
+case "${1:-}" in
+  auth)
+    : "${CERTBOT_VALIDATION:?}"
+    tmp=$(mktemp)
+    trap 'rm -f "$tmp"' EXIT
+    printf '%s' "$CERTBOT_VALIDATION" >"$tmp"
+    "$ossutil" cp "$tmp" "$(object_uri)" -f --region "$region" \
+      --content-type text/plain --cache-control no-store -c "$oss_config"
+    ;;
+  cleanup)
+    "$ossutil" rm "$(object_uri)" -f --region "$region" -c "$oss_config" || true
+    ;;
+  deploy)
+    renewed_lineage=${RENEWED_LINEAGE:?}
+    domain=$(basename "$renewed_lineage")
+    bucket=$(bucket_for_domain "$domain")
+    lineage="/etc/letsencrypt/live/$domain"
+    [[ "$renewed_lineage" == "$lineage" ]]
+
+    umask 077
+    cert_xml=$(mktemp)
+    trap 'rm -f "$cert_xml"' EXIT
+    {
+      printf '%s\n' "<BucketCnameConfiguration><Cname><Domain>$domain</Domain><CertificateConfiguration><Certificate>"
+      cat "$lineage/fullchain.pem"
+      printf '%s\n' '</Certificate><PrivateKey>'
+      cat "$lineage/privkey.pem"
+      printf '%s\n' '</PrivateKey><Force>true</Force></CertificateConfiguration></Cname></BucketCnameConfiguration>'
+    } >"$cert_xml"
+    "$ossutil" api put-cname --bucket "$bucket" \
+      --cname-configuration "file://$cert_xml" --region "$region" -c "$oss_config"
+    ;;
+  *)
+    echo "usage: $0 {auth|cleanup|deploy}" >&2
+    exit 2
+    ;;
+esac

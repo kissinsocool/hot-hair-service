@@ -1,8 +1,11 @@
 node_modules/
 uploads/
+image-cache/
+.playwright-cli/
 .env
 *.log
 .DS_Store
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+PROJECT_HANDOFF.md
