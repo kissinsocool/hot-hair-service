@@ -8,6 +8,7 @@ const AFTER_SALES_POLICY_IDS = Object.freeze([
   'color_perm_15_day_redo',
   'no_active_sales',
   'unsatisfied_no_charge',
+  'no_hidden_charges',
 ]);
 const AFTER_SALES_POLICY_ID_SET = new Set(AFTER_SALES_POLICY_IDS);
 const SERVICE_TAG_IDS = Object.freeze([
