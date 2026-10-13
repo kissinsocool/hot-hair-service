@@ -5,6 +5,7 @@ const MAX_IMAGE_URL_LENGTH = 2048;
 const validatePostInput = (payload = {}) => {
   const content = String(payload.content || '').trim();
   const authorStaffId = String(payload.authorStaffId || '').trim();
+  const serviceId = String(payload.serviceId || '').trim();
   const imageUrls = Array.isArray(payload.imageUrls)
     ? [...new Set(payload.imageUrls.map(value => String(value || '').trim()).filter(Boolean))]
     : [];
@@ -16,7 +17,7 @@ const validatePostInput = (payload = {}) => {
   if (imageUrls.some(url => url.length > MAX_IMAGE_URL_LENGTH || !/^https:\/\//i.test(url))) {
     return { error: '动态图片地址无效' };
   }
-  return { value: { authorStaffId, content, imageUrls } };
+  return { value: { authorStaffId, content, imageUrls, serviceId } };
 };
 
 const postPayload = (post, publicImageUrl = value => value) => ({
@@ -27,6 +28,8 @@ const postPayload = (post, publicImageUrl = value => value) => ({
   authorRoleId: post.authorRoleId,
   authorImageUrl: publicImageUrl(post.authorImageUrl || ''),
   content: post.content,
+  serviceId: post.serviceId || '',
+  serviceName: post.serviceName || '',
   imageUrls: (post.imageUrls || []).map(publicImageUrl).filter(Boolean),
   reviewStatus: post.reviewStatus || 'pending',
   reviewedAt: post.reviewedAt,

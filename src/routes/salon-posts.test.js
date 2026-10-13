@@ -24,11 +24,14 @@ test('salon post input keeps the actual merchant contract bounded', () => {
     authorStaffId: ' staff-1 ',
     content: ' 新发型 ',
     imageUrls: ['https://example.com/1.jpg', 'https://example.com/1.jpg'],
+    serviceId: ' service-1 ',
   }).value, {
     authorStaffId: 'staff-1',
     content: '新发型',
     imageUrls: ['https://example.com/1.jpg'],
+    serviceId: 'service-1',
   });
+  assert.equal(validatePostInput({ authorStaffId: 'staff-1', content: '旧客户端', imageUrls: [] }).value.serviceId, '');
 });
 
 test('merchant can publish only as a staff member from the same salon', async () => {
@@ -42,7 +45,9 @@ test('merchant can publish only as a staff member from the same salon', async ()
     rateLimits: new Proxy({}, { get: () => [] }),
     normalizePagination: () => ({ page: 1, limit: 20, skip: 0 }),
     Salon: {
-      findOne: () => ({ select: () => ({ lean: async () => ({ id: 'salon-1', staffIds: ['staff-1'] }) }) }),
+      findOne: () => ({ select: () => ({ lean: async () => ({
+        id: 'salon-1', staffIds: ['staff-1'], services: [{ id: 'service-1', name: '剪发套餐' }],
+      }) }) }),
     },
     getStaffById: id => ({ lean: async () => ({
       id,
@@ -66,13 +71,28 @@ test('merchant can publish only as a staff member from the same salon', async ()
   const res = response();
   await routes.get('post:/api/merchant/salon-posts')({
     merchantUser: { salonId: 'salon-1' },
-    body: { authorStaffId: 'staff-1', content: '今日作品', imageUrls: [] },
+    body: { authorStaffId: 'staff-1', content: '今日作品', imageUrls: [], serviceId: 'service-1' },
   }, res);
   assert.equal(res.statusCode, 201);
   assert.equal(created[0].authorName, '小林');
   assert.equal(created[0].salonId, 'salon-1');
   assert.equal(created[0].reviewStatus, 'pending');
+  assert.equal(created[0].serviceName, '剪发套餐');
   assert.equal(res.body.id, 'post-1');
+  const invalid = response();
+  await routes.get('post:/api/merchant/salon-posts')({
+    merchantUser: { salonId: 'salon-1' },
+    body: { authorStaffId: 'staff-1', content: '今日作品', imageUrls: [], serviceId: 'other-salon-service' },
+  }, invalid);
+  assert.equal(invalid.statusCode, 400);
+  assert.equal(created.length, 1);
+  const legacy = response();
+  await routes.get('post:/api/merchant/salon-posts')({
+    merchantUser: { salonId: 'salon-1' },
+    body: { authorStaffId: 'staff-1', content: '旧客户端动态', imageUrls: [] },
+  }, legacy);
+  assert.equal(legacy.statusCode, 201);
+  assert.equal(created[1].serviceId, '');
 });
 
 test('public salon posts are scoped to an online salon and paginated newest first', async () => {

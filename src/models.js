@@ -305,6 +305,8 @@ const salonPostSchema = new mongoose.Schema({
   authorRoleId: { type: String, enum: STAFF_ROLE_IDS, required: true },
   authorImageUrl: { type: String, default: '' },
   content: { type: String, required: true },
+  serviceId: { type: String, default: '' },
+  serviceName: { type: String, default: '' },
   imageUrls: { type: [String], default: [] },
   reviewStatus: {
     type: String,

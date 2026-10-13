@@ -312,10 +312,16 @@ module.exports = (app, ctx) => {
     const parsed = validateSalonPostInput(req.body);
     if (parsed.error) return res.status(400).json({ message: parsed.error });
     const salonId = req.merchantUser.salonId || '1';
-    const salon = await Salon.findOne({ id: salonId }).select('staffIds').lean();
+    const salon = await Salon.findOne({ id: salonId }).select('staffIds services').lean();
     if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
     if (!(salon.staffIds || []).map(String).includes(parsed.value.authorStaffId)) {
       return res.status(400).json({ message: '投稿人不属于该店铺' });
+    }
+    const service = parsed.value.serviceId
+      ? (salon.services || []).find(item => item.id === parsed.value.serviceId)
+      : null;
+    if (parsed.value.serviceId && !service) {
+      return res.status(400).json({ message: '关联套餐不属于该店铺' });
     }
     const author = await getStaffById(parsed.value.authorStaffId).lean();
     if (!author) return res.status(400).json({ message: '投稿人不存在' });
@@ -328,6 +334,8 @@ module.exports = (app, ctx) => {
       authorRoleId: author.roleId,
       authorImageUrl: author.imageUrl || '',
       content: parsed.value.content,
+      serviceId: service?.id || '',
+      serviceName: service?.name || '',
       imageUrls: parsed.value.imageUrls,
       reviewStatus: 'pending',
     });
