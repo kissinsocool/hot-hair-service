@@ -234,7 +234,7 @@ module.exports = (app, ctx) => {
         ...review,
         editStatus,
         imageKeys: review.imageUrls || [],
-        imageUrls: (review.imageUrls || []).map(privateImageUrl).filter(Boolean),
+        imageUrls: (review.imageUrls || []).map(url => privateImageUrl(url)).filter(Boolean),
         bookingId: booking.id,
         salonId: booking.salonId || '',
         salonName: booking.salonName || '',

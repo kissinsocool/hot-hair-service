@@ -431,6 +431,12 @@ module.exports = (app, ctx) => {
       return res.status(400).json({ message: `note cannot exceed ${INPUT_LIMITS.note} characters` });
     }
   
+    const hasExpectedPrice = req.body.expectedOriginalAmountFen !== undefined
+      || req.body.expectedPayableAmountFen !== undefined;
+    if (hasExpectedPrice && ['expectedOriginalAmountFen', 'expectedPayableAmountFen'].some(
+      key => !Number.isSafeInteger(req.body[key]) || req.body[key] < 0,
+    )) return res.status(400).json({ message: 'Expected booking amounts must be non-negative integer fen' });
+
     const requestedStartTime = bookingService.parseBookingTime(startTime);
     if (!requestedStartTime) {
       return res.status(400).json({ message: 'startTime must be a valid date time' });
@@ -495,6 +501,13 @@ module.exports = (app, ctx) => {
       ? 0
       : staffMember.extraServiceFeeFen;
     const originalAmountFen = servicePriceFen + staffExtraServiceFeeFen;
+    const priceChangedError = couponDiscountFen => Object.assign(
+      transactionError(409, '套餐价格或优惠已更新，请确认新金额后重新提交'),
+      { code: 'BOOKING_PRICE_CHANGED', quote: {
+        servicePriceFen, extraServiceFeeFen: staffExtraServiceFeeFen,
+        originalAmountFen, couponDiscountFen, payableAmountFen: originalAmountFen - couponDiscountFen,
+      } },
+    );
     let bookingId = '';
     for (let attempts = 0; attempts < 10 && !bookingId; attempts += 1) {
       const candidate = generateBookingId(crypto.randomInt);
@@ -551,11 +564,21 @@ module.exports = (app, ctx) => {
           }
           couponDiscountFen = couponDiscountForOrder(originalAmountFen, reservedCoupon);
           if (couponDiscountFen === null) {
+            if (hasExpectedPrice && req.body.expectedOriginalAmountFen !== originalAmountFen) {
+              throw priceChangedError(0);
+            }
             throw transactionError(
               409,
               `订单金额未满${(reservedCoupon.minimumSpendFen / 100).toFixed(0)}元`,
             );
           }
+        }
+        const payableAmountFen = originalAmountFen - couponDiscountFen;
+        if (hasExpectedPrice && (
+          req.body.expectedOriginalAmountFen !== originalAmountFen
+          || req.body.expectedPayableAmountFen !== payableAmountFen
+        )) {
+          throw priceChangedError(couponDiscountFen);
         }
         const created = new Booking({
           id: bookingId,
@@ -591,7 +614,10 @@ module.exports = (app, ctx) => {
         return created;
       });
     } catch (error) {
-      if (error.httpStatus) return res.status(error.httpStatus).json({ message: error.message });
+      if (error.httpStatus) return res.status(error.httpStatus).json({
+        message: error.message,
+        ...(error.code === 'BOOKING_PRICE_CHANGED' ? { code: error.code, quote: error.quote } : {}),
+      });
       if (isDuplicateSlotError(error)) {
         return res.status(409).json({ message: 'This time slot was just booked by another user' });
       }

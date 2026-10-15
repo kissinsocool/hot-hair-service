@@ -20,7 +20,7 @@ test('merchant booking reason is bounded before accessing booking data', async (
   }
 });
 
-test('merchant rescheduling updates the booking without creating a user message', async () => {
+test('merchant rescheduling atomically records the new time and a user message', async () => {
   const routes = new Map();
   const app = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map(method => [
     method,
@@ -90,8 +90,8 @@ test('merchant rescheduling updates the booking without creating a user message'
     { status() { return this; }, json(value) { response = value; } },
   );
 
-  assert.equal(messageCount, 0);
-  assert.equal(Object.hasOwn(bookingUpdate, 'userMessage'), false);
+  assert.equal(messageCount, 1);
+  assert.match(bookingUpdate.userMessage, /从 2030-01-01 10:00 改期至 2030-01-01 11:00/);
   assert.equal(bookingUpdate.startTime.toISOString(), '2030-01-01T03:00:00.000Z');
   assert.deepEqual(occupancyUpdate[1].$set.slots.map(slot => slot.toISOString()), [
     '2030-01-01T03:00:00.000Z', '2030-01-01T03:30:00.000Z',

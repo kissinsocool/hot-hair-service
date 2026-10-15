@@ -696,7 +696,7 @@ function userImageReviewItems(booking, privateImageUrl) {
   }
   const edit = booking.review?.pendingEdit;
   if (edit) {
-    const imageUrls = (edit.imageUrls || []).map(privateImageUrl).filter(Boolean);
+    const imageUrls = (edit.imageUrls || []).map(url => privateImageUrl(url)).filter(Boolean);
     items.push({
       id: `${booking.id}:reviewEdit`,
       bookingId: booking.id,

@@ -1176,7 +1176,7 @@ const readFavoriteSalons = async (userId) => {
   );
 };
 
-const generateSlotsForStaffAndDate = async (staffId, date, duration = 30, salonOverride) => {
+const generateSlotsForStaffAndDate = async (staffId, date, duration = 30, salonOverride, excludeBookingId = '') => {
   const salon = salonOverride || await getSalonByStaffId(staffId).lean();
   const times = generateHalfHourSlots(salon?.openingHours);
   if (isSalonClosedOnDate(salon, date)) {
@@ -1199,6 +1199,7 @@ const generateSlotsForStaffAndDate = async (staffId, date, duration = 30, salonO
   const [bookings, person] = await Promise.all([
     Booking.find({
       staffId,
+      ...(excludeBookingId ? { id: { $ne: excludeBookingId } } : {}),
       startTime: { $gte: dayStart, $lt: dayEnd },
       status: { $in: ['pending', 'accepted'] },
     }).select({ startTime: 1, serviceDurationMinutes: 1, _id: 0 }).lean(),
@@ -1236,7 +1237,7 @@ const generateSlotsForStaffAndDate = async (staffId, date, duration = 30, salonO
   });
 };
 
-const generateSlotsForNoPreferenceAndDate = async (salon, date, duration = 30) => {
+const generateSlotsForNoPreferenceAndDate = async (salon, date, duration = 30, excludeBookingId = '') => {
   if (isSalonClosedOnDate(salon, date)) {
     return generateHalfHourSlots(salon?.openingHours).map(time => ({
       time,
@@ -1258,6 +1259,7 @@ const generateSlotsForNoPreferenceAndDate = async (salon, date, duration = 30) =
   const [bookings, staffProfiles] = await Promise.all([
     Booking.find({
       staffId: { $in: staffIds },
+      ...(excludeBookingId ? { id: { $ne: excludeBookingId } } : {}),
       startTime: { $gte: dayStart, $lt: dayEnd },
       status: { $in: ['pending', 'accepted'] },
     }).select({ staffId: 1, startTime: 1, serviceDurationMinutes: 1, _id: 0 }).lean(),

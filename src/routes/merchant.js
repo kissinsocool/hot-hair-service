@@ -83,6 +83,73 @@ module.exports = (app, ctx) => {
   const reserveBookingSlot = (...args) => bookingService.reserveBookingSlot(SlotOccupancy, ...args);
   const runBookingTransaction = work => bookingService.runBookingTransaction(mongoose, work);
 
+  const merchantBookingQuery = async (req, ignoreStatuses = false) => {
+    const salon = await Salon.findOne({ id: req.merchantUser.salonId }).select('staffIds').lean();
+    const scope = buildMerchantBookingScope(req.merchantUser.salonId, salon?.staffIds || []);
+    const filters = [scope];
+    const { date, fromDate, toDate, includePending, staffId, statuses, status } = req.query;
+    let range;
+    if (fromDate !== undefined || toDate !== undefined) {
+      const from = bookingDayRange(fromDate);
+      const to = bookingDayRange(toDate);
+      if (!fromDate || !toDate || !from || !to || from.start >= to.start) {
+        throw transactionError(400, 'fromDate and toDate must be valid dates in ascending order');
+      }
+      range = { startTime: { $gte: from.start, $lt: to.start } };
+    } else if (date) {
+      const day = bookingDayRange(date);
+      if (!day) throw transactionError(400, 'date must use YYYY-MM-DD format');
+      range = { startTime: { $gte: day.start, $lt: day.end } };
+    }
+    if (range) filters.push(includePending === 'true'
+      ? { $or: [range, { status: 'pending' }] } : range);
+    if (staffId) filters.push({ staffId: String(staffId) });
+    if (!ignoreStatuses) {
+      if (statuses !== undefined) {
+        const values = String(statuses).split(',');
+        if (!values.length || values.some(value => !['pending', 'accepted', 'completed', 'canceled', 'rejected', 'no_show'].includes(value))) {
+          throw transactionError(400, 'Invalid booking statuses');
+        }
+        filters.push({ status: { $in: values } });
+      } else if (status) filters.push({ status });
+    }
+    return { $and: filters };
+  };
+
+  app.get('/api/merchant/bookings/summary', async (req, res) => {
+    try {
+      const query = await merchantBookingQuery(req, true);
+      const rows = await Booking.aggregate([
+        { $match: query }, { $group: { _id: '$status', count: { $sum: 1 } } },
+      ]);
+      res.json({ counts: Object.fromEntries(rows.map(row => [row._id, row.count])) });
+    } catch (error) {
+      if (error.httpStatus) return res.status(error.httpStatus).json({ message: error.message });
+      throw error;
+    }
+  });
+
+  app.get('/api/merchant/bookings/:id/slots', async (req, res) => {
+    const salon = await Salon.findOne({ id: req.merchantUser.salonId }).lean();
+    if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
+    const booking = await Booking.findOne({
+      id: req.params.id,
+      ...buildMerchantBookingScope(req.merchantUser.salonId, salon.staffIds || []),
+    }).lean();
+    if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    if (!['pending', 'accepted'].includes(booking.status)) {
+      return res.status(409).json({ message: 'Only pending or accepted bookings can be rescheduled' });
+    }
+    const date = String(req.query.date || '');
+    if (!bookingDayRange(date) || !date) return res.status(400).json({ message: 'date must use YYYY-MM-DD format' });
+    // Merchant rescheduling can use today even when new same-day bookings are disabled.
+    const schedule = { ...salon, acceptsSameDayBooking: true };
+    const slots = booking.staffId
+      ? await generateSlotsForStaffAndDate(booking.staffId, date, booking.serviceDurationMinutes, schedule, booking.id)
+      : await generateSlotsForNoPreferenceAndDate(schedule, date, booking.serviceDurationMinutes, booking.id);
+    res.json(slots);
+  });
+
   app.get('/api/merchant/auth/me', async (req, res) => {
     res.json({ user: buildMerchantUserPayload(req.merchantUser) });
   });
@@ -405,6 +472,7 @@ module.exports = (app, ctx) => {
         startTime: parsed.value,
         updatedAt: new Date(),
         merchantMessage: '您已变更预约时间。',
+        userMessage: `商家已将预约从 ${bookingService.localDateKey(booking.startTime)} ${bookingService.formatMinutesAsTime(bookingService.localTimeMinutes(booking.startTime))} 改期至 ${bookingService.localDateKey(parsed.value)} ${bookingService.formatMinutesAsTime(bookingService.localTimeMinutes(parsed.value))}，请按新时间到店。`,
       };
     } else {
       let selectedStaffId = booking.staffId;
@@ -562,7 +630,7 @@ module.exports = (app, ctx) => {
         if (!['accept', 'reschedule'].includes(action)) {
           await SlotOccupancy.deleteOne({ bookingId: updated.id }, { session });
         }
-        if (action !== 'reschedule') {
+        if (action !== 'reschedule' || changed) {
           await bookingMessages.appendBookingMessage(BookingMessage, updated, action, session);
         }
         return { booking: updated, userPolicy: nextPolicy };
@@ -633,15 +701,13 @@ module.exports = (app, ctx) => {
   });
   
   app.get('/api/merchant/bookings', async (req, res) => {
-    const { status, date } = req.query;
-    const day = date ? bookingDayRange(date) : null;
-    if (date && !day) return res.status(400).json({ message: 'date must use YYYY-MM-DD format' });
-    const merchantSalon = await Salon.findOne({ id: req.merchantUser.salonId }).select('staffIds').lean();
-    const scope = buildMerchantBookingScope(req.merchantUser.salonId, merchantSalon?.staffIds || []);
-    const filters = [scope];
-    if (day) filters.push({ startTime: { $gte: day.start, $lt: day.end } });
-    if (status) filters.push({ status });
-    const query = { $and: filters };
+    let query;
+    try {
+      query = await merchantBookingQuery(req);
+    } catch (error) {
+      if (error.httpStatus) return res.status(error.httpStatus).json({ message: error.message });
+      throw error;
+    }
     const pagination = normalizePagination(req.query);
     const [result, total] = await Promise.all([
       Booking.find(query).select('-_id -__v').sort({ createdAt: -1 }).skip(pagination.skip).limit(pagination.limit).lean(),
