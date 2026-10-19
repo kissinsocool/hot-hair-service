@@ -248,7 +248,7 @@ const ratingSummary = (reviewCount, ratingTotal) => {
   const count = Number(reviewCount) || 0;
   const total = Number(ratingTotal) || 0;
   return {
-    rating: count ? Number((total / count).toFixed(1)) : null,
+    rating: count ? Math.round(total * 100 / count) / 100 : null,
     reviewCount: count,
     ratingTotal: total,
   };

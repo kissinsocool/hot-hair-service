@@ -127,6 +127,45 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect((await request('otherMerchant', '/merchant/bookings/summary?includePending=true')).body.counts).toEqual({});
   });
 
+  test('current salon requests keep two-decimal averages in distance and rating order', async () => {
+    await StaffProfile.create({ id: 'precision-staff', name: 'Precision stylist', roleId: 'designer' });
+    await Salon.create({
+      id: 'precision-salon', name: 'Precision salon', publishStatus: 'online',
+      staffIds: ['precision-staff'],
+      location: { latitude: 39.9042, longitude: 116.4074 },
+      geoLocation: { type: 'Point', coordinates: [116.4074, 39.9042] },
+    });
+    await Booking.create([5, 5, 4].map((rating, index) => ({
+      id: `precision-booking-${index}`, salonId: 'precision-salon', staffId: 'precision-staff',
+      serviceId: 'precision-service', startTime: new Date('2030-02-01T02:00:00Z'),
+      review: { id: `precision-review-${index}`, rating, reviewStatus: 'approved' },
+    })));
+    for (const sort of ['', '&sort=rating']) {
+      const result = await request('client', `/salons?latitude=39.9042&longitude=116.4074&page=1&limit=10${sort}`);
+      expect(result.status).toBe(200);
+      expect(result.body.find(salon => salon.id === 'precision-salon')).toMatchObject({
+        rating: 4.67, reviewCount: 3,
+      });
+    }
+    // A mean of 4.125 must round the same way in JS details and MongoDB sorting.
+    await Booking.create([4, 4, 4, 4, 3].map((rating, index) => ({
+      id: `precision-half-booking-${index}`, salonId: 'precision-salon', staffId: 'precision-staff',
+      serviceId: 'precision-service', startTime: new Date('2030-02-02T02:00:00Z'),
+      review: { id: `precision-half-review-${index}`, rating, reviewStatus: 'approved' },
+    })));
+    for (const sort of ['', '&sort=rating']) {
+      const result = await request('client', `/salons?latitude=39.9042&longitude=116.4074&page=1&limit=10${sort}`);
+      expect(result.status).toBe(200);
+      expect(result.body.find(salon => salon.id === 'precision-salon')).toMatchObject({
+        rating: 4.13, reviewCount: 8,
+      });
+    }
+    const detail = await request('client', '/salons/precision-salon');
+    expect(detail.status).toBe(200);
+    expect(detail.body).toMatchObject({ rating: 4.13, reviewCount: 8 });
+    expect(detail.body.staff[0]).toMatchObject({ rating: 4.13, reviewCount: 8 });
+  });
+
   test('logout closes the old merchant websocket and revokes all three role tokens', async () => {
     const socket = new WebSocket(baseUrl.replace('http:', 'ws:') + '/ws');
     try {

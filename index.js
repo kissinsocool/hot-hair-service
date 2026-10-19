@@ -479,7 +479,13 @@ const getNearbySalons = async (userLocation, _radiusKm, limit, minResults = 10, 
         reviewCount: { $ifNull: [{ $first: '$ratingRows.reviewCount' }, 0] },
         rating: { $cond: [
           { $gt: [{ $first: '$ratingRows.reviewCount' }, 0] },
-          { $round: [{ $divide: [{ $first: '$ratingRows.ratingTotal' }, { $first: '$ratingRows.reviewCount' }] }, 1] },
+          { $divide: [
+            { $floor: { $add: [
+              { $divide: [{ $multiply: [{ $first: '$ratingRows.ratingTotal' }, 100] }, { $first: '$ratingRows.reviewCount' }] },
+              0.5,
+            ] } },
+            100,
+          ] },
           null,
         ] },
         distanceKm: { $round: [{ $divide: ['$distanceMeters', 1000] }, 2] },

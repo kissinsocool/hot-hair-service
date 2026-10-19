@@ -534,6 +534,15 @@ test('public staff payloads do not invent a rating when there are no approved re
   assert.equal(payload.reviewCount, 0);
 });
 
+test('rating summaries round averages to two decimal places', () => {
+  assert.equal(salonDomain.ratingSummary(3, 14).rating, 4.67);
+  assert.equal(salonDomain.ratingSummary(3, 13).rating, 4.33);
+  assert.equal(salonDomain.ratingSummary(2, 9).rating, 4.5);
+  assert.equal(salonDomain.ratingSummary(8, 33).rating, 4.13);
+  assert.equal(salonDomain.ratingSummary(200, 829).rating, 4.15);
+  assert.equal(salonDomain.ratingSummary(0, 0).rating, null);
+});
+
 test('rating summaries use every approved review and group them by staff', async () => {
   const originalAggregate = Booking.aggregate;
   let pipeline;
@@ -1690,6 +1699,7 @@ test('rating sort pages all nearby salons by approved ratings, then distance', a
     assert.deepEqual(second.map(salon => salon.id), ['unrated']);
     assert.equal(pipelines[1][0].$geoNear.maxDistance, 50000);
     assert.equal(pipelines[1].find(stage => stage.$lookup).$lookup.foreignField, 'staffId');
+    assert.equal(pipelines[1].find(stage => stage.$set).$set.rating.$cond[1].$divide[1], 100);
     assert.deepEqual(pipelines[1].find(stage => stage.$sort).$sort, { rating: -1, distanceKm: 1, id: 1 });
     assert.deepEqual(pipelines[3].slice(-3, -1), [{ $skip: 2 }, { $limit: 2 }]);
   } finally {
