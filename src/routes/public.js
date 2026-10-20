@@ -10,6 +10,7 @@ const PROMOTION_CATEGORY_TAG_IDS = Object.freeze({
 module.exports = (app, ctx) => {
   const {
     getNearbySalons,
+    getSalonReviewsPage,
     normalizeLimit,
     normalizePagination,
     normalizeRadiusKm,
@@ -221,6 +222,17 @@ module.exports = (app, ctx) => {
       latestPosts: latestPosts.slice(0, 3).map(post => salonPostPayload(post, publicImageUrl)),
       hasMorePosts: latestPosts.length > 3,
     });
+  });
+
+  app.get('/api/salons/:id/reviews', ...rateLimits.publicRead, async (req, res) => {
+    const filter = req.query.filter === undefined ? 'latest' : req.query.filter;
+    if (!['latest', 'negative', 'neutral'].includes(filter)) {
+      return res.status(400).json({ message: '评价筛选类型无效' });
+    }
+    const salon = await Salon.findOne({ id: req.params.id, publishStatus: 'online' }).select('id staffIds').lean();
+    if (!salon) return res.status(404).json({ message: 'Salon not found' });
+    const pagination = normalizePagination(req.query, 10, 50);
+    res.json(await getSalonReviewsPage(salon, pagination, filter));
   });
 
   app.get('/api/salons/:id/posts', ...rateLimits.publicRead, async (req, res) => {

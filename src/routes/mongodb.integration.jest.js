@@ -127,6 +127,64 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect((await request('otherMerchant', '/merchant/bookings/summary?includePending=true')).body.counts).toEqual({});
   });
 
+  test('public review pages cover more than the legacy cap, count every category and preserve released detail requests', async () => {
+    const staffId = 'review-pages-staff';
+    await StaffProfile.create({ id: staffId, name: 'Reviews stylist', roleId: 'designer' });
+    await Salon.create({ id: 'review-pages-salon', name: 'Reviews salon', publishStatus: 'online', staffIds: [staffId] });
+    await Salon.create({ id: 'review-pages-empty', name: 'Empty salon', publishStatus: 'online', staffIds: [] });
+    await Salon.create({ id: 'review-pages-offline', name: 'Offline salon', publishStatus: 'offline', staffIds: [staffId] });
+    const ratings = [1, 2, 2.5, 3, 3.5, 4, 5];
+    const documents = await Booking.create(Array.from({ length: 165 }, (_, i) => ({
+      id: `review-pages-booking-${i}`, userId: 'client-1', salonId: 'review-pages-salon', staffId,
+      staffName: 'Reviews stylist', serviceId: 'review-pages-service', startTime: new Date('2030-01-01'),
+      review: { id: `review-pages-${i}`, rating: ratings[i % ratings.length], reviewStatus: 'approved',
+        createdAt: new Date(Date.UTC(2030, 0, 1, 0, Math.min(i, 163))),
+        pendingEdit: { id: 'private-edit', rating: 1, comment: 'private edit', reviewStatus: 'pending' },
+        pendingMerchantReply: { content: 'private reply', reviewStatus: 'pending' },
+        merchantReply: { content: 'unapproved reply', reviewStatus: 'pending' },
+      },
+    })));
+    await Booking.create(['pending', 'rejected'].map(status => ({
+      id: `review-pages-${status}`, staffId, serviceId: 'service', startTime: new Date('2030-01-01'),
+      review: { id: status, rating: 1, reviewStatus: status },
+    })));
+    const counts = { all: 165,
+      negative: documents.filter(doc => doc.review.rating < 3).length,
+      neutral: documents.filter(doc => doc.review.rating >= 3 && doc.review.rating < 4).length };
+    const expected = [...documents].sort((a, b) => b.review.createdAt - a.review.createdAt || String(b._id).localeCompare(String(a._id)));
+    const seen = [];
+    for (let page = 1; page <= 17; page++) {
+      const result = await request('client', `/salons/review-pages-salon/reviews?page=${page}&limit=10`);
+      expect(result.status).toBe(200);
+      expect(result.body.counts).toEqual(counts);
+      expect(result.body.total).toBe(165);
+      expect(result.body.items).toHaveLength(page === 17 ? 5 : 10);
+      expect(result.body.hasMore).toBe(page < 17);
+      seen.push(...result.body.items.map(review => review.id));
+      for (const review of result.body.items) {
+        expect(review.pendingEdit).toBeUndefined(); expect(review.pendingMerchantReply).toBeUndefined();
+        expect(review.merchantReply).toBeUndefined(); expect(review.userId).toBeUndefined();
+      }
+    }
+    expect(seen).toEqual(expected.map(doc => doc.review.id));
+    for (const filter of ['negative', 'neutral']) {
+      const first = await request('client', `/salons/review-pages-salon/reviews?filter=${filter}&page=1&limit=10`);
+      expect(first.body.counts).toEqual(counts); expect(first.body.total).toBe(counts[filter]);
+      expect(first.body.items.every(review => filter === 'negative' ? review.rating < 3 : review.rating >= 3 && review.rating < 4)).toBe(true);
+      const empty = await request('client', `/salons/review-pages-salon/reviews?filter=${filter}&page=100&limit=10`);
+      expect(empty.body.items).toEqual([]); expect(empty.body.hasMore).toBe(false); expect(empty.body.counts).toEqual(counts);
+    }
+    const legacy = await request('client', '/salons/review-pages-salon');
+    expect(legacy.status).toBe(200); expect(legacy.body.reviews).toHaveLength(150); expect(legacy.body.reviewCount).toBe(165);
+    const empty = await request('client', '/salons/review-pages-empty/reviews?filter=neutral');
+    expect(empty.body).toMatchObject({ items: [], page: 1, limit: 10, total: 0, hasMore: false, counts: { all: 0, negative: 0, neutral: 0 } });
+    expect((await request('client', '/salons/review-pages-offline/reviews')).status).toBe(404);
+    expect((await request('client', '/salons/missing/reviews')).status).toBe(404);
+    expect((await request('client', '/salons/review-pages-salon/reviews?filter=unknown')).status).toBe(400);
+    const bounded = await request('client', '/salons/review-pages-salon/reviews?page=0&limit=1000');
+    expect(bounded.body.page).toBe(1); expect(bounded.body.limit).toBe(50); expect(bounded.body.items).toHaveLength(50);
+  });
+
   test('current salon requests keep two-decimal averages in distance and rating order', async () => {
     await StaffProfile.create({ id: 'precision-staff', name: 'Precision stylist', roleId: 'designer' });
     await Salon.create({

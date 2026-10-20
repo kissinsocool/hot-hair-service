@@ -76,6 +76,7 @@ const authDomain = require('./src/services/auth');
 const bookingDomain = require('./src/services/booking');
 const salonDomain = require('./src/services/salon');
 const salonPosts = require('./src/services/salon-posts');
+const { getSalonReviewsPage } = require('./src/services/salon-reviews');
 const {
   activeSessionQuery,
   buildAdminUserPayload,
@@ -1350,6 +1351,7 @@ const routeContext = {
   generateSlotsForNoPreferenceAndDate,
   generateSlotsForStaffAndDate,
   getNearbySalons,
+  getSalonReviewsPage,
   getApprovedReviewsByStaffIds,
   getApprovedRatingSummariesByStaffIds,
   getCoordinates,
