@@ -6,6 +6,7 @@ const WebSocket = require('ws');
 const models = require('../models');
 const { createSession } = require('../services/auth');
 const { occupiedSlotStarts } = require('../services/booking');
+const { completeDueBookings } = require('../services/auto-complete-bookings');
 const { server } = require('../../index');
 const { Booking, BookingMessage, SlotOccupancy, Salon, StaffProfile, ClientUser, MerchantUser, AdminUser, UserCoupon, UserPolicy, ReviewHelpful } = models;
 const uri = String(process.env.TEST_MONGODB_URI || '').trim();
@@ -285,6 +286,38 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect(detail.status).toBe(200);
     expect(detail.body).toMatchObject({ rating: 4.13, reviewCount: 8 });
     expect(detail.body.staff[0]).toMatchObject({ rating: 4.13, reviewCount: 8 });
+  });
+
+  test('automatic completion uses saved duration and commits coupon, occupancy and notification', async () => {
+    const now = new Date('2029-01-03T10:00:00Z');
+    const startTime = new Date('2029-01-03T08:30:00Z');
+    await Booking.create([
+      { id: 'auto-due', userId: 'client-1', salonId: 'salon-1', serviceId: 'service-1',
+        status: 'accepted', startTime, serviceDurationMinutes: 90, couponId: 'auto-coupon' },
+      { id: 'auto-waiting', serviceId: 'service-1', status: 'accepted',
+        startTime, serviceDurationMinutes: 120 },
+      { id: 'auto-legacy', serviceId: 'service-1', status: 'accepted',
+        startTime: new Date('2029-01-02T10:00:00Z') },
+    ]);
+    await UserCoupon.create({ id: 'auto-coupon', userId: 'client-1', campaignKey: 'fixture',
+      couponType: 'auto', minimumSpendFen: 0, discountFen: 1000, title: 'Auto completion coupon',
+      grantedAt: startTime, validFrom: new Date('2029-01-01'), validUntil: new Date('2035-01-01'),
+      reservedBookingId: 'auto-due', reservedAt: startTime });
+    await SlotOccupancy.create({ bookingId: 'auto-due', staffId: 'auto-staff',
+      startTime, slots: occupiedSlotStarts(startTime, 90) });
+    const broadcastBookingEvent = jest.fn();
+    const dependencies = { mongoose, ...models, broadcastBookingEvent };
+    expect(await completeDueBookings(dependencies, now)).toBe(2);
+    expect((await Booking.findOne({ id: 'auto-due' }).lean()).couponRedeemedAt).toEqual(now);
+    expect((await Booking.findOne({ id: 'auto-waiting' }).lean()).status).toBe('accepted');
+    expect((await Booking.findOne({ id: 'auto-legacy' }).lean()).status).toBe('completed');
+    expect(await SlotOccupancy.countDocuments({ bookingId: 'auto-due' })).toBe(0);
+    expect(await UserCoupon.findOne({ id: 'auto-coupon' }).lean()).toMatchObject({
+      redeemedBookingId: 'auto-due', redeemedAt: now,
+    });
+    expect(await BookingMessage.countDocuments({ bookingId: 'auto-due', status: 'completed' })).toBe(1);
+    expect(broadcastBookingEvent).toHaveBeenCalledTimes(2);
+    expect(await completeDueBookings(dependencies, now)).toBe(0);
   });
 
   test('logout closes the old merchant websocket and revokes all three role tokens', async () => {

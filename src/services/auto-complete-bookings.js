@@ -8,20 +8,24 @@ const completeDueBookings = async ({
   mongoose, Booking, BookingMessage, SlotOccupancy, UserCoupon,
   AnalyticsEvent, broadcastBookingEvent,
 }, now = new Date()) => {
-  const cutoff = new Date(now.getTime() - DAY_MS);
   let lastId;
   let processed = 0;
 
   while (true) {
     const due = await Booking.find({
       status: 'accepted',
-      startTime: { $lte: cutoff },
+      startTime: { $lte: now },
       ...(lastId ? { _id: { $gt: lastId } } : {}),
     }).sort({ _id: 1 }).limit(100).lean();
     if (!due.length) break;
 
     for (const booking of due) {
       lastId = booking._id;
+      const durationMs = Number.isSafeInteger(booking.serviceDurationMinutes) && booking.serviceDurationMinutes > 0
+        ? booking.serviceDurationMinutes * 60 * 1000
+        : DAY_MS;
+      if (now.getTime() - booking.startTime.getTime() < durationMs) continue;
+
       try {
         const updated = await bookingService.runBookingTransaction(mongoose, async session => {
           let couponRedeemedAt;
@@ -50,7 +54,12 @@ const completeDueBookings = async ({
           }
 
           const completed = await Booking.findOneAndUpdate(
-            { _id: booking._id, status: 'accepted', startTime: { $lte: cutoff } },
+            {
+              _id: booking._id,
+              status: 'accepted',
+              startTime: booking.startTime,
+              serviceDurationMinutes: booking.serviceDurationMinutes ?? null,
+            },
             { $set: {
               status: 'completed',
               updatedAt: now,

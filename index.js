@@ -1494,7 +1494,7 @@ const startServer = async () => {
     }
   };
   void runBookingCompletion();
-  setInterval(runBookingCompletion, 60 * 1000).unref();
+  setInterval(runBookingCompletion, 15 * 60 * 1000).unref();
 };
 
 if (require.main === module) {
