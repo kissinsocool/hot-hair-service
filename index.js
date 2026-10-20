@@ -651,7 +651,7 @@ const incrementNoShowCount = (userId, session) => {
         updatedAt: new Date(),
       },
     }],
-    { upsert: true, new: true, session },
+    { upsert: true, new: true, updatePipeline: true, session },
   );
 };
 

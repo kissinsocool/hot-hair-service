@@ -440,8 +440,12 @@ module.exports = (app, ctx) => {
     if (['accept', 'reject'].includes(action) && booking.status !== 'pending') {
       return res.status(409).json({ message: 'Only pending bookings can be accepted or rejected' });
     }
-    if (['cancel', 'complete', 'no_show'].includes(action) && booking.status !== 'accepted') {
+    const correctingCompletion = booking.status === 'completed' && ['cancel', 'no_show'].includes(action);
+    if (['cancel', 'complete', 'no_show'].includes(action) && booking.status !== 'accepted' && !correctingCompletion) {
       return res.status(409).json({ message: 'Only accepted bookings can be canceled, completed or marked no-show' });
+    }
+    if (correctingCompletion && (booking.reviewed || booking.review || booking.complained || booking.complaint)) {
+      return res.status(409).json({ message: '订单已有评价或投诉，不能更改完成状态' });
     }
 
     let update;
@@ -618,6 +622,10 @@ module.exports = (app, ctx) => {
             id: booking.id,
             ...merchantScope,
             status: booking.status,
+            ...(correctingCompletion ? {
+              reviewed: { $ne: true }, review: null,
+              complained: { $ne: true }, complaint: null,
+            } : {}),
             ...(action === 'reschedule' ? { startTime: booking.startTime } : {}),
           },
           { $set: update },

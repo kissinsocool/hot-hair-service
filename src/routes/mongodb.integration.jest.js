@@ -320,6 +320,99 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect(await completeDueBookings(dependencies, now)).toBe(0);
   });
 
+  test.each(['cancel', 'no_show'])('merchant corrects automatic completion with %s atomically using the released request body', async action => {
+    const id = `correct-auto-${action}`;
+    const startTime = new Date('2028-01-01T01:00:00Z');
+    await Booking.create({ id, userId: 'client-1', salonId: 'salon-1', staffId: 'staff-1',
+      serviceId: 'service-1', status: 'accepted', startTime, createdAt: new Date('2034-01-01'), serviceDurationMinutes: 60,
+      servicePriceFen: 8000, originalAmountFen: 8000, payableAmountFen: 7000,
+      couponId: id, couponCode: 'SAVE10', couponTitle: 'Save 10', couponDiscountFen: 1000 });
+    await UserCoupon.create({ id, userId: 'client-1', campaignKey: 'fixture', couponType: id,
+      minimumSpendFen: 0, discountFen: 1000, title: 'Correction coupon',
+      grantedAt: startTime, validFrom: startTime, validUntil: new Date('2035-01-01'),
+      reservedBookingId: id, reservedAt: startTime });
+    await completeDueBookings({ mongoose, ...models, broadcastBookingEvent() {} }, new Date('2028-01-02'));
+    expect((await Booking.findOne({ id }).lean()).status).toBe('completed');
+    expect((await UserCoupon.findOne({ id }).lean()).redeemedBookingId).toBe(id);
+    const policyBefore = (await UserPolicy.findOne({ userId: 'client-1' }).lean())?.noShowCount || 0;
+    const body = { action, reason: action === 'cancel' ? '用户要求取消' : '用户未到店' };
+    expect((await request('otherMerchant', `/merchant/bookings/${id}`, body, 'PATCH')).status).toBe(404);
+    const failure = jest.spyOn(BookingMessage, 'create').mockRejectedValueOnce(new Error('Injected correction message failure'));
+    try {
+      expect((await request('merchant', `/merchant/bookings/${id}`, body, 'PATCH')).status).toBe(500);
+    } finally { failure.mockRestore(); }
+    expect((await Booking.findOne({ id }).lean()).status).toBe('completed');
+    expect((await UserCoupon.findOne({ id }).lean()).redeemedBookingId).toBe(id);
+    expect((await UserPolicy.findOne({ userId: 'client-1' }).lean())?.noShowCount || 0).toBe(policyBefore);
+    const attempts = await Promise.all([1, 2].map(() => request('merchant', `/merchant/bookings/${id}`, body, 'PATCH')));
+    expect(attempts.map(result => result.status).sort()).toEqual([200, 409]);
+    const status = action === 'cancel' ? 'canceled' : 'no_show';
+    const updated = attempts.find(result => result.status === 200).body.booking;
+    expect(updated).toMatchObject({ id, status, rejectReason: body.reason, couponId: '', couponDiscountFen: 0, payableAmountFen: 8000, couponRedeemedAt: null });
+    const coupon = await UserCoupon.findOne({ id }).lean();
+    for (const field of ['reservedAt', 'reservedBookingId', 'redeemedAt', 'redeemedBookingId', 'redeemedSalonId', 'redeemedMerchantId']) {
+      expect(coupon[field]).toBeFalsy();
+    }
+    expect(await BookingMessage.countDocuments({ bookingId: id, type: action })).toBe(1);
+    expect((await UserPolicy.findOne({ userId: 'client-1' }).lean())?.noShowCount || 0).toBe(policyBefore + (action === 'no_show' ? 1 : 0));
+    expect((await request('client', `/bookings/${id}`)).body).toMatchObject({ id, status });
+    const merchant = await request('merchant', `/merchant/bookings?statuses=canceled,no_show&page=1&limit=100`);
+    expect(merchant.body.find(row => row.id === id).status).toBe(status);
+    const summary = await request('merchant', '/merchant/bookings/summary');
+    expect(summary.body.counts[status]).toBeGreaterThanOrEqual(1);
+    const admin = await request('admin', '/admin/bookings?page=1&limit=100');
+    expect(admin.body.find(row => row.id === id).status).toBe(status);
+    const messages = await request('client', '/booking-messages?page=1&limit=100');
+    expect(messages.body.find(row => row.bookingId === id && row.type === action).status).toBe(status);
+    expect((await request('merchant', `/merchant/bookings/${id}`, body, 'PATCH')).status).toBe(409);
+  });
+
+  test.each([
+    { reviewed: true }, { review: { id: 'review', reviewStatus: 'rejected' } },
+    { complained: true }, { complaint: { id: 'complaint', reviewStatus: 'rejected' } },
+  ])('completed booking feedback prevents merchant correction: %j', async feedback => {
+    const id = `protected-${crypto.randomUUID()}`;
+    await Booking.create({ id, userId: 'client-1', salonId: 'salon-1', serviceId: 'service-1',
+      status: 'completed', startTime: new Date('2028-01-01'), ...feedback });
+    for (const action of ['cancel', 'no_show']) {
+      const response = await request('merchant', `/merchant/bookings/${id}`, { action, reason: '用户未到店' }, 'PATCH');
+      expect(response.status).toBe(409);
+      expect(response.body.message).toContain('评价或投诉');
+    }
+    expect((await Booking.findOne({ id }).lean()).status).toBe('completed');
+    expect(await BookingMessage.countDocuments({ bookingId: id })).toBe(0);
+  });
+
+  test('released accepted no-show and completed corrections blacklist only at three distinct bookings', async () => {
+    for (let index = 1; index <= 3; index += 1) {
+      const id = `no-show-threshold-${index}`;
+      await Booking.create({ id, userId: 'no-show-threshold-user', salonId: 'salon-1', serviceId: 'service-1',
+        status: index === 1 ? 'accepted' : 'completed', startTime: new Date('2028-01-01') });
+      const body = { action: 'no_show', reason: '用户未到店' };
+      const result = await request('merchant', `/merchant/bookings/${id}`, body, 'PATCH');
+      expect(result.status).toBe(200);
+      expect(result.body.userPolicy).toMatchObject({ noShowCount: index, isBlacklisted: index === 3 });
+      expect((await request('merchant', `/merchant/bookings/${id}`, body, 'PATCH')).status).toBe(409);
+      expect((await UserPolicy.findOne({ userId: 'no-show-threshold-user' }).lean()).noShowCount).toBe(index);
+    }
+  });
+
+  test('feedback arriving after merchant precheck is preserved by the transaction predicate', async () => {
+    const id = 'correct-feedback-race';
+    await Booking.create({ id, userId: 'client-1', salonId: 'salon-1', serviceId: 'service-1',
+      status: 'completed', startTime: new Date('2028-01-01') });
+    const original = Booking.findOneAndUpdate.bind(Booking);
+    const race = jest.spyOn(Booking, 'findOneAndUpdate').mockImplementationOnce(async (filter, ...args) => {
+      expect(filter).toMatchObject({ reviewed: { $ne: true }, review: null, complained: { $ne: true }, complaint: null });
+      await Booking.updateOne({ id }, { $set: { complained: true, complaint: { id: 'racing-complaint' } } });
+      return original(filter, ...args);
+    });
+    try {
+      expect((await request('merchant', `/merchant/bookings/${id}`, { action: 'cancel', reason: '用户要求取消' }, 'PATCH')).status).toBe(409);
+    } finally { race.mockRestore(); }
+    expect(await Booking.findOne({ id }).lean()).toMatchObject({ status: 'completed', complained: true, complaint: { id: 'racing-complaint' } });
+  });
+
   test('logout closes the old merchant websocket and revokes all three role tokens', async () => {
     const socket = new WebSocket(baseUrl.replace('http:', 'ws:') + '/ws');
     try {
