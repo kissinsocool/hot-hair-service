@@ -143,6 +143,7 @@ const merchantAppealSchema = new mongoose.Schema({
   merchantId: { type: String, required: true },
   submittedAt: { type: Date, required: true },
   response: { type: String, maxlength: 2000 },
+  decision: { type: String, enum: ['approved', 'rejected'] },
   handledBy: String,
   handledAt: Date,
 }, { _id: false });

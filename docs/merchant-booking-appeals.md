@@ -19,6 +19,16 @@
 
 ## 数据、发布、回滚
 
+### 审核结果扩展（2026-10-20）
+
+投诉管理改为“用户投诉／商家申诉”Tab。新增可选 merchantAppeal.decision：approved（审核通过）／rejected（未通过），由 admin.js PATCH /api/admin/booking-appeals/:id 写入；merchant_app AdminRepository/申诉处理表单为唯一生产调用方。消费者为后台申诉列表与 MerchantOrderAppealDialog，商家订单 HTTP 响应由 normalizeMerchantBooking 生产；普通客户端与 WebSocket 仍剔除整个 merchantAppeal，hot_hair_mp 无新字段依赖。已跨三个仓库检索确认，无其他生产调用方。
+
+新后台必须选择结果，同时保留原必填 response。后端继续接受当前线上旧后台只有 response 的请求；decision 缺省时不推测结果，历史 handled 且无 decision 的记录显示“已处理”。decision 提供时仅接受 approved/rejected，非法值返回400；结果与说明在同一原子更新中保存，仍只有 pending 可以处理。审核结果仅记录结论，不自动改订单状态、财务或用户反馈。
+
+本次验证：后端162项测试、本地隔离MongoDB24项集成测试、小程序81项测试、Flutter101项测试均通过，静态分析无问题。覆盖通过/未通过原子保存和读取、非法结果拒绝、旧response单字段请求继续成功，以及Tab切换、必选结果、失败重试保留所选结果与文字说明。
+
+无存量迁移、无新必填后端字段。先发布兼容后端，再发布后台和商家端；回滚先客户端后后端，保留已有结果记录。后续若要求后端强制 decision，需先验证旧请求已停止使用，再单独收缩，不能本次立即拒绝旧格式。测试同时覆盖实际旧 response 请求、新结果的通过/未通过、非法输入、处理竞态、商家读取、客户端隔离、Tab切换及失败重试保留结果和说明。
+
 新增可选子文档，历史无字段即未申诉，不做存量数据迁移或回填。请求 reason 为 no_show/other，description 必填且最多2000字；处理 response 必填且最多2000字。旧客户端不调用新接口，不要求同步更新小程序。
 
 先发布后端兼容扩展，再发布商家端和管理后台；不删除旧接口或兼容格式。回滚先恢复前端旧构建，再回滚后端 Git 提交，保留已提交子文档，不批量重写订单。后端通过提交、推送、线上干净工作树 Git 拉取部署；前端各自备份并按已验证 OSS 流程发布。

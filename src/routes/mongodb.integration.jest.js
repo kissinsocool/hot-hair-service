@@ -486,6 +486,29 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect(await BookingMessage.countDocuments()).toBe(messagesBefore);
   });
 
+  test.each(['approved', 'rejected'])('appeal review saves %s with its response and keeps old response-only requests compatible', async decision => {
+    const id = `appeal-decision-${decision}`;
+    const updatedAt = new Date('2028-01-01');
+    await Booking.create({ id, userId: 'client-1', salonId: 'salon-1', serviceId: 'service-1',
+      startTime: updatedAt, updatedAt, status: 'completed', reviewed: true,
+      merchantAppeal: { reason: 'other', description: '请核实', status: 'pending', merchantId: 'merchant-1', submittedAt: new Date() } });
+    for (const invalid of [null, '', 'handled', true, ['approved']]) {
+      expect((await request('admin', `/admin/booking-appeals/${id}`, { decision: invalid, response: '说明' }, 'PATCH')).status).toBe(400);
+    }
+    expect((await Booking.findOne({ id }).lean()).merchantAppeal.status).toBe('pending');
+    const attempts = await Promise.all([1, 2].map(() => request('admin', `/admin/booking-appeals/${id}`, { decision, response: `  ${decision}处理说明  ` }, 'PATCH')));
+    expect(attempts.map(row => row.status).sort()).toEqual([200, 409]);
+    const saved = await Booking.findOne({ id }).lean();
+    expect(saved).toMatchObject({ status: 'completed', reviewed: true, updatedAt,
+      merchantAppeal: { status: 'handled', decision, response: `${decision}处理说明`, handledBy: 'admin-1' } });
+    const list = await request('admin', '/admin/booking-appeals?page=1&limit=100');
+    expect(list.body.find(row => row.bookingId === id).decision).toBe(decision);
+    const merchant = await request('merchant', '/merchant/bookings?statuses=completed&page=1&limit=100');
+    expect(merchant.body.find(row => row.id === id).merchantAppeal.decision).toBe(decision);
+    expect((await request('client', `/bookings/${id}`)).body.merchantAppeal).toBeUndefined();
+    expect((await Booking.findOne({ id: 'appeal-success-0' }).lean()).merchantAppeal.decision).toBeUndefined();
+  });
+
   test('logout closes the old merchant websocket and revokes all three role tokens', async () => {
     const socket = new WebSocket(baseUrl.replace('http:', 'ws:') + '/ws');
     try {

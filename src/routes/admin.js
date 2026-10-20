@@ -598,6 +598,10 @@ module.exports = (app, ctx) => {
 
   app.patch('/api/admin/booking-appeals/:id', async (req, res) => {
     const response = req.body.response;
+    const decision = req.body.decision;
+    if (decision !== undefined && !['approved', 'rejected'].includes(decision)) {
+      return res.status(400).json({ message: '请选择审核通过或未通过' });
+    }
     if (typeof response !== 'string' || !response.trim() || response.trim().length > 2000) {
       return res.status(400).json({ message: '请填写1至2000字的处理意见' });
     }
@@ -606,6 +610,7 @@ module.exports = (app, ctx) => {
       { $set: {
         'merchantAppeal.status': 'handled',
         'merchantAppeal.response': response.trim(),
+        ...(decision !== undefined ? { 'merchantAppeal.decision': decision } : {}),
         'merchantAppeal.handledBy': req.adminUser.id,
         'merchantAppeal.handledAt': new Date(),
       } },
