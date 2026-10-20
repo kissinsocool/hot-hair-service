@@ -509,6 +509,47 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect((await Booking.findOne({ id: 'appeal-success-0' }).lean()).merchantAppeal.decision).toBeUndefined();
   });
 
+  test('merchant reply approval removes the pending item and publishes the approved reply', async () => {
+    const id = 'merchant-reply-approval';
+    await Booking.create({ id, userId: 'client-1', salonId: 'salon-1', staffId: 'staff-1',
+      serviceId: 'service-1', status: 'completed', startTime: new Date('2028-01-01'), reviewed: true,
+      review: { id: 'reply-review', rating: 5, comment: '用户原评价', reviewStatus: 'approved',
+        merchantReply: { content: '旧公开回复', reviewStatus: 'approved' },
+        pendingMerchantReply: { content: '新回复待审核', reviewStatus: 'pending' } } });
+    const result = await request('admin', '/admin/user-images', { bookingId: id, type: 'reviewReply', action: 'approve' }, 'PATCH');
+    expect(result.status).toBe(200);
+    const list = await request('admin', '/admin/user-images?page=1&limit=100');
+    expect(list.body.find(item => item.bookingId === id && item.type === 'reviewReply')).toMatchObject({
+      status: 'approved', content: '新回复待审核',
+    });
+    const saved = await Booking.findOne({ id }).lean();
+    expect(saved.review.pendingMerchantReply).toBeUndefined();
+    expect(saved.review).toMatchObject({ comment: '用户原评价', reviewStatus: 'approved',
+      merchantReply: { content: '新回复待审核', reviewStatus: 'approved' } });
+    const client = await request('client', `/bookings/${id}`);
+    expect(client.body.review.merchantReply.content).toBe('新回复待审核');
+    expect(client.body.review.pendingMerchantReply).toBeUndefined();
+  });
+
+  test.each(['pendingReply', 'publicReply', 'pendingEdit'])('moderation deletes persisted %s subdocuments without changing the user review', async kind => {
+    const id = `moderation-delete-${kind}`;
+    const review = { id: 'delete-review', comment: '用户原评价', rating: 5, reviewStatus: 'approved' };
+    if (kind !== 'pendingEdit') review.merchantReply = { content: '原公开回复', reviewStatus: 'approved' };
+    if (kind === 'pendingReply') review.pendingMerchantReply = { content: '待审核新回复', reviewStatus: 'pending' };
+    if (kind === 'pendingEdit') review.pendingEdit = { id: 'edit-review', comment: '待审核修改', rating: 4, reviewStatus: 'pending', imageUrls: [] };
+    await Booking.create({ id, userId: 'client-1', salonId: 'salon-1', serviceId: 'service-1',
+      startTime: new Date('2028-01-01'), status: 'completed', reviewed: true, review });
+    expect((await request('admin', '/admin/user-images', {
+      bookingId: id, type: kind === 'pendingEdit' ? 'reviewEdit' : 'reviewReply', action: 'delete',
+    }, 'PATCH')).status).toBe(200);
+    const saved = await Booking.findOne({ id }).lean();
+    expect(saved.review).toMatchObject({ id: 'delete-review', comment: '用户原评价', rating: 5, reviewStatus: 'approved' });
+    expect(saved.review.pendingMerchantReply).toBeUndefined();
+    expect(saved.review.pendingEdit).toBeUndefined();
+    if (kind === 'pendingReply') expect(saved.review.merchantReply.content).toBe('原公开回复');
+    if (kind === 'publicReply') expect(saved.review.merchantReply).toBeUndefined();
+  });
+
   test('logout closes the old merchant websocket and revokes all three role tokens', async () => {
     const socket = new WebSocket(baseUrl.replace('http:', 'ws:') + '/ws');
     try {

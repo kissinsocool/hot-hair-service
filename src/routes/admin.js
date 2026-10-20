@@ -803,7 +803,7 @@ async function moderateReviewEdit(
   if (action === 'reject') {
     booking.review.pendingEdit = { ...edit, imageUrls: [], reviewStatus: 'rejected' };
   } else {
-    delete booking.review.pendingEdit;
+    booking.review.pendingEdit = undefined;
   }
   booking.markModified('review');
   booking.updatedAt = new Date().toISOString();
@@ -825,7 +825,7 @@ async function moderateReviewReply(booking, action) {
   if (action === 'approve') {
     nextPublicReply = { ...approvableReply, reviewStatus: 'approved', reviewedAt };
     booking.review = { ...review, merchantReply: nextPublicReply };
-    delete booking.review.pendingMerchantReply;
+    booking.review.pendingMerchantReply = undefined;
   } else if (action === 'reject') {
     if (pendingReply) {
       booking.review = {
@@ -838,11 +838,11 @@ async function moderateReviewReply(booking, action) {
     }
   } else if (pendingReply) {
     booking.review = { ...review };
-    delete booking.review.pendingMerchantReply;
+    booking.review.pendingMerchantReply = undefined;
   } else {
     nextPublicReply = undefined;
     booking.review = { ...review };
-    delete booking.review.merchantReply;
+    booking.review.merchantReply = undefined;
   }
 
   booking.markModified('review');
