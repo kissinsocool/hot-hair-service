@@ -226,7 +226,7 @@ module.exports = (app, ctx) => {
 
   app.get('/api/salons/:id/reviews', ...rateLimits.publicRead, async (req, res) => {
     const filter = req.query.filter === undefined ? 'latest' : req.query.filter;
-    if (!['latest', 'negative', 'neutral'].includes(filter)) {
+    if (!['latest', 'negative', 'neutral', 'photos'].includes(filter)) {
       return res.status(400).json({ message: '评价筛选类型无效' });
     }
     const salon = await Salon.findOne({ id: req.params.id, publishStatus: 'online' }).select('id staffIds').lean();

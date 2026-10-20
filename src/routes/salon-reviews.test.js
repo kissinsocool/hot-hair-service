@@ -12,7 +12,7 @@ test('public review endpoint validates filters and restricts reads to online sal
   const routes = new Map();
   let exists = true;
   const calls = [];
-  const payload = { items: [], counts: { all: 0, negative: 0, neutral: 0 }, hasMore: false };
+  const payload = { items: [], counts: { all: 0, negative: 0, neutral: 0, photos: 0 }, hasMore: false };
   registerPublicRoutes({ get: (path, ...handlers) => routes.set(path, handlers.at(-1)) }, {
     rateLimits: { publicRead: [] },
     Salon: { findOne(filter) {
@@ -29,7 +29,7 @@ test('public review endpoint validates filters and restricts reads to online sal
     async getSalonReviewsPage(...args) { calls.push(args); return payload; },
   });
   const handler = routes.get('/api/salons/:id/reviews');
-  for (const filter of [undefined, 'latest', 'negative', 'neutral']) {
+  for (const filter of [undefined, 'latest', 'negative', 'neutral', 'photos']) {
     const res = response();
     await handler({ params: { id: 'salon-1' }, query: filter === undefined ? {} : { filter } }, res);
     assert.deepEqual(res.body, payload);
@@ -40,10 +40,10 @@ test('public review endpoint validates filters and restricts reads to online sal
     await handler({ params: { id: 'salon-1' }, query: { filter } }, res);
     assert.equal(res.statusCode, 400);
   }
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 5);
   exists = false;
   const res = response();
   await handler({ params: { id: 'salon-1' }, query: {} }, res);
   assert.equal(res.statusCode, 404);
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 5);
 });

@@ -139,24 +139,29 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       staffName: 'Reviews stylist', serviceId: 'review-pages-service', startTime: new Date('2030-01-01'),
       review: { id: `review-pages-${i}`, rating: ratings[i % ratings.length], reviewStatus: 'approved',
         createdAt: new Date(Date.UTC(2030, 0, 1, 0, Math.min(i, 163))),
-        pendingEdit: { id: 'private-edit', rating: 1, comment: 'private edit', reviewStatus: 'pending' },
+        imageUrls: i % 3 === 0 ? [`https://example.com/review-${i}.jpg`] : [],
+        tags: i % 2 === 0 ? ['善于沟通', '未知标签'] : ['环境舒适'],
+        pendingEdit: { id: 'private-edit', rating: 1, comment: 'private edit', reviewStatus: 'pending', imageUrls: ['https://example.com/private.jpg'], tags: ['技术一流'] },
         pendingMerchantReply: { content: 'private reply', reviewStatus: 'pending' },
         merchantReply: { content: 'unapproved reply', reviewStatus: 'pending' },
       },
     })));
     await Booking.create(['pending', 'rejected'].map(status => ({
       id: `review-pages-${status}`, staffId, serviceId: 'service', startTime: new Date('2030-01-01'),
-      review: { id: status, rating: 1, reviewStatus: status },
+      review: { id: status, rating: 1, reviewStatus: status, imageUrls: ['https://example.com/unapproved.jpg'], tags: ['善于沟通'] },
     })));
     const counts = { all: 165,
       negative: documents.filter(doc => doc.review.rating < 3).length,
-      neutral: documents.filter(doc => doc.review.rating >= 3 && doc.review.rating < 4).length };
+      neutral: documents.filter(doc => doc.review.rating >= 3 && doc.review.rating < 4).length,
+      photos: documents.filter(doc => doc.review.imageUrls.length).length };
     const expected = [...documents].sort((a, b) => b.review.createdAt - a.review.createdAt || String(b._id).localeCompare(String(a._id)));
     const seen = [];
+    const reviewTags = [{ name: '善于沟通', count: 83 }, { name: '环境舒适', count: 82 }];
     for (let page = 1; page <= 17; page++) {
       const result = await request('client', `/salons/review-pages-salon/reviews?page=${page}&limit=10`);
       expect(result.status).toBe(200);
       expect(result.body.counts).toEqual(counts);
+      expect(result.body.reviewTags).toEqual(reviewTags);
       expect(result.body.total).toBe(165);
       expect(result.body.items).toHaveLength(page === 17 ? 5 : 10);
       expect(result.body.hasMore).toBe(page < 17);
@@ -167,17 +172,27 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       }
     }
     expect(seen).toEqual(expected.map(doc => doc.review.id));
-    for (const filter of ['negative', 'neutral']) {
-      const first = await request('client', `/salons/review-pages-salon/reviews?filter=${filter}&page=1&limit=10`);
-      expect(first.body.counts).toEqual(counts); expect(first.body.total).toBe(counts[filter]);
-      expect(first.body.items.every(review => filter === 'negative' ? review.rating < 3 : review.rating >= 3 && review.rating < 4)).toBe(true);
+    for (const filter of ['negative', 'neutral', 'photos']) {
+      const matches = doc => filter === 'photos' ? doc.review.imageUrls.length > 0
+        : filter === 'negative' ? doc.review.rating < 3 : doc.review.rating >= 3 && doc.review.rating < 4;
+      const filteredIds = [];
+      for (let page = 1; page <= Math.ceil(counts[filter] / 10); page++) {
+        const result = await request('client', `/salons/review-pages-salon/reviews?filter=${filter}&page=${page}&limit=10`);
+        expect(result.status).toBe(200); expect(result.body.counts).toEqual(counts); expect(result.body.total).toBe(counts[filter]);
+        expect(result.body.reviewTags).toEqual(reviewTags);
+        expect(result.body.hasMore).toBe(page * 10 < counts[filter]);
+        filteredIds.push(...result.body.items.map(review => review.id));
+      }
+      expect(filteredIds).toEqual(expected.filter(matches).map(doc => doc.review.id));
       const empty = await request('client', `/salons/review-pages-salon/reviews?filter=${filter}&page=100&limit=10`);
       expect(empty.body.items).toEqual([]); expect(empty.body.hasMore).toBe(false); expect(empty.body.counts).toEqual(counts);
     }
     const legacy = await request('client', '/salons/review-pages-salon');
     expect(legacy.status).toBe(200); expect(legacy.body.reviews).toHaveLength(150); expect(legacy.body.reviewCount).toBe(165);
-    const empty = await request('client', '/salons/review-pages-empty/reviews?filter=neutral');
-    expect(empty.body).toMatchObject({ items: [], page: 1, limit: 10, total: 0, hasMore: false, counts: { all: 0, negative: 0, neutral: 0 } });
+    expect(legacy.body.reviewTags).toEqual(reviewTags);
+    const empty = await request('client', '/salons/review-pages-empty/reviews?filter=photos');
+    expect(empty.body).toMatchObject({ items: [], page: 1, limit: 10, total: 0, hasMore: false, counts: { all: 0, negative: 0, neutral: 0, photos: 0 } });
+    expect(empty.body.reviewTags).toEqual([]);
     expect((await request('client', '/salons/review-pages-offline/reviews')).status).toBe(404);
     expect((await request('client', '/salons/missing/reviews')).status).toBe(404);
     expect((await request('client', '/salons/review-pages-salon/reviews?filter=unknown')).status).toBe(400);

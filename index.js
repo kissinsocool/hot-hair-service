@@ -76,7 +76,7 @@ const authDomain = require('./src/services/auth');
 const bookingDomain = require('./src/services/booking');
 const salonDomain = require('./src/services/salon');
 const salonPosts = require('./src/services/salon-posts');
-const { getSalonReviewsPage } = require('./src/services/salon-reviews');
+const { getSalonReviewsPage, getApprovedReviewTagCountsByStaffIds } = require('./src/services/salon-reviews');
 const {
   activeSessionQuery,
   buildAdminUserPayload,
@@ -702,21 +702,6 @@ const getApprovedRatingSummariesByStaffIds = async (staffIds = []) => {
     String(row._id),
     salonDomain.ratingSummary(row.reviewCount, row.ratingTotal),
   ]));
-};
-
-const getApprovedReviewTagCountsByStaffIds = async (staffIds = []) => {
-  const ids = [...new Set(staffIds.map(String).filter(Boolean))];
-  if (!ids.length) return [];
-  const rows = await Booking.aggregate([
-    { $match: { staffId: { $in: ids }, 'review.reviewStatus': 'approved' } },
-    { $unwind: '$review.tags' },
-    { $match: { 'review.tags': { $in: salonDomain.REVIEW_TAGS } } },
-    { $group: { _id: '$review.tags', count: { $sum: 1 } } },
-  ]);
-  const counts = Object.fromEntries(rows.map(row => [String(row._id), Number(row.count) || 0]));
-  return salonDomain.REVIEW_TAGS
-    .filter(name => counts[name])
-    .map(name => ({ name, count: counts[name] }));
 };
 
 const approvedSalonRatingSummary = (salon, summariesByStaffId) => {
