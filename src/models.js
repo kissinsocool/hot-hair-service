@@ -445,7 +445,15 @@ const analyticsEventSchema = new mongoose.Schema({
 
 analyticsEventSchema.index({ name: 1, createdAt: -1 });
 
+const reviewHelpfulSchema = new mongoose.Schema({
+  bookingId: { type: String, required: true },
+  reviewId: { type: String, required: true },
+  userId: { type: String, required: true },
+}, { timestamps: true });
+reviewHelpfulSchema.index({ bookingId: 1, reviewId: 1, userId: 1 }, { unique: true });
+
 module.exports = {
+  ReviewHelpful: mongoose.model('ReviewHelpful', reviewHelpfulSchema),
   Booking: mongoose.model('Booking', bookingSchema),
   BookingMessage: mongoose.model('BookingMessage', bookingMessageSchema),
   SlotOccupancy: mongoose.model('SlotOccupancy', slotOccupancySchema),

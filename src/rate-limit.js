@@ -102,6 +102,10 @@ const rateLimits = {
     createRateLimiter({ name: 'booking-ip', limit: 60, windowMs: MINUTE }),
     createRateLimiter({ name: 'booking-actor', limit: 10, windowMs: MINUTE, key: actorKey }),
   ],
+  reviewHelpful: [
+    createRateLimiter({ name: 'review-helpful-ip', limit: 60, windowMs: MINUTE }),
+    createRateLimiter({ name: 'review-helpful-actor', limit: 30, windowMs: MINUTE, key: actorKey }),
+  ],
   support: [
     createRateLimiter({ name: 'support-ip', limit: 10, windowMs: MINUTE }),
     createRateLimiter({ name: 'support-actor', limit: 5, windowMs: MINUTE, key: actorKey }),

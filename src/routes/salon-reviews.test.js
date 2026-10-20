@@ -6,6 +6,7 @@ const response = () => ({
   statusCode: 200,
   status(code) { this.statusCode = code; return this; },
   json(body) { this.body = body; return body; },
+  set() { return this; },
 });
 
 test('public review endpoint validates filters and restricts reads to online salons', async () => {
@@ -27,6 +28,8 @@ test('public review endpoint validates filters and restricts reads to online sal
       return { page: 1, limit: 10, skip: 0 };
     },
     async getSalonReviewsPage(...args) { calls.push(args); return payload; },
+    addReviewHelpfulState: async items => items,
+    sessionTokenFromRequest: () => '',
   });
   const handler = routes.get('/api/salons/:id/reviews');
   for (const filter of [undefined, 'latest', 'negative', 'neutral', 'photos']) {

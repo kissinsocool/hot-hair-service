@@ -7,7 +7,7 @@ const models = require('../models');
 const { createSession } = require('../services/auth');
 const { occupiedSlotStarts } = require('../services/booking');
 const { server } = require('../../index');
-const { Booking, BookingMessage, SlotOccupancy, Salon, StaffProfile, ClientUser, MerchantUser, AdminUser, UserCoupon, UserPolicy } = models;
+const { Booking, BookingMessage, SlotOccupancy, Salon, StaffProfile, ClientUser, MerchantUser, AdminUser, UserCoupon, UserPolicy, ReviewHelpful } = models;
 const uri = String(process.env.TEST_MONGODB_URI || '').trim();
 const describeWithMongo = uri ? describe : describe.skip;
 
@@ -198,6 +198,54 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect((await request('client', '/salons/review-pages-salon/reviews?filter=unknown')).status).toBe(400);
     const bounded = await request('client', '/salons/review-pages-salon/reviews?page=0&limit=1000');
     expect(bounded.body.page).toBe(1); expect(bounded.body.limit).toBe(50); expect(bounded.body.items).toHaveLength(50);
+  });
+
+  test('helpful feedback persists once per user, is private to the viewer and survives concurrent retries', async () => {
+    await StaffProfile.create({ id: 'helpful-staff', name: 'Helpful stylist', roleId: 'designer' });
+    await Salon.create({ id: 'helpful-salon', name: 'Helpful salon', publishStatus: 'online', staffIds: ['helpful-staff'] });
+    await Booking.create({ id: 'helpful-booking', staffId: 'helpful-staff', serviceId: 'helpful-service', startTime: new Date('2030-01-01'),
+      review: { id: 'helpful-review', rating: 5, reviewStatus: 'approved', createdAt: new Date() } });
+    sessions.reviewer = createSession();
+    await ClientUser.create({ id: 'reviewer-2', account: '13800000002', authProvider: 'wechat', displayName: 'Second reviewer',
+      sessionTokenHash: sessions.reviewer.tokenHash, sessionExpiresAt: sessions.reviewer.expiresAt });
+    const route = '/bookings/helpful-booking/review/helpful';
+    const before = await request('client', '/salons/helpful-salon/reviews');
+    expect(before.body.items[0]).toMatchObject({ helpfulCount: 0, helpful: false });
+    const anonymousPost = await fetch(`${baseUrl}/api${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reviewId: 'helpful-review' }) });
+    expect(anonymousPost.status).toBe(401);
+    const writes = await Promise.all(Array.from({ length: 6 }, () => request('client', route, { reviewId: 'helpful-review', userId: 'forged' }, 'POST')));
+    for (const result of writes) {
+      expect(result.status).toBe(200);
+      expect(result.body).toEqual({ bookingId: 'helpful-booking', reviewId: 'helpful-review', helpfulCount: 1, helpful: true });
+    }
+    expect(await ReviewHelpful.countDocuments({ bookingId: 'helpful-booking' })).toBe(1);
+    const one = await ReviewHelpful.findOne({ bookingId: 'helpful-booking' }).lean();
+    expect(one.userId).toBe('client-1');
+    const firstViewer = await request('client', '/salons/helpful-salon');
+    expect(firstViewer.body.reviews[0]).toMatchObject({ helpfulCount: 1, helpful: true });
+    const otherViewer = await request('reviewer', '/salons/helpful-salon');
+    expect(otherViewer.body.reviews[0]).toMatchObject({ helpfulCount: 1, helpful: false });
+    expect((await request('reviewer', route, { reviewId: 'helpful-review' }, 'POST')).body.helpfulCount).toBe(2);
+    expect((await request('client', route, { reviewId: 'helpful-review' }, 'POST')).body.helpfulCount).toBe(2);
+    const anonymous = await fetch(`${baseUrl}/api/salons/helpful-salon/reviews`);
+    expect(anonymous.headers.get('cache-control')).toBe('private, no-store');
+    const anonymousReview = (await anonymous.json()).items[0];
+    expect(anonymousReview).toMatchObject({ helpfulCount: 2, helpful: false });
+    expect(anonymousReview.userId).toBeUndefined();
+    const invalidToken = await fetch(`${baseUrl}/api/salons/helpful-salon`, { headers: { Authorization: 'Bearer invalid' } });
+    expect(invalidToken.status).toBe(200);
+    expect((await invalidToken.json()).reviews[0]).toMatchObject({ helpfulCount: 2, helpful: false });
+    expect((await request('client', route, {}, 'POST')).status).toBe(400);
+    expect((await request('client', route, { reviewId: 'old-review' }, 'POST')).status).toBe(404);
+    await Salon.updateOne({ id: 'helpful-salon' }, { $set: { publishStatus: 'offline' } });
+    expect((await request('client', route, { reviewId: 'helpful-review' }, 'POST')).status).toBe(404);
+    await Salon.updateOne({ id: 'helpful-salon' }, { $set: { publishStatus: 'online' } });
+    await Booking.updateOne({ id: 'helpful-booking' }, { $set: { 'review.reviewStatus': 'pending' } });
+    expect((await request('client', route, { reviewId: 'helpful-review' }, 'POST')).status).toBe(404);
+    await Booking.updateOne({ id: 'helpful-booking' }, { $set: { 'review.id': 'new-review', 'review.reviewStatus': 'approved' } });
+    const replaced = await request('client', '/salons/helpful-salon/reviews');
+    expect(replaced.body.items[0]).toMatchObject({ id: 'new-review', helpfulCount: 0, helpful: false });
+    expect((await request('client', route, { reviewId: 'new-review' }, 'POST')).body.helpfulCount).toBe(1);
   });
 
   test('current salon requests keep two-decimal averages in distance and rating order', async () => {

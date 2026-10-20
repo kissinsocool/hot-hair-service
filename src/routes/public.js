@@ -11,6 +11,8 @@ module.exports = (app, ctx) => {
   const {
     getNearbySalons,
     getSalonReviewsPage,
+    addReviewHelpfulState,
+    sessionTokenFromRequest,
     normalizeLimit,
     normalizePagination,
     normalizeRadiusKm,
@@ -216,9 +218,11 @@ module.exports = (app, ctx) => {
       SalonPost.find({ salonId: salon.id, reviewStatus: 'approved' })
         .sort({ createdAt: -1, _id: -1 }).limit(4).lean(),
     ]);
-    res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
+    const reviews = await addReviewHelpfulState(detail.reviews || [], sessionTokenFromRequest(req));
+    res.set('Cache-Control', 'private, no-store');
     res.json({
       ...detail,
+      reviews,
       latestPosts: latestPosts.slice(0, 3).map(post => salonPostPayload(post, publicImageUrl)),
       hasMorePosts: latestPosts.length > 3,
     });
@@ -232,7 +236,10 @@ module.exports = (app, ctx) => {
     const salon = await Salon.findOne({ id: req.params.id, publishStatus: 'online' }).select('id staffIds').lean();
     if (!salon) return res.status(404).json({ message: 'Salon not found' });
     const pagination = normalizePagination(req.query, 10, 50);
-    res.json(await getSalonReviewsPage(salon, pagination, filter));
+    const result = await getSalonReviewsPage(salon, pagination, filter);
+    const items = await addReviewHelpfulState(result.items, sessionTokenFromRequest(req));
+    res.set('Cache-Control', 'private, no-store');
+    res.json({ ...result, items });
   });
 
   app.get('/api/salons/:id/posts', ...rateLimits.publicRead, async (req, res) => {

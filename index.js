@@ -27,6 +27,7 @@ const {
 } = require('./src/config');
 const {
   Booking,
+  ReviewHelpful,
   BookingMessage,
   SlotOccupancy,
   UserPolicy,
@@ -77,6 +78,7 @@ const bookingDomain = require('./src/services/booking');
 const salonDomain = require('./src/services/salon');
 const salonPosts = require('./src/services/salon-posts');
 const { getSalonReviewsPage, getApprovedReviewTagCountsByStaffIds } = require('./src/services/salon-reviews');
+const { addReviewHelpfulState, recordReviewHelpful } = require('./src/services/review-helpful');
 const {
   activeSessionQuery,
   buildAdminUserPayload,
@@ -1290,6 +1292,8 @@ const generateSlotsForNoPreferenceAndDate = async (salon, date, duration = 30, e
 
 
 const routeContext = {
+  addReviewHelpfulState,
+  recordReviewHelpful,
   acceptedBookingAtTimeQuery,
   AdminUser,
   AdConfig,
@@ -1421,6 +1425,7 @@ app.use([
 ], requireClientAuth);
 require('./src/routes/client')(app, routeContext);
 require('./src/routes/client-bookings')(app, routeContext);
+require('./src/routes/review-helpful')(app, routeContext);
 require('./src/routes/client-messages')(app, routeContext);
 app.use('/api/merchant', requireMerchantAuth);
 require('./src/routes/merchant')(app, routeContext);
@@ -1456,6 +1461,7 @@ const startServer = async () => {
   }
   await Promise.all([
     Booking.createIndexes(),
+    ReviewHelpful.createIndexes(),
     BookingMessage.createIndexes(),
     SlotOccupancy.createIndexes(),
     ClientUser.createIndexes(),
