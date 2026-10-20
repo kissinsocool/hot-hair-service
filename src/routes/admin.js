@@ -1,3 +1,4 @@
+const { BUSINESS_DISTRICTS } = require('../services/business-districts');
 const { normalizeDocument } = require('../services/salon');
 const { funnelMetrics } = require('../services/analytics');
 const { bookingDayRange } = require('../services/booking');
@@ -229,6 +230,11 @@ module.exports = (app, ctx) => {
     }
     if (deposit === null) return res.status(400).json({ message: '保证金必须是非负数字' });
     if (tagsError) return res.status(400).json({ message: tagsError });
+    if (req.body.businessDistrict !== undefined
+      && req.body.businessDistrict !== ''
+      && !BUSINESS_DISTRICTS.includes(req.body.businessDistrict)) {
+      return res.status(400).json({ message: '请选择有效的商圈' });
+    }
     if (password.length < 6) return res.status(400).json({ message: '密码至少 6 位' });
     if (await MerchantUser.findOne({ username })) {
       return res.status(409).json({ message: '该商家账号已存在' });
@@ -238,8 +244,9 @@ module.exports = (app, ctx) => {
     }
   
     const salon = await ensureSalonForMerchant({ salonId, displayName });
-    if (req.body.tags !== undefined) {
-      salon.tags = normalizeSalonTags(req.body.tags);
+    if (req.body.tags !== undefined || req.body.businessDistrict !== undefined) {
+      if (req.body.tags !== undefined) salon.tags = normalizeSalonTags(req.body.tags);
+      if (req.body.businessDistrict !== undefined) salon.businessDistrict = req.body.businessDistrict;
       await salon.save();
       clearPublicSalonDetailCache();
     }
@@ -275,6 +282,11 @@ module.exports = (app, ctx) => {
   
     if (deposit === null) return res.status(400).json({ message: '保证金必须是非负数字' });
     if (tagsError) return res.status(400).json({ message: tagsError });
+    if (req.body.businessDistrict !== undefined
+      && req.body.businessDistrict !== ''
+      && !BUSINESS_DISTRICTS.includes(req.body.businessDistrict)) {
+      return res.status(400).json({ message: '请选择有效的商圈' });
+    }
     if (password && password.length < 6) return res.status(400).json({ message: '密码至少 6 位' });
   
     if (username && username !== user.username) {
@@ -292,10 +304,11 @@ module.exports = (app, ctx) => {
       });
       user.salonId = salon.id;
     }
-    if (req.body.tags !== undefined) {
+    if (req.body.tags !== undefined || req.body.businessDistrict !== undefined) {
       salon ||= await Salon.findOne({ id: user.salonId });
       if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
-      salon.tags = normalizeSalonTags(req.body.tags);
+      if (req.body.tags !== undefined) salon.tags = normalizeSalonTags(req.body.tags);
+      if (req.body.businessDistrict !== undefined) salon.businessDistrict = req.body.businessDistrict;
       await salon.save();
       clearPublicSalonDetailCache();
     }

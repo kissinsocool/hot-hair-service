@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { BUSINESS_DISTRICTS } = require('./services/business-districts');
 const { DEMO_USER_ID } = require('./config');
 const { AFTER_SALES_POLICY_IDS, STAFF_ROLE_IDS } = require('./services/salon');
 
@@ -256,6 +257,7 @@ const salonSchema = new mongoose.Schema({
   fullDescription: String,
   afterSalesPolicyIds: [{ type: String, enum: AFTER_SALES_POLICY_IDS }],
   tags: { type: [String], default: [] },
+  businessDistrict: { type: String, enum: ['', ...BUSINESS_DISTRICTS], default: '' },
   openingHours: String,
   acceptsSameDayBooking: { type: Boolean, default: true },
   weeklyClosedDays: [Number],

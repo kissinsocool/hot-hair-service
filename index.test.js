@@ -992,6 +992,7 @@ test('current mini-program salon-list request returns an explicit unrated contra
     async getNearbySalons() {
       return [{
         id: 'salon-without-reviews',
+        businessDistrict: '龙湖天街',
         name: '零评价店铺',
         staffIds: ['staff-without-reviews'],
       }];
@@ -1008,6 +1009,7 @@ test('current mini-program salon-list request returns an explicit unrated contra
       { query: { latitude: '39.9042', longitude: '116.4074', page: '1', limit: '10' } },
       { set() {}, json(value) { payload = value; } },
     );
+    assert.equal(payload[0].businessDistrict, '龙湖天街');
     assert.equal(payload[0].rating, null);
     assert.equal(payload[0].reviewCount, 0);
     assert.equal(Object.hasOwn(payload[0], 'staffIds'), false);
