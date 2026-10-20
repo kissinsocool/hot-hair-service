@@ -92,3 +92,26 @@ test('merchant content drafts cannot overwrite the admin-managed district', () =
   assert.equal(salon.toObject().pendingContent.businessDistrict, undefined);
   assert.equal(salon.businessDistrict, '国贸');
 });
+
+
+test('admin options endpoint returns the same districts accepted by writes', async () => {
+  const routes = new Map();
+  const app = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map(method => [
+    method, (path, ...handlers) => routes.set(`${method}:${path}`, handlers.at(-1)),
+  ]));
+  registerAdminRoutes(app, { rateLimits: { upload: [] } });
+  let payload;
+  const headers = {};
+  await routes.get('get:/api/admin/business-districts')({}, {
+    set(name, value) { headers[name] = value; },
+    json(value) { payload = value; },
+  });
+  assert.deepEqual(payload, BUSINESS_DISTRICTS);
+  assert.equal(headers['Cache-Control'], 'no-store');
+  for (const businessDistrict of payload) {
+    const fixture = setup();
+    const response = await fixture.request('patch', { businessDistrict });
+    assert.equal(response.statusCode, 200);
+    assert.equal(fixture.salon.businessDistrict, businessDistrict);
+  }
+});

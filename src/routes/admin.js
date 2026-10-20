@@ -192,6 +192,11 @@ module.exports = (app, ctx) => {
     res.json(buildAdPayload(config));
   });
   
+  app.get('/api/admin/business-districts', async (_req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json(BUSINESS_DISTRICTS);
+  });
+
   app.get('/api/admin/merchants', async (req, res) => {
     const pagination = normalizePagination(req.query);
     const [merchants, total] = await Promise.all([
