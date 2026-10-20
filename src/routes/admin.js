@@ -580,6 +580,41 @@ module.exports = (app, ctx) => {
     res.json({ post: salonPostPayload(post, publicImageUrl) });
   });
 
+  app.get('/api/admin/booking-appeals', async (req, res) => {
+    const query = { 'merchantAppeal.submittedAt': { $exists: true } };
+    const pagination = normalizePagination(req.query);
+    const [bookings, total] = await Promise.all([
+      Booking.find(query).select('id salonName userName merchantAppeal -_id')
+        .sort({ 'merchantAppeal.submittedAt': -1, id: 1 })
+        .skip(pagination.skip).limit(pagination.limit).lean(),
+      Booking.countDocuments(query),
+    ]);
+    setPaginationHeaders(res, pagination, total);
+    res.json(bookings.map(booking => ({
+      bookingId: booking.id, salonName: booking.salonName, userName: booking.userName,
+      ...booking.merchantAppeal,
+    })));
+  });
+
+  app.patch('/api/admin/booking-appeals/:id', async (req, res) => {
+    const response = req.body.response;
+    if (typeof response !== 'string' || !response.trim() || response.trim().length > 2000) {
+      return res.status(400).json({ message: '请填写1至2000字的处理意见' });
+    }
+    const booking = await Booking.findOneAndUpdate(
+      { id: req.params.id, 'merchantAppeal.status': 'pending' },
+      { $set: {
+        'merchantAppeal.status': 'handled',
+        'merchantAppeal.response': response.trim(),
+        'merchantAppeal.handledBy': req.adminUser.id,
+        'merchantAppeal.handledAt': new Date(),
+      } },
+      { new: true, runValidators: true },
+    ).lean();
+    if (!booking) return res.status(409).json({ message: '申诉不存在或已处理，请刷新后重试' });
+    res.json({ ok: true });
+  });
+
   app.get('/api/admin/user-images', async (_req, res) => {
     const query = {
       $or: [

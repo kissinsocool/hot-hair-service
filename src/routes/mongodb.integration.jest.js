@@ -413,6 +413,79 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect(await Booking.findOne({ id }).lean()).toMatchObject({ status: 'completed', complained: true, complaint: { id: 'racing-complaint' } });
   });
 
+  test('merchant appeal validates eligibility, ownership and input without changing completed orders', async () => {
+    const body = { reason: 'no_show', description: '用户未到店，订单自动完成后出现评价，请核实。' };
+    for (const [id, status, feedback] of [
+      ['appeal-no-feedback', 'completed', {}],
+      ['appeal-accepted', 'accepted', { reviewed: true }],
+    ]) {
+      await Booking.create({ id, status, salonId: 'salon-1', serviceId: 'service-1', startTime: new Date('2028-01-01'), ...feedback });
+      expect((await request('merchant', `/merchant/bookings/${id}/appeal`, body, 'POST')).status).toBe(409);
+    }
+    await Booking.create({ id: 'appeal-validation', userId: 'client-1', status: 'completed', reviewed: true,
+      salonId: 'salon-1', serviceId: 'service-1', startTime: new Date('2028-01-01') });
+    for (const invalid of [
+      {}, { ...body, reason: 'invalid' }, { ...body, description: '  ' },
+      { ...body, description: ['text'] }, { ...body, description: 'a'.repeat(2001) },
+    ]) {
+      expect((await request('merchant', '/merchant/bookings/appeal-validation/appeal', invalid, 'POST')).status).toBe(400);
+    }
+    expect((await request('client', '/merchant/bookings/appeal-validation/appeal', body, 'POST')).status).toBe(401);
+    expect((await request('otherMerchant', '/merchant/bookings/appeal-validation/appeal', body, 'POST')).status).toBe(404);
+    expect((await request('merchant', '/merchant/bookings/missing/appeal', body, 'POST')).status).toBe(404);
+    expect((await Booking.findOne({ id: 'appeal-validation' }).lean()).merchantAppeal).toBeUndefined();
+  });
+
+  test('appeal submission and admin response persist privately, reject duplicates and preserve all booking effects', async () => {
+    const updatedAt = new Date('2028-01-01T10:00:00Z');
+    const policyBefore = await UserPolicy.findOne({ userId: 'client-1' }).lean();
+    const messagesBefore = await BookingMessage.countDocuments();
+    for (const [index, feedback] of [
+      { reviewed: true }, { review: { id: 'appeal-review', comment: '服务评价', reviewStatus: 'rejected' } },
+      { complained: true }, { complaint: { id: 'appeal-complaint', description: '用户投诉', reviewStatus: 'pending' } },
+    ].entries()) {
+      const id = `appeal-success-${index}`;
+      await Booking.create({ id, userId: 'client-1', userName: 'Client', salonId: 'salon-1', salonName: 'Salon',
+        serviceId: 'service-1', status: 'completed', startTime: updatedAt, createdAt: updatedAt, updatedAt,
+        couponId: 'appeal-coupon', couponDiscountFen: 1000, payableAmountFen: 7000, ...feedback });
+      const before = await Booking.findOne({ id }).lean();
+      const body = { reason: index % 2 ? 'other' : 'no_show', description: '  商家说明实际情况  ' };
+      const attempts = await Promise.all([1, 2].map(() => request('merchant', `/merchant/bookings/${id}/appeal`, body, 'POST')));
+      expect(attempts.map(result => result.status).sort()).toEqual([201, 409]);
+      const appeal = attempts.find(result => result.status === 201).body.booking.merchantAppeal;
+      expect(appeal).toMatchObject({ reason: body.reason, description: '商家说明实际情况', status: 'pending', merchantId: 'merchant-1' });
+      const after = await Booking.findOne({ id }).lean();
+      const { merchantAppeal, ...rest } = after;
+      expect(rest).toEqual(before);
+      expect((await request('client', `/bookings/${id}`)).body.merchantAppeal).toBeUndefined();
+      const merchantRows = await request('merchant', '/merchant/bookings?statuses=completed&page=1&limit=100');
+      expect(merchantRows.body.find(row => row.id === id).merchantAppeal.description).toBe('商家说明实际情况');
+      expect((await request('merchant', `/merchant/bookings/${id}`, { action: 'no_show', reason: '用户未到店' }, 'PATCH')).status).toBe(409);
+    }
+    const page = await request('admin', '/admin/booking-appeals?page=1&limit=1');
+    expect(page.status).toBe(200);
+    expect(page.total).toBe('4');
+    expect(page.body).toHaveLength(1);
+    expect((await request('admin', '/admin/booking-appeals?page=2&limit=1')).body[0].bookingId).not.toBe(page.body[0].bookingId);
+    expect((await request('merchant', '/admin/booking-appeals')).status).toBe(401);
+    expect((await request('client', '/admin/booking-appeals')).status).toBe(401);
+    const id = 'appeal-success-0';
+    for (const response of ['', '  ', [], 'a'.repeat(2001)]) {
+      expect((await request('admin', `/admin/booking-appeals/${id}`, { response }, 'PATCH')).status).toBe(400);
+    }
+    expect((await request('merchant', `/admin/booking-appeals/${id}`, { response: '自行处理' }, 'PATCH')).status).toBe(401);
+    const handled = await Promise.all([1, 2].map(() => request('admin', `/admin/booking-appeals/${id}`, { response: '  已核实，请联系客服进一步处理。  ' }, 'PATCH')));
+    expect(handled.map(result => result.status).sort()).toEqual([200, 409]);
+    const result = await Booking.findOne({ id }).lean();
+    expect(result).toMatchObject({ status: 'completed', reviewed: true, couponId: 'appeal-coupon', payableAmountFen: 7000, updatedAt });
+    expect(result.merchantAppeal).toMatchObject({ status: 'handled', handledBy: 'admin-1', response: '已核实，请联系客服进一步处理。' });
+    const merchantRows = await request('merchant', '/merchant/bookings?statuses=completed&page=1&limit=100');
+    expect(merchantRows.body.find(row => row.id === id).merchantAppeal.status).toBe('handled');
+    expect((await request('client', `/bookings/${id}`)).body.merchantAppeal).toBeUndefined();
+    expect(await UserPolicy.findOne({ userId: 'client-1' }).lean()).toEqual(policyBefore);
+    expect(await BookingMessage.countDocuments()).toBe(messagesBefore);
+  });
+
   test('logout closes the old merchant websocket and revokes all three role tokens', async () => {
     const socket = new WebSocket(baseUrl.replace('http:', 'ws:') + '/ws');
     try {

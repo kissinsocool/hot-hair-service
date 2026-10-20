@@ -201,8 +201,10 @@ const normalizeBookingPayload = (booking, includePendingMerchantReply = false) =
     delete review.merchantReply;
   }
   const serviceAmount = servicePriceFen / 100;
+  const { merchantAppeal, ...publicBooking } = normalized;
   return {
-    ...normalized,
+    ...publicBooking,
+    ...(includePendingMerchantReply && merchantAppeal ? { merchantAppeal } : {}),
     servicePriceFen,
     serviceDurationMinutes,
     staffExtraServiceFeeFen,

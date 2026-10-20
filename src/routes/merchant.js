@@ -675,6 +675,36 @@ module.exports = (app, ctx) => {
     });
   });
   
+  app.post('/api/merchant/bookings/:id/appeal', ...rateLimits.merchantBooking, async (req, res) => {
+    const { reason, description } = req.body;
+    if (!['no_show', 'other'].includes(reason) || typeof description !== 'string' ||
+        !description.trim() || description.trim().length > 2000) {
+      return res.status(400).json({ message: '请选择申诉类型并填写1至2000字的情况说明' });
+    }
+    const scope = buildMerchantBookingScope(req.merchantUser.salonId);
+    const booking = await Booking.findOne({ id: req.params.id, ...scope }).lean();
+    if (!booking) return res.status(404).json({ message: '订单不存在' });
+    const updated = await Booking.findOneAndUpdate(
+      {
+        $and: [
+          { id: booking.id, ...scope, status: 'completed', merchantAppeal: null },
+          { $or: [
+            { reviewed: true }, { review: { $ne: null } },
+            { complained: true }, { complaint: { $ne: null } },
+          ] },
+        ],
+      },
+      { $set: { merchantAppeal: {
+        reason, description: description.trim(), status: 'pending',
+        merchantId: req.merchantUser.id, submittedAt: new Date(),
+      } } },
+      { new: true, runValidators: true },
+    );
+    if (!updated) return res.status(409).json({ message: '仅有评价或投诉的已完成订单可以申诉，且每单只能提交一次' });
+    broadcastBookingEvent('booking.updated', updated);
+    res.status(201).json({ booking: normalizeMerchantBooking(updated) });
+  });
+
   app.patch('/api/merchant/bookings/:id/review-reply', ...rateLimits.merchantBooking, async (req, res) => {
     const reply = String(req.body.reply || '').trim();
     if (!reply) return res.status(400).json({ message: 'reply is required' });

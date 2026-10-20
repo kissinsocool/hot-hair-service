@@ -136,6 +136,17 @@ const pendingContentSchema = new mongoose.Schema({
   staff: [staffDraftSchema],
 }, { _id: false });
 
+const merchantAppealSchema = new mongoose.Schema({
+  reason: { type: String, enum: ['no_show', 'other'], required: true },
+  description: { type: String, required: true, maxlength: 2000 },
+  status: { type: String, enum: ['pending', 'handled'], default: 'pending' },
+  merchantId: { type: String, required: true },
+  submittedAt: { type: Date, required: true },
+  response: { type: String, maxlength: 2000 },
+  handledBy: String,
+  handledAt: Date,
+}, { _id: false });
+
 const bookingSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
   userId: { type: String, default: DEMO_USER_ID },
@@ -176,6 +187,7 @@ const bookingSchema = new mongoose.Schema({
   review: { type: reviewSchema, default: undefined },
   complained: { type: Boolean, default: false },
   complaint: { type: complaintSchema, default: undefined },
+  merchantAppeal: { type: merchantAppealSchema, default: undefined },
   createdAt: Date,
   updatedAt: Date,
 }, { id: false });
@@ -191,6 +203,9 @@ bookingSchema.index({ createdAt: -1 });
 bookingSchema.index({ 'review.reviewStatus': 1, updatedAt: -1 });
 bookingSchema.index({ staffId: 1, 'review.reviewStatus': 1, updatedAt: -1 });
 bookingSchema.index({ 'complaint.reviewStatus': 1, updatedAt: -1 });
+bookingSchema.index({ 'merchantAppeal.submittedAt': -1, id: 1 }, {
+  partialFilterExpression: { 'merchantAppeal.submittedAt': { $exists: true } },
+});
 
 const bookingMessageSchema = new mongoose.Schema({
   id: { type: String, default: () => new mongoose.Types.ObjectId().toString(), unique: true, index: true },
