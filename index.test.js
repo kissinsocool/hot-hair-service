@@ -402,6 +402,7 @@ test('booking migration derives canonical booking fields', () => {
     tags: ['洗剪吹'],
     tagIds: ['wash_cut_blow'],
     priceFen: 6800,
+    discountTenths: undefined,
     durationMinutes: 30,
     note: '',
     imageUrl: '',

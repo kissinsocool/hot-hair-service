@@ -208,6 +208,9 @@ const serviceForStorage = (service = {}, fallbackId = '', previous = {}) => {
     tags: serviceTagLabels(tagIds),
     tagIds,
     priceFen: service.priceFen,
+    discountTenths: service.discountTenths === undefined
+      ? previous.discountTenths
+      : service.discountTenths,
     durationMinutes: service.durationMinutes,
     note: String(service.note || ''),
     imageUrl: serviceImages(service)[0] || '',

@@ -915,6 +915,9 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
         tagIds: service.tagIds,
         tags: service.tags,
         priceFen: service.priceFen ?? current.priceFen,
+        discountTenths: service.discountTenths === undefined
+          ? current.discountTenths
+          : service.discountTenths,
         durationMinutes: service.durationMinutes ?? current.durationMinutes,
         note: service.note === '' ? '' : current.note,
         imageUrls: salonDomain.incomingServiceImages(service, current)

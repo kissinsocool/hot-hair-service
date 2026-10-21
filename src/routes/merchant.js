@@ -850,6 +850,10 @@ function validateSalonContent(payload = {}, limits) {
     if (!Number.isSafeInteger(service?.priceFen) || service.priceFen < 0) {
       return 'service priceFen must be a non-negative integer';
     }
+    if (service?.discountTenths != null && (
+      !Number.isSafeInteger(service.discountTenths)
+      || service.discountTenths < 1 || service.discountTenths > 100
+    )) return 'service discountTenths must be an integer between 1 and 100';
     if (!Number.isSafeInteger(service?.durationMinutes) || service.durationMinutes <= 0) {
       return 'service durationMinutes must be a positive integer';
     }
