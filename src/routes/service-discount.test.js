@@ -73,3 +73,44 @@ test('discount survives real Mongoose subdocuments, pending drafts and legacy no
   await h.salon.validate();
   assert.equal(h.salon.pendingContent.services[0].discountTenths, 60);
 });
+
+test('original 280 at 9折 stores selling 252 and returns the original without inversion', async () => {
+  const h = harness();
+  const result = await h.save({ ...oldService, originalPriceFen: 28000, discountTenths: 90, priceFen: 25200 });
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.services[0].originalPriceFen, 28000);
+  assert.equal(result.body.services[0].priceFen, 25200);
+  assert.equal(servicePayload(h.salon.services[0]).originalPriceFen, 28000);
+  const draft = await buildContentDraft(h.salon, {
+    services: [{ ...result.body.services[0], name: '新名称' }],
+  }, { services: result.body.services, staff: [] });
+  h.salon.pendingContent = draft;
+  await h.salon.validate();
+  assert.equal(h.salon.pendingContent.services[0].originalPriceFen, 28000);
+  assert.equal(h.salon.pendingContent.services[0].priceFen, 25200);
+
+  const legacyEcho = { ...result.body.services[0], priceFen: 30000 };
+  const legacyEdit = await h.save(legacyEcho);
+  assert.equal(legacyEdit.statusCode, 200);
+  assert.equal(legacyEdit.body.services[0].priceFen, 30000);
+  assert.equal(legacyEdit.body.services[0].originalPriceFen, null);
+  assert.equal(legacyEdit.body.services[0].discountTenths, null);
+});
+
+test('new original price must be valid and match the selling price', async () => {
+  for (const originalPriceFen of [-1, 280.1, '28000', false, 28000]) {
+    const h = harness();
+    const result = await h.save({ ...oldService, originalPriceFen, discountTenths: 90 });
+    assert.equal(result.statusCode, 400, String(originalPriceFen));
+  }
+});
+
+test('released clients omitting original price retain it until selling price changes', async () => {
+  const h = harness();
+  await h.save({ ...oldService, originalPriceFen: 28000, discountTenths: 90, priceFen: 25200 });
+  const unchanged = await h.save({ ...oldService, priceFen: 25200 });
+  assert.equal(unchanged.body.services[0].originalPriceFen, 28000);
+  const changed = await h.save({ ...oldService, priceFen: 30000 });
+  assert.equal(changed.body.services[0].originalPriceFen, null);
+  assert.equal(changed.body.services[0].priceFen, 30000);
+});

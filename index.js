@@ -915,6 +915,9 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
         tagIds: service.tagIds,
         tags: service.tags,
         priceFen: service.priceFen ?? current.priceFen,
+        originalPriceFen: service.originalPriceFen === undefined
+          ? current.originalPriceFen
+          : service.originalPriceFen,
         discountTenths: service.discountTenths === undefined
           ? current.discountTenths
           : service.discountTenths,

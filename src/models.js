@@ -37,6 +37,10 @@ const serviceSchema = new mongoose.Schema({
   tags: { type: [String], default: undefined },
   tagIds: { type: [String], default: [] },
   priceFen: { ...integer(), required: true },
+  originalPriceFen: {
+    type: Number, min: 0, default: undefined,
+    validate: value => value == null || Number.isSafeInteger(value),
+  },
   discountTenths: {
     type: Number, min: 1, max: 100, default: undefined,
     validate: value => value == null || Number.isSafeInteger(value),

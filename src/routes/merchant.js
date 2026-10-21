@@ -327,7 +327,7 @@ module.exports = (app, ctx) => {
     if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
   
     const payload = req.body || {};
-    const validationError = validateSalonContent(payload, INPUT_LIMITS);
+    const validationError = validateSalonContent(payload, INPUT_LIMITS, salon);
     if (validationError) return res.status(400).json({ message: validationError });
     if (Array.isArray(payload.staff)) {
       const staffError = await validateSalonStaffIds(salon, payload.staff, true);
@@ -770,7 +770,7 @@ module.exports = (app, ctx) => {
   });
 };
 
-function validateSalonContent(payload = {}, limits) {
+function validateSalonContent(payload = {}, limits, salon) {
   if (payload.afterSalesPolicyIds !== undefined && (
     !Array.isArray(payload.afterSalesPolicyIds)
     || payload.afterSalesPolicyIds.some(id => typeof id !== 'string' || !salonService.AFTER_SALES_POLICY_IDS.includes(id))
@@ -854,6 +854,19 @@ function validateSalonContent(payload = {}, limits) {
       !Number.isSafeInteger(service.discountTenths)
       || service.discountTenths < 1 || service.discountTenths > 100
     )) return 'service discountTenths must be an integer between 1 and 100';
+    if (service?.originalPriceFen != null) {
+      if (!Number.isSafeInteger(service.originalPriceFen) || service.originalPriceFen < 0) {
+        return 'service originalPriceFen must be a non-negative integer';
+      }
+      const expected = Math.round(service.originalPriceFen * (service.discountTenths ?? 100) / 100);
+      const previous = (salon?.services || []).find(item => item.id === service.id);
+      const pending = (salon?.pendingContent?.services || []).find(item => item.id === service.id);
+      if (service.priceFen !== expected
+        && service.originalPriceFen !== previous?.originalPriceFen
+        && service.originalPriceFen !== pending?.originalPriceFen) {
+        return 'service priceFen must equal the discounted originalPriceFen';
+      }
+    }
     if (!Number.isSafeInteger(service?.durationMinutes) || service.durationMinutes <= 0) {
       return 'service durationMinutes must be a positive integer';
     }

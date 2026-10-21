@@ -189,6 +189,19 @@ const incomingServiceImages = (service, previous = {}) => {
   return serviceImages({ imageUrls: [service.imageUrl, ...current.slice(1)] });
 };
 
+const servicePricing = (service, previous = {}) => {
+  const originalPriceFen = service.originalPriceFen === undefined
+    ? previous.originalPriceFen : service.originalPriceFen;
+  const discountTenths = service.discountTenths === undefined
+    ? previous.discountTenths : service.discountTenths;
+  // Released editors can change the selling price while echoing old price metadata.
+  if (originalPriceFen != null
+    && service.priceFen !== Math.round(originalPriceFen * (discountTenths ?? 100) / 100)) {
+    return { priceFen: service.priceFen, originalPriceFen: null, discountTenths: null };
+  }
+  return { priceFen: service.priceFen, originalPriceFen, discountTenths };
+};
+
 const serviceForStorage = (service = {}, fallbackId = '', previous = {}) => {
   const tagIds = incomingServiceTagIds(service, previous);
   const promotionEnabled = typeof service.promotionEnabled === 'boolean'
@@ -207,10 +220,7 @@ const serviceForStorage = (service = {}, fallbackId = '', previous = {}) => {
     promotionReviewedAt: service.promotionReviewedAt ?? previous.promotionReviewedAt,
     tags: serviceTagLabels(tagIds),
     tagIds,
-    priceFen: service.priceFen,
-    discountTenths: service.discountTenths === undefined
-      ? previous.discountTenths
-      : service.discountTenths,
+    ...servicePricing(service, previous),
     durationMinutes: service.durationMinutes,
     note: String(service.note || ''),
     imageUrl: serviceImages(service)[0] || '',

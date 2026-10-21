@@ -20,7 +20,7 @@ const response = () => ({ statusCode: 200, status(code) { this.statusCode = code
 const chain = value => ({ select() { return this; }, sort() { return this; }, skip() { return this; }, limit() { return this; }, async lean() { return value; } });
 const limits = { booking: [], publicRead: [], login: [], upload: [], merchantBooking: [] };
 
-function creationHarness() {
+function creationHarness(servicePricing = {}) {
   const saved = [];
   const messages = [];
   const session = { async withTransaction(work) { await work(); }, async endSession() {} };
@@ -34,7 +34,7 @@ function creationHarness() {
     Booking: Model, crypto, rateLimits: limits, INPUT_LIMITS: { note: 500 },
     mongoose: { async startSession() { return session; } },
     Salon: {
-      findOne() { return chain({ id: 'salon-1', name: 'Salon', publishStatus: 'online', openingHours: '09:00-20:00', staffIds: ['staff-1'], services: [{ id: 'service-1', name: 'Cut', priceFen: 8000, durationMinutes: 60, tagIds: ['wash_cut_blow'] }] }); },
+      findOne() { return chain({ id: 'salon-1', name: 'Salon', publishStatus: 'online', openingHours: '09:00-20:00', staffIds: ['staff-1'], services: [{ id: 'service-1', name: 'Cut', priceFen: 8000, durationMinutes: 60, tagIds: ['wash_cut_blow'], ...servicePricing }] }); },
       async updateOne(_query, _update, options) { assert.equal(options.session, session); return { matchedCount: 1 }; },
     },
     BookingMessage: { async create(rows, options) { assert.equal(options.session, session); messages.push(...rows); return rows; } },
@@ -60,6 +60,17 @@ test('released client and k6 request bodies remain valid without expected prices
   assert.equal(res.statusCode, 201);
   assert.equal(res.body.booking.payableAmountFen, 8000);
   assert.equal(h.messages.length, 1);
+});
+
+test('original 280 at 9折 books the saved selling price 252 without applying discount twice', async () => {
+  const h = creationHarness({ priceFen: 25200, originalPriceFen: 28000, discountTenths: 90 });
+  const res = await h.create();
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.body.booking.servicePriceFen, 25200);
+  assert.equal(res.body.booking.payableAmountFen, 25200);
+  const stale = await h.create({ expectedOriginalAmountFen: 28000, expectedPayableAmountFen: 28000 });
+  assert.equal(stale.statusCode, 409);
+  assert.equal(stale.body.quote.payableAmountFen, 25200);
 });
 
 test('price changes reject before creating an order or its message; explicit reconfirmation succeeds', async () => {
