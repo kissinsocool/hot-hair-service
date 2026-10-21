@@ -2140,7 +2140,7 @@ test('stripSensitiveSalonFields removes license fields from public salon payload
     bookingCreationFence: 42,
   });
 
-  assert.deepEqual(payload, { id: '1', name: 'Hot Hair' });
+  assert.deepEqual(payload, { id: '1', name: 'Hot Hair', isFeatured: false });
 });
 
 test('content review only covers merchant text and uploaded images', () => {
@@ -4038,4 +4038,107 @@ test('legacy-only staff roles migrate into supported canonical roles', () => {
   assert.equal(salonDomain.staffRoleIdFromLegacy('色彩专家'), 'designer');
   assert.equal(salonDomain.STAFF_ROLE_IDS.includes('senior_stylist'), false);
   assert.equal(salonDomain.STAFF_ROLE_IDS.includes('color_specialist'), false);
+});
+
+
+test('merchant content and approval preserve admin featured state for old and echoed requests', async () => {
+  for (const isFeatured of [true, false]) {
+    const salon = new Salon({ id: 'featured-merchant', name: '店铺', isFeatured });
+    const liveContent = { name: '店铺', staff: [], services: [] };
+    for (const payload of [{ name: '新店名' }, { name: '新店名', isFeatured: !isFeatured }]) {
+      const draft = await buildContentDraft(salon, payload, liveContent);
+      assert.equal(draft.isFeatured, undefined);
+      await applyDirectSalonContent(salon, payload);
+      assert.equal(salon.isFeatured, isFeatured);
+      salon.pendingContent = { ...draft, isFeatured: !isFeatured };
+      assert.equal(salon.pendingContent.toObject().isFeatured, undefined);
+      await applyPendingContent(salon);
+      assert.equal(salon.isFeatured, isFeatured);
+    }
+  }
+});
+
+test('current mini-program detail request returns persisted featured state and cache refreshes after admin toggle', async () => {
+  const routes = new Map();
+  const app = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map(method => [
+    method, (path, ...handlers) => routes.set(`${method}:${path}`, handlers.at(-1)),
+  ]));
+  const salon = new Salon({ id: 'featured-detail', name: '精选测试', publishStatus: 'online' });
+  salon.save = async () => { await salon.validate(); return salon; };
+  const originalFind = StaffProfile.find;
+  StaffProfile.find = () => ({ lean: async () => [] });
+  registerPublicRoutes(app, {
+    rateLimits: { publicRead: [] },
+    Salon: { findOne(query) {
+      assert.deepEqual(query, { id: salon.id, publishStatus: 'online' });
+      return { select: async () => salon };
+    } },
+    SalonPost: { find: () => ({ sort() { return this; }, limit() { return this; }, lean: async () => [] }) },
+    buildPublicSalonDetail,
+    addReviewHelpfulState: async reviews => reviews,
+    sessionTokenFromRequest: () => '',
+  });
+  registerAdminRoutes(app, {
+    rateLimits: { upload: [] },
+    MerchantUser: { findOne: () => ({ lean: async () => ({ id: 'merchant-1', salonId: salon.id }) }) },
+    Salon: { findOne: async () => salon },
+    clearPublicSalonDetailCache,
+    buildAdminMerchantPayload: async () => ({ salon: salon.toObject() }),
+  });
+  const response = () => ({
+    body: null, set() {},
+    json(value) { this.body = value; },
+  });
+  const read = async () => {
+    const res = response();
+    await routes.get('get:/api/salons/:id')({ params: { id: salon.id } }, res);
+    return res.body;
+  };
+  clearPublicSalonDetailCache();
+  try {
+    assert.equal((await read()).isFeatured, false);
+    for (const isFeatured of [true, false]) {
+      await routes.get('patch:/api/admin/merchants/:id/featured')({
+        params: { id: 'merchant-1' }, body: { isFeatured },
+      }, response());
+      const detail = await read();
+      assert.equal(detail.isFeatured, isFeatured);
+      assert.equal(detail.name, '精选测试');
+      assert.equal(detail.publishStatus, 'online');
+    }
+  } finally {
+    StaffProfile.find = originalFind;
+    clearPublicSalonDetailCache();
+  }
+});
+
+test('released merchant full salon save and stale echoed fields cannot change featured', async (t) => {
+  t.mock.method(StaffProfile, 'find', () => ({ lean: async () => [] }));
+  const routes = new Map();
+  const app = { get() {}, post() {}, delete() {}, use() {},
+    patch(path, ...handlers) { routes.set(path, handlers.at(-1)); } };
+  const salon = new Salon({
+    id: 'featured-full-save', name: '测试店铺', description: '店铺简介',
+    address: '北京市朝阳区', phone: '13800000000', openingHours: '09:00 - 21:00',
+    isFeatured: true, publishStatus: 'online',
+  });
+  salon.save = async () => { await salon.validate(); return salon; };
+  const live = () => ({ ...salon.toObject(), services: [], staff: [] });
+  registerMerchantRoutes(app, {
+    Salon: { findOne: async () => salon },
+    applyDirectSalonContent, buildContentDraft, hasReviewableContentChanges,
+    buildSalonDetail: async () => live(), buildMerchantSalonPayload: async () => live(),
+    INPUT_LIMITS, rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
+    validateSalonStaffIds: async () => null,
+  });
+  // MerchantSalonScreen copies the loaded salon, then replaces services and staff.
+  const { isFeatured: _newField, ...releasedSalon } = live();
+  for (const body of [releasedSalon, { ...releasedSalon, isFeatured: false }]) {
+    const response = { statusCode: 200, status(code) { this.statusCode = code; return this; },
+      json(value) { this.body = value; } };
+    await routes.get('/api/merchant/salon')({ merchantUser: { salonId: salon.id }, body }, response);
+    assert.equal(response.statusCode, 200);
+    assert.equal(salon.isFeatured, true);
+    assert.equal(response.body.isFeatured, true);
+  }
 });

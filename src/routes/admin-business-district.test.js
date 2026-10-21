@@ -9,7 +9,7 @@ function setup() {
   const app = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map(method => [
     method, (path, ...handlers) => routes.set(`${method}:${path}`, handlers.at(-1)),
   ]));
-  const salon = new Salon({ id: 'district-salon', tags: ['人气店铺'], businessDistrict: '国贸' });
+  const salon = new Salon({ id: 'district-salon', tags: ['人气店铺'], businessDistrict: '国贸', isFeatured: true });
   const user = new MerchantUser({ id: 'district-merchant', username: 'merchant', displayName: 'merchant', salonId: salon.id });
   let saves = 0;
   salon.save = async () => { await salon.validate(); saves += 1; return salon; };
@@ -53,6 +53,7 @@ for (const method of ['post', 'patch']) {
     const response = await fixture.request(method, legacyBody);
     assert.equal(response.statusCode, method === 'post' ? 201 : 200);
     assert.equal(fixture.salon.businessDistrict, '国贸');
+    assert.equal(fixture.salon.isFeatured, true);
   });
 
   test(`${method} persists all static districts and allows clearing`, async () => {

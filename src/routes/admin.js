@@ -412,6 +412,21 @@ module.exports = (app, ctx) => {
     res.json({ merchant: await buildAdminMerchantPayload(user, salon) });
   });
 
+  app.patch('/api/admin/merchants/:id/featured', async (req, res) => {
+    if (typeof req.body.isFeatured !== 'boolean') {
+      return res.status(400).json({ message: 'isFeatured must be a boolean' });
+    }
+    const user = await MerchantUser.findOne({ id: req.params.id }).lean();
+    if (!user) return res.status(404).json({ message: 'Merchant user not found' });
+    const salon = await Salon.findOne({ id: user.salonId });
+    if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
+
+    salon.isFeatured = req.body.isFeatured;
+    await salon.save();
+    clearPublicSalonDetailCache();
+    res.json({ merchant: await buildAdminMerchantPayload(user, salon) });
+  });
+
   app.patch('/api/admin/merchants/:id/publish', async (req, res) => {
     const action = String(req.body.action || '').trim();
     if (!['online', 'offline'].includes(action)) {

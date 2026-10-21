@@ -282,6 +282,7 @@ const salonSchema = new mongoose.Schema({
   afterSalesPolicyIds: [{ type: String, enum: AFTER_SALES_POLICY_IDS }],
   tags: { type: [String], default: [] },
   businessDistrict: { type: String, enum: ['', ...BUSINESS_DISTRICTS], default: '' },
+  isFeatured: { type: Boolean, default: false },
   openingHours: String,
   acceptsSameDayBooking: { type: Boolean, default: true },
   weeklyClosedDays: [Number],

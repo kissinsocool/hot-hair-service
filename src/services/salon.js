@@ -330,7 +330,7 @@ const stripSensitiveSalonFields = (salon = {}) => {
     bookingCreationFence,
     ...publicSalon
   } = salon || {};
-  return publicSalon;
+  return { ...publicSalon, isFeatured: publicSalon.isFeatured === true };
 };
 
 // ponytail: process-local and short-lived; use Redis only when multiple backend instances need a shared cache.
