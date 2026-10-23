@@ -550,6 +550,44 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     if (kind === 'publicReply') expect(saved.review.merchantReply).toBeUndefined();
   });
 
+  test('admin today bookings snapshot and per-account viewed state persist through actual HTTP and MongoDB', async () => {
+    const { bookingDayRange } = require('../services/booking');
+    const today = bookingDayRange();
+    for (const [id, createdAt] of [
+      ['new-orders-yesterday', new Date(today.start.getTime() - 1)],
+      ['new-orders-midnight', today.start],
+    ]) {
+      await Booking.create({ id, userId: 'client-1', salonId: 'salon-1',
+        serviceId: 'service-1', startTime: new Date('2030-01-01'), status: 'canceled', createdAt });
+    }
+    const secondSession = createSession();
+    sessions.admin2 = secondSession;
+    await AdminUser.create({ id: 'admin-2', username: 'admin-2', passwordHash: 'fixture', passwordSalt: 'fixture',
+      sessionTokenHash: secondSession.tokenHash, sessionExpiresAt: secondSession.expiresAt });
+    const overview = await request('admin', '/admin/overview');
+    expect(overview.status).toBe(200);
+    const before = overview.body.bookingsSnapshotBefore;
+    const query = `before=${encodeURIComponent(before)}&page=1&limit=100`;
+    const list = await request('admin', `/admin/new-bookings?${query}`);
+    expect(list.status).toBe(200);
+    expect(list.body.some(order => order.id === 'new-orders-midnight')).toBe(true);
+    expect(list.body.some(order => order.id === 'new-orders-yesterday')).toBe(false);
+    expect(Number(list.total)).toBe(overview.body.todayBookingCount);
+    expect((await request('merchant', `/admin/new-bookings?${query}`)).status).toBe(401);
+    expect((await request('admin', '/admin/new-bookings/viewed', { before, adminId: 'admin-2' }, 'POST')).status).toBe(200);
+    expect((await AdminUser.findOne({ id: 'admin-1' }).lean()).newBookingsViewedBefore.toISOString()).toBe(before);
+    expect((await AdminUser.findOne({ id: 'admin-2' }).lean()).newBookingsViewedBefore).toBeUndefined();
+    expect((await request('admin', '/admin/overview')).body.unviewedBookingCount).toBe(0);
+    expect((await request('admin2', '/admin/overview')).body.unviewedBookingCount).toBeGreaterThan(0);
+    await Booking.create({ id: 'new-orders-at-boundary', userId: 'client-1', salonId: 'salon-1',
+      serviceId: 'service-1', startTime: new Date('2030-01-01'), status: 'pending', createdAt: new Date(before) });
+    expect((await request('admin', '/admin/overview')).body.unviewedBookingCount).toBe(1);
+    await Promise.all([before, new Date(new Date(before).getTime() - 1).toISOString()].map(value =>
+      request('admin', '/admin/new-bookings/viewed', { before: value }, 'POST')));
+    expect((await AdminUser.findOne({ id: 'admin-1' }).lean()).newBookingsViewedBefore.toISOString()).toBe(before);
+    expect((await request('admin', '/admin/bookings?page=1&limit=100')).body.some(order => order.id === 'new-orders-yesterday')).toBe(true);
+  });
+
   test('logout closes the old merchant websocket and revokes all three role tokens', async () => {
     const socket = new WebSocket(baseUrl.replace('http:', 'ws:') + '/ws');
     try {

@@ -373,6 +373,7 @@ const adminUserSchema = new mongoose.Schema({
   sessionTokenHash: { type: String, default: '', index: true },
   sessionExpiresAt: Date,
   lastLoginAt: Date,
+  newBookingsViewedBefore: Date,
 }, { timestamps: true });
 
 const clientUserSchema = new mongoose.Schema({

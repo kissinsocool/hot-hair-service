@@ -1,7 +1,14 @@
 const { BUSINESS_DISTRICTS } = require('../services/business-districts');
 const { normalizeDocument } = require('../services/salon');
 const { funnelMetrics } = require('../services/analytics');
-const { bookingDayRange } = require('../services/booking');
+const { bookingDayRange, localDateKey } = require('../services/booking');
+
+const parseBookingsSnapshot = (value) => {
+  if (typeof value !== 'string') return null;
+  const before = new Date(value);
+  return Number.isFinite(before.getTime()) && before.toISOString() === value
+    && before.getTime() <= Date.now() ? before : null;
+};
 
 module.exports = (app, ctx) => {
   const {
@@ -92,12 +99,16 @@ module.exports = (app, ctx) => {
   });
 
   app.get('/api/admin/overview', async (req, res) => {
-    const today = bookingDayRange();
+    const before = new Date();
+    const today = bookingDayRange(undefined, before);
+    const viewedBefore = req.adminUser?.newBookingsViewedBefore;
+    const unreadStart = viewedBefore && new Date(viewedBefore) > today.start
+      ? new Date(viewedBefore) : today.start;
     const yesterday = {
       start: new Date(today.start.getTime() - 24 * 60 * 60 * 1000),
       end: today.start,
     };
-    const [merchantCount, clientCount, yesterdayNewClientCount, salonCount, bookingCount, pendingCount, acceptedCount, funnelRows] = await Promise.all([
+    const [merchantCount, clientCount, yesterdayNewClientCount, salonCount, bookingCount, pendingCount, acceptedCount, funnelRows, todayBookingCount, unviewedBookingCount] = await Promise.all([
       MerchantUser.countDocuments(),
       ClientUser.countDocuments(),
       ClientUser.countDocuments({ createdAt: { $gte: yesterday.start, $lt: yesterday.end } }),
@@ -109,6 +120,8 @@ module.exports = (app, ctx) => {
         { $match: { createdAt: { $gte: yesterday.start, $lt: yesterday.end } } },
         { $group: { _id: '$name', count: { $sum: 1 } } },
       ]),
+      Booking.countDocuments({ createdAt: { $gte: today.start, $lt: before } }),
+      Booking.countDocuments({ createdAt: { $gte: unreadStart, $lt: before } }),
     ]);
   
     res.json({
@@ -119,6 +132,9 @@ module.exports = (app, ctx) => {
       bookingCount,
       pendingCount,
       acceptedCount,
+      todayBookingCount,
+      unviewedBookingCount,
+      bookingsSnapshotBefore: before.toISOString(),
       funnel: funnelMetrics(funnelRows),
     });
   });
@@ -550,6 +566,31 @@ module.exports = (app, ctx) => {
     ]);
     setPaginationHeaders(res, pagination, total);
     res.json(bookings.map(normalizeBooking));
+  });
+
+  app.get('/api/admin/new-bookings', async (req, res) => {
+    const before = parseBookingsSnapshot(req.query.before);
+    if (!before) return res.status(400).json({ message: 'Invalid bookings snapshot' });
+    const day = bookingDayRange(localDateKey(before));
+    const query = { createdAt: { $gte: day.start, $lt: before } };
+    const pagination = normalizePagination(req.query);
+    const [bookings, total] = await Promise.all([
+      Booking.find(query).select('-_id -__v').sort({ createdAt: -1, _id: -1 })
+        .skip(pagination.skip).limit(pagination.limit).lean(),
+      Booking.countDocuments(query),
+    ]);
+    setPaginationHeaders(res, pagination, total);
+    res.json(bookings.map(normalizeBooking));
+  });
+
+  app.post('/api/admin/new-bookings/viewed', async (req, res) => {
+    const before = parseBookingsSnapshot(req.body?.before);
+    if (!before) return res.status(400).json({ message: 'Invalid bookings snapshot' });
+    await AdminUser.updateOne(
+      { id: req.adminUser.id },
+      { $max: { newBookingsViewedBefore: before } },
+    );
+    res.json({ ok: true });
   });
 
   app.get('/api/admin/salon-posts', async (req, res) => {
