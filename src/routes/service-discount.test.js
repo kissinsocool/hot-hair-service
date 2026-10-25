@@ -114,3 +114,47 @@ test('released clients omitting original price retain it until selling price cha
   assert.equal(changed.body.services[0].originalPriceFen, null);
   assert.equal(changed.body.services[0].priceFen, 30000);
 });
+
+test('backend rounds discounted prices to yuan for released and integer-price merchant requests', async () => {
+  for (const [originalPriceFen, discountTenths, legacyPriceFen, expected] of [
+    [9900, 90, 8910, 8900],
+    [9950, 90, 8955, 9000],
+    [10000, 65, 6500, 6500],
+    [10050, 1, 101, 100],
+    [5000, 1, 50, 100],
+    [4900, 1, 49, 0],
+  ]) {
+    const h = harness();
+    const request = { ...oldService, originalPriceFen, discountTenths, priceFen: legacyPriceFen };
+    const integerRequest = await harness().save({ ...request, priceFen: expected });
+    assert.equal(integerRequest.statusCode, 200);
+    assert.equal(integerRequest.body.services[0].priceFen, expected);
+    const saved = await h.save(request);
+    assert.equal(saved.statusCode, 200);
+    assert.equal(saved.body.services[0].priceFen, expected);
+    assert.equal(h.salon.services[0].priceFen, expected);
+    assert.equal(saved.body.services[0].originalPriceFen, originalPriceFen);
+    assert.equal(saved.body.services[0].discountTenths, discountTenths);
+    // The released editor recalculates cents when loading; saving again must be stable.
+    assert.equal((await h.save(request)).body.services[0].priceFen, expected);
+    assert.equal((await h.save({ ...request, priceFen: expected })).body.services[0].priceFen, expected);
+    const draft = await buildContentDraft(h.salon, {
+      services: [{ ...saved.body.services[0], name: '新套餐名称' }],
+    }, { services: saved.body.services, staff: [] });
+    assert.equal(draft.services[0].priceFen, expected);
+    assert.equal(draft.services[0].originalPriceFen, originalPriceFen);
+    const cleared = await h.save({ ...request, discountTenths: null, priceFen: originalPriceFen });
+    assert.equal(cleared.body.services[0].priceFen, originalPriceFen);
+  }
+});
+
+test('undiscounted fractions and historical stored prices are not rounded on reads', async () => {
+  for (const discountTenths of [null, 100]) {
+    const h = harness();
+    const saved = await h.save({ ...oldService, originalPriceFen: 9950, discountTenths, priceFen: 9950 });
+    assert.equal(saved.body.services[0].priceFen, 9950);
+  }
+  const historical = new Salon({ services: [{ ...oldService, originalPriceFen: 9950, discountTenths: 90, priceFen: 8955 }] });
+  assert.equal(servicePayload(historical.services[0]).priceFen, 8955);
+  assert.equal(servicePayload(historical.services[0]).originalPriceFen, 9950);
+});

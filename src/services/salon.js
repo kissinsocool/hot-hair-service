@@ -72,6 +72,8 @@ const REVIEW_TAGS = [
   '无推销',
   '环镜整洁',
   '效果好评',
+  '接待热情',
+  // 保留旧客户端提交及历史评价标签。
   '好沟通',
 ];
 const publicSalonDetailCache = new Map();
@@ -189,6 +191,18 @@ const incomingServiceImages = (service, previous = {}) => {
   return serviceImages({ imageUrls: [service.imageUrl, ...current.slice(1)] });
 };
 
+const discountedServicePriceFen = (originalPriceFen, discountTenths) => (
+  discountTenths != null && discountTenths < 100
+    ? Math.round(originalPriceFen * discountTenths / 10000) * 100
+    : originalPriceFen
+);
+
+// Released merchant editors still calculate the selling price to the nearest fen.
+const matchesServiceDiscount = (priceFen, originalPriceFen, discountTenths) => (
+  priceFen === discountedServicePriceFen(originalPriceFen, discountTenths)
+  || priceFen === Math.round(originalPriceFen * (discountTenths ?? 100) / 100)
+);
+
 const servicePricing = (service, previous = {}) => {
   const originalPriceFen = service.originalPriceFen === undefined
     ? previous.originalPriceFen : service.originalPriceFen;
@@ -196,7 +210,7 @@ const servicePricing = (service, previous = {}) => {
     ? previous.discountTenths : service.discountTenths;
   // Released editors can change the selling price while echoing old price metadata.
   if (originalPriceFen != null
-    && service.priceFen !== Math.round(originalPriceFen * (discountTenths ?? 100) / 100)) {
+    && !matchesServiceDiscount(service.priceFen, originalPriceFen, discountTenths)) {
     return { priceFen: service.priceFen, originalPriceFen: null, discountTenths: null };
   }
   return { priceFen: service.priceFen, originalPriceFen, discountTenths };
@@ -388,6 +402,8 @@ module.exports = {
   resolveServiceTagIds,
   incomingServiceTagIds,
   incomingServiceImages,
+  discountedServicePriceFen,
+  matchesServiceDiscount,
   serviceForStorage,
   servicePayload,
   staffRoleIdFromLegacy,

@@ -88,6 +88,19 @@ test('price changes reject before creating an order or its message; explicit rec
   assert.equal(invalid.statusCode, 400);
 });
 
+test('released booking requests charge the saved whole-yuan discount and reject stale fractional quotes', async () => {
+  const h = creationHarness({ priceFen: 9000, originalPriceFen: 9950, discountTenths: 90 });
+  const legacy = await h.create();
+  assert.equal(legacy.statusCode, 201);
+  assert.equal(legacy.body.booking.servicePriceFen, 9000);
+  assert.equal(legacy.body.booking.payableAmountFen, 9000);
+  const stale = await h.create({ expectedOriginalAmountFen: 8955, expectedPayableAmountFen: 8955 });
+  assert.equal(stale.statusCode, 409);
+  assert.equal(stale.body.quote.payableAmountFen, 9000);
+  const confirmed = await h.create({ expectedOriginalAmountFen: 9000, expectedPayableAmountFen: 9000 });
+  assert.equal(confirmed.statusCode, 201);
+});
+
 test('merchant reschedule slots use the owned booking snapshot and exclude its occupancy', async () => {
   let actual;
   let query;

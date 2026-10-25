@@ -582,6 +582,8 @@ test('review tag counts use every approved review and keep the configured displa
     return [
       { _id: '服务周到', count: 2 },
       { _id: '善于沟通', count: 3 },
+      { _id: '接待热情', count: 4 },
+      { _id: '好沟通', count: 1 },
     ];
   };
 
@@ -593,7 +595,7 @@ test('review tag counts use every approved review and keep the configured displa
       {
         $match: {
           'review.tags': {
-            $in: ['善于沟通', '环境舒适', '技术一流', '服务周到', '无推销', '环镜整洁', '效果好评', '好沟通'],
+            $in: ['善于沟通', '环境舒适', '技术一流', '服务周到', '无推销', '环镜整洁', '效果好评', '接待热情', '好沟通'],
           },
         },
       },
@@ -602,6 +604,8 @@ test('review tag counts use every approved review and keep the configured displa
     assert.deepEqual(tags, [
       { name: '善于沟通', count: 3 },
       { name: '服务周到', count: 2 },
+      { name: '接待热情', count: 4 },
+      { name: '好沟通', count: 1 },
     ]);
   } finally {
     Booking.aggregate = originalAggregate;
@@ -3352,14 +3356,14 @@ test('editing a review stores a pending draft without changing the approved revi
       body: {
         rating: 5,
         comment: '再次修改',
-        tags: ['技术一流', '服务周到'],
+        tags: ['技术一流', '服务周到', '接待热情'],
         retainedImageUrls: ['https://public.example/old.jpg'],
         imageObjects: [],
       },
     },
     { status() { return this; }, json() {} },
   );
-  assert.deepEqual(update.$set['review.pendingEdit'].tags, ['技术一流', '服务周到']);
+  assert.deepEqual(update.$set['review.pendingEdit'].tags, ['技术一流', '服务周到', '接待热情']);
 });
 
 test('deleting a review returns success even when post-delete cleanup fails', async () => {
@@ -3409,7 +3413,7 @@ test('deleting a review returns success even when post-delete cleanup fails', as
   assert.equal(updateQuery['review.id'], 'review-1');
 });
 
-test('concurrent review and complaint submissions only update once', async () => {
+for (const receptionTag of ['好沟通', '接待热情']) test(`concurrent review and complaint submissions only update once (${receptionTag})`, async () => {
   const routes = new Map();
   const app = {
     get() {},
@@ -3481,13 +3485,13 @@ test('concurrent review and complaint submissions only update once', async () =>
   const reviewStatuses = await invokeTwice('/api/bookings/:id/review', {
     rating: 5,
     comment: 'good',
-    tags: ['无推销', '环镜整洁', '效果好评', '好沟通'],
+    tags: ['无推销', '环镜整洁', '效果好评', receptionTag],
     imageObjects: [],
   });
   const complaintStatuses = await invokeTwice('/api/bookings/:id/complaint', { description: 'problem' });
 
   assert.deepEqual(reviewStatuses.sort(), [201, 409]);
-  assert.deepEqual(submittedReview.tags, ['无推销', '环镜整洁', '效果好评', '好沟通']);
+  assert.deepEqual(submittedReview.tags, ['无推销', '环镜整洁', '效果好评', receptionTag]);
   assert.deepEqual(complaintStatuses.sort(), [201, 409]);
 });
 
