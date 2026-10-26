@@ -273,6 +273,7 @@ module.exports = (app, ctx) => {
     res.json({
       ...buildStaffPayload(person, reviews, ratingSummaries[req.params.id]),
       salonId: salon?.id || '',
+      salonName: salon?.name || '',
       salonServices: (salon?.services || []).map(servicePayload),
       salonStaff: salon ? salon.staffIds.map(id => staffMap[id]).filter(Boolean)
         .map(profile => buildStaffPayload(
