@@ -304,8 +304,9 @@ module.exports = (app, ctx) => {
     const salon = await getSalonByStaffId(staffId).lean();
     const service = salon?.services?.find(item => item.id === serviceId);
     if (!service) return res.status(404).json({ message: 'Service not found' });
-    if (service.staffSelectionDisabled === true) {
-      return res.status(409).json({ message: '该套餐仅支持无需指定理发师，请重新选择' });
+    if ((service.staffSelectionRestricted === true || service.staffSelectionDisabled === true)
+      && !(service.selectableStaffIds || []).includes(staffId)) {
+      return res.status(409).json({ message: '该理发师不可指定此套餐，请重新选择' });
     }
     res.json(await generateSlotsForStaffAndDate(staffId, date, service.durationMinutes, salon));
   });

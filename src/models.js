@@ -25,7 +25,10 @@ const addressRegionSchema = new mongoose.Schema({
 const serviceSchema = new mongoose.Schema({
   id: { type: String, required: true },
   name: { type: String, required: true },
+  // Retained while released clients still use the all-or-nothing restriction.
   staffSelectionDisabled: { type: Boolean, default: false },
+  staffSelectionRestricted: { type: Boolean },
+  selectableStaffIds: { type: [String], default: [] },
   promotionEnabled: { type: Boolean, default: false },
   promotionReviewStatus: {
     type: String,

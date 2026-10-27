@@ -184,7 +184,9 @@ const buildAdminMerchantPayload = async (user, salonDocument = {}) => {
   salonPayload.services = (salonPayload.services || []).map(service => ({
     ...service,
     ...(liveServices.has(service.id) ? {
-      staffSelectionDisabled: liveServices.get(service.id).staffSelectionDisabled === true,
+      staffSelectionRestricted: liveServices.get(service.id).staffSelectionRestricted === true
+        || liveServices.get(service.id).staffSelectionDisabled === true,
+      selectableStaffIds: liveServices.get(service.id).selectableStaffIds || [],
       promotionEnabled: liveServices.get(service.id).promotionEnabled,
       promotionReviewStatus: liveServices.get(service.id).promotionReviewStatus,
       promotionRejectReason: liveServices.get(service.id).promotionRejectReason,
@@ -922,9 +924,12 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
         discountTenths: service.discountTenths === undefined
           ? current.discountTenths
           : service.discountTenths,
-        staffSelectionDisabled: typeof service.staffSelectionDisabled === 'boolean'
-          ? service.staffSelectionDisabled
-          : current.staffSelectionDisabled === true,
+        staffSelectionRestricted: typeof service.staffSelectionRestricted === 'boolean'
+          ? service.staffSelectionRestricted
+          : typeof service.staffSelectionDisabled === 'boolean'
+            ? service.staffSelectionDisabled
+            : current.staffSelectionRestricted === true || current.staffSelectionDisabled === true,
+        selectableStaffIds: service.selectableStaffIds ?? current.selectableStaffIds ?? [],
         durationMinutes: service.durationMinutes ?? current.durationMinutes,
         note: service.note === '' ? '' : current.note,
         imageUrls: salonDomain.incomingServiceImages(service, current)
@@ -1051,7 +1056,10 @@ const applyPendingContent = async (salon) => {
       const promotionRequested = !current && service.promotionEnabled === true;
       return salonDomain.serviceForStorage({
         ...service,
-        staffSelectionDisabled: current ? current.staffSelectionDisabled === true : service.staffSelectionDisabled === true,
+        staffSelectionRestricted: current
+          ? current.staffSelectionRestricted === true || current.staffSelectionDisabled === true
+          : service.staffSelectionRestricted === true || service.staffSelectionDisabled === true,
+        selectableStaffIds: current ? current.selectableStaffIds : service.selectableStaffIds,
         promotionEnabled: current?.promotionEnabled === true,
         promotionReviewStatus: current?.promotionReviewStatus
           || (promotionRequested ? 'pending' : 'unsubmitted'),
@@ -1067,6 +1075,11 @@ const applyPendingContent = async (salon) => {
       ...profile,
       id: owned.has(String(profile.id)) ? profile.id : `merchant-staff-${crypto.randomUUID()}`,
     }));
+    const approvedIds = new Map(draft.staff.map((profile, index) => [profile.id, approvedStaff[index].id]));
+    for (const service of salon.services || []) {
+      service.selectableStaffIds = (service.selectableStaffIds || [])
+        .filter(id => approvedIds.has(id)).map(id => approvedIds.get(id));
+    }
     salon.staffIds = approvedStaff.map(profile => profile.id).filter(Boolean);
     await Promise.all(approvedStaff.map(profile =>
       StaffProfile.findOneAndUpdate(
@@ -1094,7 +1107,9 @@ const buildMerchantSalonPayload = async (salonId = '1') => {
   merged.services = (merged.services || []).map(service => salonDomain.servicePayload({
     ...service,
     ...(liveServices.has(service.id) ? {
-      staffSelectionDisabled: liveServices.get(service.id).staffSelectionDisabled === true,
+      staffSelectionRestricted: liveServices.get(service.id).staffSelectionRestricted === true
+        || liveServices.get(service.id).staffSelectionDisabled === true,
+      selectableStaffIds: liveServices.get(service.id).selectableStaffIds || [],
       promotionEnabled: liveServices.get(service.id).promotionEnabled,
       promotionReviewStatus: liveServices.get(service.id).promotionReviewStatus,
       promotionRejectReason: liveServices.get(service.id).promotionRejectReason,

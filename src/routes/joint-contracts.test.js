@@ -158,7 +158,7 @@ test('both review image consumers use the default TTL for every private image', 
 
 
 test('restricted packages reject specified staff and book without a staff fee', async () => {
-  const h = creationHarness({ staffSelectionDisabled: true });
+  const h = creationHarness({ staffSelectionRestricted: true });
   const invalid = await h.create({ staffId: 'staff-1' });
   assert.equal(invalid.statusCode, 409);
   assert.equal(h.saved.length, 0);

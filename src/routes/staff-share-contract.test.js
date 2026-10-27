@@ -56,7 +56,7 @@ for (const salon of [
 
 
 test('restricted package slots reject specified staff and use the salon pool for no preference', async t => {
-  const salon = { id: 'salon-1', services: [{ id: 'service-1', durationMinutes: 90, staffSelectionDisabled: true }] };
+  const salon = { id: 'salon-1', services: [{ id: 'service-1', durationMinutes: 90, staffSelectionRestricted: true }] };
   const app = express();
   let poolReads = 0;
   registerPublicRoutes(app, {

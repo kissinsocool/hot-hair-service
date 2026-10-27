@@ -844,6 +844,19 @@ function validateSalonContent(payload = {}, limits, salon) {
     if (service?.staffSelectionDisabled !== undefined && typeof service.staffSelectionDisabled !== 'boolean') {
       return 'service staffSelectionDisabled must be a boolean';
     }
+    if (service?.staffSelectionRestricted !== undefined && typeof service.staffSelectionRestricted !== 'boolean') {
+      return 'service staffSelectionRestricted must be a boolean';
+    }
+    if (service?.selectableStaffIds !== undefined) {
+      const ids = service.selectableStaffIds;
+      const staffIds = Array.isArray(payload.staff)
+        ? payload.staff.map(profile => profile?.id).filter(Boolean)
+        : [...(salon?.staffIds || []), ...(salon?.pendingContent?.staff || []).map(profile => profile.id)];
+      if (!Array.isArray(ids) || ids.length > 50 || new Set(ids).size !== ids.length
+        || ids.some(id => typeof id !== 'string' || !id || !staffIds.includes(id))) {
+        return 'service selectableStaffIds must contain unique staff IDs belonging to this salon';
+      }
+    }
     if (service?.promotionEnabled !== undefined && typeof service.promotionEnabled !== 'boolean') {
       return 'service promotionEnabled must be a boolean';
     }
