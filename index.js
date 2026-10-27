@@ -184,6 +184,7 @@ const buildAdminMerchantPayload = async (user, salonDocument = {}) => {
   salonPayload.services = (salonPayload.services || []).map(service => ({
     ...service,
     ...(liveServices.has(service.id) ? {
+      staffSelectionDisabled: liveServices.get(service.id).staffSelectionDisabled === true,
       promotionEnabled: liveServices.get(service.id).promotionEnabled,
       promotionReviewStatus: liveServices.get(service.id).promotionReviewStatus,
       promotionRejectReason: liveServices.get(service.id).promotionRejectReason,
@@ -921,6 +922,9 @@ const applyDirectSalonContent = async (salon, payload = {}) => {
         discountTenths: service.discountTenths === undefined
           ? current.discountTenths
           : service.discountTenths,
+        staffSelectionDisabled: typeof service.staffSelectionDisabled === 'boolean'
+          ? service.staffSelectionDisabled
+          : current.staffSelectionDisabled === true,
         durationMinutes: service.durationMinutes ?? current.durationMinutes,
         note: service.note === '' ? '' : current.note,
         imageUrls: salonDomain.incomingServiceImages(service, current)
@@ -1047,6 +1051,7 @@ const applyPendingContent = async (salon) => {
       const promotionRequested = !current && service.promotionEnabled === true;
       return salonDomain.serviceForStorage({
         ...service,
+        staffSelectionDisabled: current ? current.staffSelectionDisabled === true : service.staffSelectionDisabled === true,
         promotionEnabled: current?.promotionEnabled === true,
         promotionReviewStatus: current?.promotionReviewStatus
           || (promotionRequested ? 'pending' : 'unsubmitted'),
@@ -1089,6 +1094,7 @@ const buildMerchantSalonPayload = async (salonId = '1') => {
   merged.services = (merged.services || []).map(service => salonDomain.servicePayload({
     ...service,
     ...(liveServices.has(service.id) ? {
+      staffSelectionDisabled: liveServices.get(service.id).staffSelectionDisabled === true,
       promotionEnabled: liveServices.get(service.id).promotionEnabled,
       promotionReviewStatus: liveServices.get(service.id).promotionReviewStatus,
       promotionRejectReason: liveServices.get(service.id).promotionRejectReason,

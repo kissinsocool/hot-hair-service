@@ -4,7 +4,7 @@ const registerMerchant = require('./merchant');
 const { Salon } = require('../models');
 const { serviceForStorage, servicePayload } = require('../services/salon');
 const {
-  applyDirectSalonContent, buildContentDraft, hasReviewableContentChanges,
+  applyDirectSalonContent, applyPendingContent, buildContentDraft, hasReviewableContentChanges,
   INPUT_LIMITS,
 } = require('../../index');
 
@@ -157,4 +157,36 @@ test('undiscounted fractions and historical stored prices are not rounded on rea
   const historical = new Salon({ services: [{ ...oldService, originalPriceFen: 9950, discountTenths: 90, priceFen: 8955 }] });
   assert.equal(servicePayload(historical.services[0]).priceFen, 8955);
   assert.equal(servicePayload(historical.services[0]).originalPriceFen, 9950);
+});
+
+
+test('staff selection restriction round trips through storage and pending drafts', async () => {
+  const h = harness();
+  assert.equal((await h.save(oldService)).body.services[0].staffSelectionDisabled, false);
+  assert.equal((await h.save({ ...oldService, staffSelectionDisabled: true })).body.services[0].staffSelectionDisabled, true);
+  assert.equal(servicePayload(h.salon.services[0]).staffSelectionDisabled, true);
+  assert.equal((await h.save(oldService)).body.services[0].staffSelectionDisabled, true);
+  const draft = await buildContentDraft(h.salon, { services: [{ ...oldService, name: '新套餐', staffSelectionDisabled: true }] }, {
+    services: h.salon.services.map(servicePayload), staff: [],
+  });
+  h.salon.pendingContent = draft;
+  await h.salon.validate();
+  assert.equal(h.salon.pendingContent.services[0].staffSelectionDisabled, true);
+  for (const value of [null, 'true', 1]) {
+    assert.equal((await h.save({ ...oldService, staffSelectionDisabled: value })).statusCode, 400);
+  }
+  assert.equal((await h.save({ ...oldService, staffSelectionDisabled: false })).body.services[0].staffSelectionDisabled, false);
+});
+
+
+test('approving a stale content draft retains the latest live staff restriction', async () => {
+  const h = harness();
+  const draft = await buildContentDraft(h.salon, { services: [{ ...oldService, name: '新套餐', staffSelectionDisabled: false }] }, {
+    services: h.salon.services.map(servicePayload), staff: [],
+  });
+  await h.save({ ...oldService, staffSelectionDisabled: true });
+  h.salon.pendingContent = draft;
+  await applyPendingContent(h.salon);
+  assert.equal(h.salon.services[0].name, '新套餐');
+  assert.equal(h.salon.services[0].staffSelectionDisabled, true);
 });

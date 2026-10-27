@@ -588,6 +588,33 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect((await request('admin', '/admin/bookings?page=1&limit=100')).body.some(order => order.id === 'new-orders-yesterday')).toBe(true);
   });
 
+  test('restricted package persists, disables specified-staff APIs and books as no preference', async () => {
+    await StaffProfile.create({ id: 'restricted-staff', name: 'Stylist', roleId: 'designer', extraServiceFeeFen: 2000 });
+    await Salon.create({ id: 'restricted-salon', name: '限定套餐店', publishStatus: 'online',
+      staffIds: ['restricted-staff'], openingHours: '09:00-20:00', services: [{
+        id: 'restricted-service', name: '限定套餐', tagIds: ['wash_cut_blow'],
+        priceFen: 8000, durationMinutes: 60, staffSelectionDisabled: true,
+      }] });
+    const detail = await request('client', '/salons/restricted-salon');
+    expect(detail.status).toBe(200);
+    expect(detail.body.services[0].staffSelectionDisabled).toBe(true);
+    const specifiedSlots = await request('client', '/staff/restricted-staff/slots?date=2030-01-06&serviceId=restricted-service');
+    expect(specifiedSlots.status).toBe(409);
+    const pooledSlots = await request('client', '/staff/__no_preference__/slots?date=2030-01-06&salonId=restricted-salon&serviceId=restricted-service');
+    expect(pooledSlots.status).toBe(200);
+    const input = { salonId: 'restricted-salon', serviceId: 'restricted-service',
+      staffId: 'restricted-staff', startTime: '2030-01-06T10:00:00',
+      expectedOriginalAmountFen: 8000, expectedPayableAmountFen: 8000 };
+    expect((await request('client', '/bookings', input, 'POST')).status).toBe(409);
+    const created = await request('client', '/bookings', { ...input, staffId: '__no_preference__' }, 'POST');
+    expect(created.status).toBe(201);
+    const stored = await Booking.findOne({ id: created.body.booking.id }).lean();
+    expect(stored.isNoPreference).toBe(true);
+    expect(stored.staffId).toBe('');
+    expect(stored.staffExtraServiceFeeFen).toBe(0);
+    expect(stored.payableAmountFen).toBe(8000);
+  });
+
   test('logout closes the old merchant websocket and revokes all three role tokens', async () => {
     const socket = new WebSocket(baseUrl.replace('http:', 'ws:') + '/ws');
     try {

@@ -841,6 +841,9 @@ function validateSalonContent(payload = {}, limits, salon) {
   }
 
   for (const service of Array.isArray(payload.services) ? payload.services : []) {
+    if (service?.staffSelectionDisabled !== undefined && typeof service.staffSelectionDisabled !== 'boolean') {
+      return 'service staffSelectionDisabled must be a boolean';
+    }
     if (service?.promotionEnabled !== undefined && typeof service.promotionEnabled !== 'boolean') {
       return 'service promotionEnabled must be a boolean';
     }

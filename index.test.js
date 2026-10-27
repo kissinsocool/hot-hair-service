@@ -395,6 +395,7 @@ test('booking migration derives canonical booking fields', () => {
   }), {
     id: 'service-1',
     name: '剪发',
+    staffSelectionDisabled: false,
     promotionEnabled: false,
     promotionReviewStatus: 'unsubmitted',
     promotionRejectReason: '',

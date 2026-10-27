@@ -53,3 +53,31 @@ for (const salon of [
     assert.equal(salonReads, 1);
   });
 }
+
+
+test('restricted package slots reject specified staff and use the salon pool for no preference', async t => {
+  const salon = { id: 'salon-1', services: [{ id: 'service-1', durationMinutes: 90, staffSelectionDisabled: true }] };
+  const app = express();
+  let poolReads = 0;
+  registerPublicRoutes(app, {
+    rateLimits: { publicRead: [] },
+    Salon: { findOne: () => ({ lean: async () => salon }) },
+    getSalonByStaffId: () => ({ lean: async () => salon }),
+    async generateSlotsForNoPreferenceAndDate(actualSalon, date, duration) {
+      assert.equal(actualSalon, salon);
+      assert.equal(duration, 90);
+      poolReads++;
+      return [{ time: '10:00', isAvailable: true }];
+    },
+  });
+  const server = app.listen(0, '127.0.0.1');
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  await new Promise(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${server.address().port}/api/staff`;
+  const rejected = await fetch(`${base}/staff-1/slots?date=2030-01-01&serviceId=service-1`);
+  assert.equal(rejected.status, 409);
+  const allowed = await fetch(`${base}/__no_preference__/slots?date=2030-01-01&salonId=salon-1&serviceId=service-1`);
+  assert.equal(allowed.status, 200);
+  assert.equal((await allowed.json())[0].time, '10:00');
+  assert.equal(poolReads, 1);
+});

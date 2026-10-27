@@ -218,6 +218,9 @@ const servicePricing = (service, previous = {}) => {
 
 const serviceForStorage = (service = {}, fallbackId = '', previous = {}) => {
   const tagIds = incomingServiceTagIds(service, previous);
+  const staffSelectionDisabled = typeof service.staffSelectionDisabled === 'boolean'
+    ? service.staffSelectionDisabled
+    : previous.staffSelectionDisabled === true;
   const promotionEnabled = typeof service.promotionEnabled === 'boolean'
     ? service.promotionEnabled
     : previous.promotionEnabled === true;
@@ -228,6 +231,7 @@ const serviceForStorage = (service = {}, fallbackId = '', previous = {}) => {
   return {
     id: String(service.id || fallbackId).trim(),
     name: String(service.name || '').trim(),
+    staffSelectionDisabled,
     promotionEnabled,
     promotionReviewStatus,
     promotionRejectReason: String(service.promotionRejectReason ?? previous.promotionRejectReason ?? ''),

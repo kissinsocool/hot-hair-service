@@ -38,6 +38,8 @@ function creationHarness(servicePricing = {}) {
       async updateOne(_query, _update, options) { assert.equal(options.session, session); return { matchedCount: 1 }; },
     },
     BookingMessage: { async create(rows, options) { assert.equal(options.session, session); messages.push(...rows); return rows; } },
+    getStaffById: () => chain({ id: 'staff-1', name: 'Stylist', extraServiceFeeFen: 2000 }),
+    getSalonByStaffId: () => ctx.Salon.findOne(),
     normalizeUserId: id => id, userIdAliases: id => [id], normalizeBooking: doc => doc.toObject(),
     getUserPolicy: async () => ({ isBlacklisted: false }), parseOpeningHours: booking.parseOpeningHours,
     isSalonClosedOnDate: () => false, isSameDayBookingBlocked: () => false,
@@ -152,4 +154,17 @@ test('both review image consumers use the default TTL for every private image', 
   await routesFor(registerClient, ctx).get('get:/api/auth/reviews')({ clientUser: { id: 'client-1' }, query: {} }, response());
   await routesFor(registerAdmin, ctx).get('get:/api/admin/user-images')({ query: {} }, response());
   assert.deepEqual(ttls, [600, 600, 600, 600, 600, 600]);
+});
+
+
+test('restricted packages reject specified staff and book without a staff fee', async () => {
+  const h = creationHarness({ staffSelectionDisabled: true });
+  const invalid = await h.create({ staffId: 'staff-1' });
+  assert.equal(invalid.statusCode, 409);
+  assert.equal(h.saved.length, 0);
+  const res = await h.create({ expectedOriginalAmountFen: 8000, expectedPayableAmountFen: 8000 });
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.body.booking.isNoPreference, true);
+  assert.equal(res.body.booking.staffId, '');
+  assert.equal(res.body.booking.staffExtraServiceFeeFen, 0);
 });

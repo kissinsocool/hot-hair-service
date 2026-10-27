@@ -25,6 +25,7 @@ const addressRegionSchema = new mongoose.Schema({
 const serviceSchema = new mongoose.Schema({
   id: { type: String, required: true },
   name: { type: String, required: true },
+  staffSelectionDisabled: { type: Boolean, default: false },
   promotionEnabled: { type: Boolean, default: false },
   promotionReviewStatus: {
     type: String,

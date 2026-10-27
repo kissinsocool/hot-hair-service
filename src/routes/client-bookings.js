@@ -463,6 +463,9 @@ module.exports = (app, ctx) => {
     if ((!isNoPreference && !staffMember) || !service || !salon) {
       return res.status(404).json({ message: 'Staff, service or salon not found' });
     }
+    if (service.staffSelectionDisabled === true && !isNoPreference) {
+      return res.status(409).json({ message: '该套餐仅支持无需指定理发师，请重新选择' });
+    }
     if (salon.publishStatus !== 'online') {
       return res.status(409).json({ message: '该店铺已下架，暂不可预约' });
     }
