@@ -3945,6 +3945,12 @@ test('merchant service gallery contract preserves legacy requests and review iso
   assert.equal(salon.contentSubmittedAt, undefined);
   assert.equal(await save(oldService), 200);
   assert.ok(salon.contentSubmittedAt instanceof Date);
+  assert.equal(await save({ ...oldService, tagIds: ['wash_blow'] }), 200);
+  assert.deepEqual([...salon.services[0].tagIds], ['wash_blow']);
+  assert.deepEqual([...salon.services[0].tags], ['洗吹']);
+  assert.equal(await save({ ...oldService, tagIds: ['wash_blow'], tags: ['洗吹'] }), 200);
+  assert.deepEqual([...salon.services[0].tagIds], ['wash_blow']);
+  assert.equal(await save(oldService), 200);
   assert.equal(await save({ ...oldService, tags: ['染发'] }), 200);
   assert.deepEqual([...salon.services[0].tagIds], ['color']);
   assert.equal(await save({ ...oldService, tagIds: ['color'], tags: ['洗剪吹'] }), 200);
@@ -3955,6 +3961,9 @@ test('merchant service gallery contract preserves legacy requests and review iso
   assert.equal(await save({ ...oldService, tagIds: ['men', 'women', 'straight', 'curly', 'nutrition'] }), 400);
   assert.equal(await save({ ...oldService, promotionEnabled: 'yes' }), 400);
   const { tagIds, ...requestWithoutTagIds } = oldService;
+  assert.equal(await save({ ...requestWithoutTagIds, tags: ['洗吹'] }), 200);
+  assert.deepEqual([...salon.services[0].tagIds], ['wash_blow']);
+  assert.deepEqual(live().services[0].tags, ['洗吹']);
   assert.equal(await save({ ...requestWithoutTagIds, tags: ['洗剪吹'] }), 200);
   assert.deepEqual([...salon.services[0].tagIds], ['wash_cut_blow']);
   assert.deepEqual([...salon.services[0].tags], ['洗剪吹']);

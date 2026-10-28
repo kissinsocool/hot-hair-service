@@ -13,6 +13,7 @@ const AFTER_SALES_POLICY_IDS = Object.freeze([
 const AFTER_SALES_POLICY_ID_SET = new Set(AFTER_SALES_POLICY_IDS);
 const SERVICE_TAG_IDS = Object.freeze([
   'wash_cut_blow',
+  'wash_blow',
   'color',
   'perm',
   'care',
@@ -26,6 +27,7 @@ const SERVICE_TAG_IDS = Object.freeze([
 ]);
 const SERVICE_TAG_LABELS = Object.freeze({
   wash_cut_blow: '洗剪吹',
+  wash_blow: '洗吹',
   color: '染发',
   perm: '烫发',
   care: '护理',

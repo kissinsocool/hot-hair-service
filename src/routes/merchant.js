@@ -893,6 +893,9 @@ function validateSalonContent(payload = {}, limits, salon) {
     if (!Number.isSafeInteger(service?.durationMinutes) || service.durationMinutes <= 0) {
       return 'service durationMinutes must be a positive integer';
     }
+    if (service.durationMinutes > 180) {
+      return '套餐时长不能超过180分钟';
+    }
     if (service?.tagIds !== undefined && (
       !Array.isArray(service.tagIds)
       || service.tagIds.length < 1
