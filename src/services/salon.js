@@ -205,25 +205,6 @@ const matchesServiceDiscount = (priceFen, originalPriceFen, discountTenths) => (
   || priceFen === Math.round(originalPriceFen * (discountTenths ?? 100) / 100)
 );
 
-const matchesRoundedServiceDiscount = (priceFen, originalPriceFen, discountTenths) => (
-  Number.isSafeInteger(priceFen) && priceFen > 0
-  && Number.isSafeInteger(originalPriceFen) && originalPriceFen >= priceFen
-  && Number.isInteger(discountTenths) && discountTenths >= 1 && discountTenths <= 100
-  && Math.round(priceFen * 100 / originalPriceFen) === discountTenths
-);
-
-const servicePriceForRequest = (service, previous = {}) => {
-  const { priceFen, originalPriceFen, discountTenths } = service;
-  if (originalPriceFen == null || !matchesServiceDiscount(priceFen, originalPriceFen, discountTenths)) return service;
-  // Released editors recalculate on load even when the original/discount were not edited.
-  if (originalPriceFen === previous.originalPriceFen && discountTenths === previous.discountTenths
-    && matchesRoundedServiceDiscount(previous.priceFen, originalPriceFen, discountTenths)
-    && !matchesServiceDiscount(previous.priceFen, originalPriceFen, discountTenths)) {
-    return { ...service, priceFen: previous.priceFen };
-  }
-  return { ...service, priceFen: discountedServicePriceFen(originalPriceFen, discountTenths) };
-};
-
 const servicePricing = (service, previous = {}) => {
   const originalPriceFen = service.originalPriceFen === undefined
     ? previous.originalPriceFen : service.originalPriceFen;
@@ -231,8 +212,7 @@ const servicePricing = (service, previous = {}) => {
     ? previous.discountTenths : service.discountTenths;
   // Released editors can change the selling price while echoing old price metadata.
   if (originalPriceFen != null
-    && !matchesServiceDiscount(service.priceFen, originalPriceFen, discountTenths)
-    && !matchesRoundedServiceDiscount(service.priceFen, originalPriceFen, discountTenths)) {
+    && !matchesServiceDiscount(service.priceFen, originalPriceFen, discountTenths)) {
     return { priceFen: service.priceFen, originalPriceFen: null, discountTenths: null };
   }
   return { priceFen: service.priceFen, originalPriceFen, discountTenths };
@@ -434,8 +414,6 @@ module.exports = {
   incomingServiceImages,
   discountedServicePriceFen,
   matchesServiceDiscount,
-  matchesRoundedServiceDiscount,
-  servicePriceForRequest,
   serviceForStorage,
   servicePayload,
   staffRoleIdFromLegacy,
