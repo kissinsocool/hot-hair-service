@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Create an oplog-consistent dump and verify the OSS copy before local cleanup."""
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+
+
+def digest(path):
+    result = hashlib.sha256()
+    with path.open('rb') as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b''):
+            result.update(chunk)
+    return result.hexdigest()
+
+
+def main():
+    os.umask(0o077)
+    config = Path(os.environ.get('MONGO_BACKUP_CONFIG', '/root/.config/hot-hair/mongo-backup.yml'))
+    if stat.S_IMODE(config.stat().st_mode) & 0o077:
+        raise RuntimeError('MongoDB backup config must only be accessible by its owner')
+    backup_dir = Path(os.environ.get('BACKUP_DIR', '/data/backup/mongodb'))
+    backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    backup_dir.chmod(0o700)
+    with (backup_dir / '.backup.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        work = Path(tempfile.mkdtemp(prefix='mongo_backup_' + stamp + '_', dir=str(backup_dir)))
+        try:
+            dump = work / 'dump'
+            subprocess.run([
+                os.environ.get('MONGODUMP_BIN', 'mongodump'),
+                '--config=' + str(config), '--oplog', '--out=' + str(dump), '--quiet',
+            ], check=True)
+            if not (dump / 'oplog.bson').is_file() or not any(dump.glob('*/*.bson')):
+                raise RuntimeError('Dump is missing oplog or database collections')
+            archive = work / (work.name + '.tar.gz')
+            with tarfile.open(str(archive), 'w:gz') as output:
+                output.add(str(dump), arcname='dump')
+            checksum = digest(archive)
+            uri = 'oss://hothairdb/mongodb_backups/' + archive.name
+            oss = [os.environ.get('OSSUTIL_BIN', '/usr/local/bin/ossutil-v2')]
+            options = ['--region', 'cn-beijing', '-c',
+                       os.environ.get('OSSUTIL_CONFIG', '/root/.ossutilconfig'), '-q']
+            subprocess.run(oss + ['cp', str(archive), uri, '--acl', 'private'] + options, check=True)
+            verified = work / 'downloaded.tar.gz'
+            subprocess.run(oss + ['cp', uri, str(verified)] + options, check=True)
+            if digest(verified) != checksum:
+                raise RuntimeError('Downloaded OSS backup checksum does not match')
+            record = {
+                'completed_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                'object': uri, 'bytes': archive.stat().st_size,
+                'sha256': checksum, 'oplog': True,
+            }
+            pending = work / 'last-success.json'
+            pending.write_text(json.dumps(record, indent=2) + '\n')
+            os.replace(str(pending), str(backup_dir / 'last-success.json'))
+            shutil.rmtree(str(work))
+            print('SUCCESS: oplog backup uploaded and SHA-256 read-back verified: ' + uri, flush=True)
+        except Exception:
+            print('FAILED: local backup retained at ' + str(work), file=sys.stderr, flush=True)
+            raise
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        # Do not print subprocess arguments or configuration containing credentials.
+        print('Backup failed: ' + type(error).__name__, file=sys.stderr)
+        sys.exit(1)
