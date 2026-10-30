@@ -35,3 +35,12 @@ mongorestore --host 127.0.0.1 --port "$TEST_PORT" \
 恢复必须无失败文档，所有业务集合通过 `validate({full:true})`。oplog 为空时，逐集合比较 BSON 文档数及元数据索引；oplog 非空时，文档数可能因回放改变，需结合回放操作核对。结束后关闭该临时实例，删除本次临时恢复数据，生产数据库和 OSS 备份保持原样。
 
 数据库备份不覆盖操作系统、Nginx、应用环境变量和 OSS 图片，不能代替整机恢复方案。
+
+## 2026-10-30 发布验证
+
+- 脚本 Git 提交 `7d6559c`，服务器工作树干净后通过 Git 快进部署；凭据迁移为独立 600 权限配置，未轮换数据库账号。
+- 17:25（北京时间）手动运行成功：`mongo_backup_20261030_172514_do0yc7qi.tar.gz`，519,408 字节，SHA-256 `da5fe7341c3c3e23367e9594ee4a5c359be7c04bc8569d5f4433744552a6821f`，上传后回读校验通过。
+- 从 OSS 下载到服务器新建的独立临时 mongod（不同端口、全新 dbPath、256 MiB WiredTiger 缓存、关闭 TTL 扫描），核对 PID 和 dbPath 后使用 `--oplogReplay --stopOnError --objcheck` 完整恢复成功。18 个业务集合全部通过 full validate、文档数和索引名称比对；这份 oplog 只有 no-op，未向生产注入测试写入。临时实例和恢复数据已清理。
+- cron 已切换为新脚本，每天北京时间 03:00 执行；原 cron 保存到 `/root/crontab.before-mongo-backup-20261030_172736`。
+- 本地 `npm test` 206 项通过，包含导出失败、缺少 oplog、上传失败、下载失败、校验不符、成功清理、配置权限和任务互斥检查。
+- 安全组 `sg-2ze8yt4nep45qhf7b1jl` 删除入方向 TCP 3000/3000、来源 0.0.0.0/0 的允许规则。健康检查和带坐标的店铺列表接口返回 200，WebSocket 升级返回 101，3000 公网连接超时。未修改 SSH 规则，未重启生产应用或 MongoDB。
