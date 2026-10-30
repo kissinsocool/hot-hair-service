@@ -13,6 +13,46 @@ const oldService = {
   priceFen: 196400, durationMinutes: 60, note: '套餐', imageUrl: '',
 };
 
+test('fixed selling prices retain original and rounded discount through real documents and legacy saves', async () => {
+  for (const [price, original] of [[448, 888], [388, 688], [158, 516], [398, 1196], [518, 1136],
+    [552, 880], [428, 598], [134, 200], [341, 680], [688, 880], [258, 796], [380, 1494],
+    [65, 98], [378, 398], [198, 298], [298, 398]]) {
+    const h = harness();
+    const input = { ...oldService, priceFen: price * 100, originalPriceFen: original * 100,
+      discountTenths: Math.round(price * 100 / original) };
+    let saved = await h.save(input);
+    assert.equal(saved.statusCode, 200);
+    assert.equal(saved.body.services[0].priceFen, input.priceFen);
+    assert.equal(saved.body.services[0].originalPriceFen, input.originalPriceFen);
+    assert.equal(saved.body.services[0].discountTenths, input.discountTenths);
+    // The released Flutter editor recalculates to fen on load without a price edit.
+    saved = await h.save({ ...input, priceFen: Math.round(input.originalPriceFen * input.discountTenths / 100) });
+    assert.equal(saved.statusCode, 200);
+    assert.equal(saved.body.services[0].priceFen, input.priceFen);
+    assert.equal((await h.save({ ...oldService, priceFen: input.priceFen })).body.services[0].originalPriceFen, input.originalPriceFen);
+    const draft = await buildContentDraft(h.salon, { services: [{ ...input, name: '修改名称' }] }, {
+      services: h.salon.services.map(servicePayload), staff: [],
+    });
+    h.salon.pendingContent = draft;
+    await h.salon.validate();
+    await applyPendingContent(h.salon);
+    assert.equal(servicePayload(h.salon.services[0]).priceFen, input.priceFen);
+    assert.equal(servicePayload(h.salon.services[0]).originalPriceFen, input.originalPriceFen);
+  }
+});
+
+test('fixed selling price recalculates when original or discount is deliberately changed', async () => {
+  const h = harness();
+  const input = { ...oldService, priceFen: 55200, originalPriceFen: 88000, discountTenths: 63 };
+  await h.save(input);
+  const edited = await h.save({ ...input, discountTenths: 60, priceFen: 52800 });
+  assert.equal(edited.body.services[0].priceFen, 52800);
+  const cleared = await h.save({ ...input, discountTenths: null, priceFen: 88000 });
+  assert.equal(cleared.body.services[0].priceFen, 88000);
+  const invalid = await harness().save({ ...input, discountTenths: 50 });
+  assert.equal(invalid.statusCode, 400);
+});
+
 function harness() {
   const salon = new Salon({ id: 'discount-salon', name: '门店', services: [oldService] });
   salon.save = async () => { await salon.validate(); };

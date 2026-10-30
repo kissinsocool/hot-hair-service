@@ -330,11 +330,8 @@ module.exports = (app, ctx) => {
     const validationError = validateSalonContent(payload, INPUT_LIMITS, salon);
     if (validationError) return res.status(400).json({ message: validationError });
     if (Array.isArray(payload.services)) {
-      payload.services = payload.services.map(service => (
-        service.originalPriceFen != null
-        && salonService.matchesServiceDiscount(service.priceFen, service.originalPriceFen, service.discountTenths)
-          ? { ...service, priceFen: salonService.discountedServicePriceFen(service.originalPriceFen, service.discountTenths) }
-          : service
+      payload.services = payload.services.map(service => salonService.servicePriceForRequest(
+        service, (salon.services || []).find(previous => previous.id === service.id),
       ));
     }
     if (Array.isArray(payload.staff)) {
@@ -885,6 +882,7 @@ function validateSalonContent(payload = {}, limits, salon) {
       const previous = (salon?.services || []).find(item => item.id === service.id);
       const pending = (salon?.pendingContent?.services || []).find(item => item.id === service.id);
       if (!salonService.matchesServiceDiscount(service.priceFen, service.originalPriceFen, service.discountTenths)
+        && !salonService.matchesRoundedServiceDiscount(service.priceFen, service.originalPriceFen, service.discountTenths)
         && service.originalPriceFen !== previous?.originalPriceFen
         && service.originalPriceFen !== pending?.originalPriceFen) {
         return 'service priceFen must equal the discounted originalPriceFen';

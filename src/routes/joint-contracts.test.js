@@ -75,6 +75,17 @@ test('original 280 at 9折 books the saved selling price 252 without applying di
   assert.equal(stale.body.quote.payableAmountFen, 25200);
 });
 
+test('rounded display discount charges saved selling price in released booking requests', async () => {
+  const h = creationHarness({ priceFen: 55200, originalPriceFen: 88000, discountTenths: 63 });
+  const res = await h.create();
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.body.booking.servicePriceFen, 55200);
+  assert.equal(res.body.booking.payableAmountFen, 55200);
+  const stale = await h.create({ expectedOriginalAmountFen: 55400, expectedPayableAmountFen: 55400 });
+  assert.equal(stale.statusCode, 409);
+  assert.equal(stale.body.quote.payableAmountFen, 55200);
+});
+
 test('price changes reject before creating an order or its message; explicit reconfirmation succeeds', async () => {
   const h = creationHarness();
   const stale = await h.create({ expectedOriginalAmountFen: 5000, expectedPayableAmountFen: 5000 });
