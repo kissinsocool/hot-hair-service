@@ -509,6 +509,52 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect((await Booking.findOne({ id: 'appeal-success-0' }).lean()).merchantAppeal.decision).toBeUndefined();
   });
 
+  test('legacy and four-dimension review contracts persist through moderation and all clients', async () => {
+    sessions.dimensions = createSession();
+    await ClientUser.create({ id: 'dimensions-client', username: 'dimensions-client', account: '13800000009',
+      displayName: 'Dimensions', authProvider: 'wechat', sessionTokenHash: sessions.dimensions.tokenHash,
+      sessionExpiresAt: sessions.dimensions.expiresAt });
+    for (const legacy of [true, false]) {
+      const id = `review-dimensions-${legacy}`;
+      const ratings = { environment: 5, technique: 4, service: 3, price: 5 };
+      await Booking.create({ id, userId: 'dimensions-client', salonId: 'salon-1', staffId: 'staff-1',
+        serviceId: 'service-1', status: 'completed', startTime: new Date('2028-01-01') });
+      const body = { rating: 5, comment: '服务体验很好', tags: ['善于沟通'], imageObjects: [] };
+      if (!legacy) body.ratings = ratings;
+      const created = await request('dimensions', `/bookings/${id}/review`, body, 'POST');
+      expect(created.status).toBe(201);
+      expect(created.body.review.rating).toBe(legacy ? 5 : 4.25);
+      const saved = await Booking.findOne({ id }).lean();
+      expect(saved.review.ratings).toEqual(legacy ? undefined : ratings);
+      expect((await request('admin', '/admin/user-images', { bookingId: id, type: 'review', action: 'approve' }, 'PATCH')).status).toBe(200);
+      for (const route of ['/auth/reviews?page=1&limit=100', '/salons/salon-1/reviews?page=1&limit=50']) {
+        const result = await request('dimensions', route);
+        const rows = Array.isArray(result.body) ? result.body : result.body.items;
+        expect(rows.find(row => row.bookingId === id).ratings).toEqual(legacy ? undefined : ratings);
+      }
+      const merchant = await request('merchant', '/merchant/bookings?statuses=completed&page=1&limit=100');
+      expect(merchant.body.find(row => row.id === id).review.rating).toBe(legacy ? 5 : 4.25);
+      const editedRatings = { environment: 2, technique: 3, service: 4, price: 5 };
+      const edited = await request('dimensions', `/bookings/${id}/review`, {
+        rating: 5, ratings: editedRatings, comment: '补充体验', tags: [], retainedImageUrls: [], imageObjects: [],
+      }, 'PATCH');
+      expect(edited.status).toBe(200);
+      const pending = await Booking.findOne({ id }).lean();
+      expect(pending.review.pendingEdit).toMatchObject({ rating: 3.5, ratings: editedRatings });
+      expect(pending.review.rating).toBe(legacy ? 5 : 4.25);
+      expect((await request('admin', '/admin/user-images', { bookingId: id, type: 'reviewEdit', action: 'approve' }, 'PATCH')).status).toBe(200);
+      const approved = await Booking.findOne({ id }).lean();
+      expect(approved.review).toMatchObject({ rating: 3.5, ratings: editedRatings });
+      // Released clients still submit only an integer total when editing.
+      expect((await request('dimensions', `/bookings/${id}/review`, {
+        rating: 4, comment: '旧版修改', tags: [], retainedImageUrls: [], imageObjects: [],
+      }, 'PATCH')).status).toBe(200);
+      const oldEdit = await Booking.findOne({ id }).lean();
+      expect(oldEdit.review.pendingEdit.rating).toBe(4);
+      expect(oldEdit.review.pendingEdit.ratings).toBeUndefined();
+    }
+  });
+
   test('merchant reply approval removes the pending item and publishes the approved reply', async () => {
     const id = 'merchant-reply-approval';
     await Booking.create({ id, userId: 'client-1', salonId: 'salon-1', staffId: 'staff-1',

@@ -43,6 +43,13 @@
 - SSH 使用 `ssh -b "$HOT_HAIR_SOURCE_IP"`，SCP 使用 `scp -o BindAddress="$HOT_HAIR_SOURCE_IP"`，curl 使用 `curl --interface "$HOT_HAIR_NETWORK_INTERFACE"`，k6 使用 `k6 run --local-ips="$HOT_HAIR_SOURCE_IP"`。
 - 如果无法确认活动物理接口，停止并说明原因；不得静默回退到 VPN，也不要为此修改系统全局默认路由。
 
+## 线上服务器 SSH 登录
+
+- `root@182.92.129.180` 已验证使用本机私钥 `/Users/alice/.ssh/id_ed25519_github` 登录（2026-11-03）；文件名虽包含 GitHub，该密钥也用于此服务器。每次连接必须显式指定 `-i /Users/alice/.ssh/id_ed25519_github -o IdentitiesOnly=yes`，不依赖 SSH agent 已加载密钥。
+- 完成上述物理网络检查后，使用 `ssh -b "$HOT_HAIR_SOURCE_IP" -i /Users/alice/.ssh/id_ed25519_github -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=12 root@182.92.129.180 '<命令>'`。允许使用 SCP 的非代码文件传输同样显式指定此私钥，并保留 `-o BindAddress="$HOT_HAIR_SOURCE_IP"`。
+- 出现 `Permission denied` 时，先检查私钥文件是否存在、命令是否显式指定该私钥和 `IdentitiesOnly=yes`，再用上述命令执行只读的 `true` 验证。`ssh-add -l` 显示无密钥只说明 agent 未加载密钥，不代表服务器权限失效。完成这些检查仍无法登录时，再报告具体认证失败原因并请求协助。
+- 私钥只通过路径引用，不读取、复制或输出私钥内容，也不为修复本机登录参数而修改服务器认证配置。
+
 ## 线上部署流程
 
 - 不得使用 SCP、rsync、编辑器或其他方式直接覆盖线上代码文件。

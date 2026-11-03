@@ -62,12 +62,20 @@ const merchantReplySchema = new mongoose.Schema({
   reviewStatus: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
 }, { _id: false });
 
+const reviewRatingsSchema = new mongoose.Schema({
+  environment: { ...integer(1), max: 5, required: true },
+  technique: { ...integer(1), max: 5, required: true },
+  service: { ...integer(1), max: 5, required: true },
+  price: { ...integer(1), max: 5, required: true },
+}, { _id: false });
+
 const reviewContentSchema = new mongoose.Schema({
   id: String,
   bookingId: String,
   userName: String,
   user: String,
   rating: { type: Number, min: 1, max: 5 },
+  ratings: { type: reviewRatingsSchema, default: undefined },
   comment: String,
   tags: [String],
   date: String,
@@ -84,6 +92,7 @@ const reviewSchema = new mongoose.Schema({
   userName: String,
   user: String,
   rating: { type: Number, min: 1, max: 5 },
+  ratings: { type: reviewRatingsSchema, default: undefined },
   comment: String,
   tags: [String],
   date: String,

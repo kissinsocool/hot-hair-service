@@ -1,3 +1,4 @@
+const { parseReviewRatings } = require('../services/review-ratings');
 const bookingService = require('../services/booking');
 const bookingMessages = require('../services/booking-messages');
 const { normalizeReviewTags, resolveServiceTagIds } = require('../services/salon');
@@ -162,7 +163,7 @@ module.exports = (app, ctx) => {
       return res.status(409).json({ message: 'Booking already reviewed' });
     }
   
-    const rating = Number(req.body.rating);
+    const { rating, ratings, error: ratingsError } = parseReviewRatings(req.body);
     const comment = String(req.body.comment || '').trim();
     const tags = normalizeReviewTags(req.body.tags);
     const imageObjects = Array.isArray(req.body.imageObjects) ? req.body.imageObjects : [];
@@ -170,9 +171,7 @@ module.exports = (app, ctx) => {
       return res.status(400).json({ message: '请升级客户端后重新上传图片' });
     }
   
-    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
-      return res.status(400).json({ message: 'rating must be an integer from 1 to 5' });
-    }
+    if (ratingsError) return res.status(400).json({ message: ratingsError });
     if (!comment) {
       return res.status(400).json({ message: 'comment is required' });
     }
@@ -196,6 +195,7 @@ module.exports = (app, ctx) => {
       userName: booking.userName,
       user: booking.userName,
       rating,
+      ratings,
       comment,
       tags,
       date: new Date().toISOString().slice(0, 10),
@@ -235,7 +235,7 @@ module.exports = (app, ctx) => {
       return res.status(409).json({ message: '评价正在审核中，请等待审核完成后再修改' });
     }
 
-    const rating = Number(req.body.rating);
+    const { rating, ratings, error: ratingsError } = parseReviewRatings(req.body);
     const comment = String(req.body.comment || '').trim();
     const requestedTags = req.body.tags;
     const normalizedTags = normalizeReviewTags(requestedTags);
@@ -243,9 +243,7 @@ module.exports = (app, ctx) => {
       ? req.body.retainedImageUrls.map(String)
       : [];
     const imageObjects = Array.isArray(req.body.imageObjects) ? req.body.imageObjects : [];
-    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
-      return res.status(400).json({ message: 'rating must be an integer from 1 to 5' });
-    }
+    if (ratingsError) return res.status(400).json({ message: ratingsError });
     if (!comment) return res.status(400).json({ message: 'comment is required' });
     if (comment.length > INPUT_LIMITS.review) {
       return res.status(400).json({ message: `comment cannot exceed ${INPUT_LIMITS.review} characters` });
@@ -279,6 +277,7 @@ module.exports = (app, ctx) => {
     const pendingEdit = {
       ...previousReview,
       rating,
+      ratings,
       comment,
       tags: requestedTags === undefined ? previousReview.tags || [] : normalizedTags,
       date: now.slice(0, 10),
