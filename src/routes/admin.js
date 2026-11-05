@@ -1,7 +1,8 @@
 const { BUSINESS_DISTRICTS } = require('../services/business-districts');
 const { normalizeDocument } = require('../services/salon');
 const { funnelMetrics } = require('../services/analytics');
-const { bookingDayRange, localDateKey } = require('../services/booking');
+const { bookingDayRange, localDateKey, runBookingTransaction, transactionError } = require('../services/booking');
+const { bookingMessagePayload } = require('../services/booking-messages');
 
 const parseBookingsSnapshot = (value) => {
   if (typeof value !== 'string') return null;
@@ -22,6 +23,9 @@ module.exports = (app, ctx) => {
     ClientUser,
     Salon,
     Booking,
+    BookingMessage,
+    mongoose,
+    broadcastBookingEvent,
     buildAdminMerchantPayload,
     normalizeDeposit,
     normalizeSalonTags,
@@ -676,6 +680,56 @@ module.exports = (app, ctx) => {
     res.json({ ok: true });
   });
 
+  app.get('/api/admin/complaints', async (req, res) => {
+    const pagination = normalizePagination(req.query);
+    const query = { complaint: { $exists: true, $ne: null } };
+    const [bookings, total] = await Promise.all([
+      Booking.find(query).select('id userId userName salonName staffName serviceName complaint completionSource completedAt createdAt updatedAt')
+        .sort({ 'complaint.createdAt': -1, _id: -1 }).skip(pagination.skip).limit(pagination.limit).lean(),
+      Booking.countDocuments(query),
+    ]);
+    setPaginationHeaders(res, pagination, total);
+    res.json(bookings.map(booking => ({
+      ...userImageReviewItems(booking, privateImageUrl, true)[0],
+      completionSource: booking.completionSource,
+      completedAt: booking.completedAt,
+      reason: booking.complaint.reason || 'other',
+      handlingStatus: booking.complaint.status || 'submitted',
+      response: booking.complaint.response || '',
+      handledAt: booking.complaint.handledAt,
+    })));
+  });
+
+  app.patch('/api/admin/complaints/:id', async (req, res) => {
+    const response = typeof req.body.response === 'string' ? req.body.response.trim() : '';
+    if (!response || response.length > 2000) {
+      return res.status(400).json({ message: '请填写1至2000字的处理意见' });
+    }
+    const now = new Date();
+    let updated;
+    try {
+      updated = await runBookingTransaction(mongoose, async session => {
+        const booking = await Booking.findOneAndUpdate(
+          { id: req.params.id, complaint: { $exists: true, $ne: null }, 'complaint.status': { $ne: 'handled' } },
+          { $set: { 'complaint.status': 'handled', 'complaint.response': response, 'complaint.handledAt': now } },
+          { new: true, session },
+        );
+        if (!booking) throw transactionError(409, '投诉不存在或已处理，请刷新后重试');
+        await BookingMessage.create([{
+          ...bookingMessagePayload(booking, 'complaint_handled'),
+          userMessage: '您的订单问题已有处理结果，请进入订单详情查看。',
+          createdAt: now,
+        }], { session });
+        return booking;
+      });
+    } catch (error) {
+      if (error.httpStatus) return res.status(error.httpStatus).json({ message: error.message });
+      throw error;
+    }
+    broadcastBookingEvent('booking.updated', updated);
+    res.json({ ok: true });
+  });
+
   app.get('/api/admin/user-images', async (_req, res) => {
     const query = {
       $or: [
@@ -739,12 +793,12 @@ module.exports = (app, ctx) => {
       if (type === 'complaint') booking.complained = false;
     } else {
       payload.reviewStatus = action === 'approve' ? 'approved' : 'rejected';
-      booking[type] = payload;
+      if (type !== 'complaint') booking[type] = payload;
       if (type === 'review') booking.reviewed = action === 'approve';
-      if (type === 'complaint') booking.complained = action === 'approve';
+      if (type === 'complaint') booking.complained = action === 'approve' || payload.status === 'handled';
     }
 
-    booking.markModified(type);
+    booking.markModified(type === 'complaint' && action !== 'delete' ? 'complaint.reviewStatus' : type);
     booking.updatedAt = new Date().toISOString();
     await booking.save();
     clearPublicSalonDetailCache?.();
@@ -763,11 +817,11 @@ function validateSalonTags(tags) {
   return '';
 }
 
-function userImageReviewItems(booking, privateImageUrl) {
+function userImageReviewItems(booking, privateImageUrl, includeHandledComplaints = false) {
   const items = ['review', 'complaint'].flatMap(type => {
     const payload = booking[type] || {};
     if (!Object.keys(payload).length) return [];
-    if (type === 'complaint' && payload.reviewStatus !== 'pending') return [];
+    if (type === 'complaint' && !includeHandledComplaints && payload.reviewStatus !== 'pending') return [];
     const imageUrls = (Array.isArray(payload.imageUrls) ? payload.imageUrls : [])
       .map(url => privateImageUrl(url))
       .filter(Boolean);

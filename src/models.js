@@ -117,11 +117,14 @@ const complaintSchema = new mongoose.Schema({
   staffName: String,
   serviceName: String,
   description: String,
+  reason: { type: String, enum: ['not_arrived', 'service_incomplete', 'other'] },
   imageUrls: [String],
   reviewStatus: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
   date: String,
   createdAt: Date,
-  status: { type: String, enum: ['submitted'], default: 'submitted' },
+  status: { type: String, enum: ['submitted', 'handled'], default: 'submitted' },
+  response: { type: String, maxlength: 2000 },
+  handledAt: Date,
 }, { _id: false });
 
 const staffDraftSchema = new mongoose.Schema({
@@ -201,6 +204,8 @@ const bookingSchema = new mongoose.Schema({
   startTime: { type: Date, required: true, index: true },
   note: { type: String, default: '' },
   status: { type: String, default: 'pending', index: true },
+  completionSource: { type: String, enum: ['merchant', 'automatic'] },
+  completedAt: Date,
   merchantMessage: String,
   userMessage: String,
   rejectReason: { type: String, default: '' },

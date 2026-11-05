@@ -7,6 +7,10 @@ const models = require('../models');
 const { createSession } = require('../services/auth');
 const { occupiedSlotStarts } = require('../services/booking');
 const { completeDueBookings } = require('../services/auto-complete-bookings');
+// This in-process test server exercises many writes without waiting for production rate windows.
+const rateLimitToken = crypto.randomBytes(32).toString('hex');
+process.env.LOAD_TEST_BYPASS_ENABLED = 'true';
+process.env.LOAD_TEST_BYPASS_TOKEN = rateLimitToken;
 const { server } = require('../../index');
 const { Booking, BookingMessage, SlotOccupancy, Salon, StaffProfile, ClientUser, MerchantUser, AdminUser, UserCoupon, UserPolicy, ReviewHelpful } = models;
 const uri = String(process.env.TEST_MONGODB_URI || '').trim();
@@ -27,6 +31,7 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     }
     await StaffProfile.create({ id: 'staff-1', name: 'Stylist', roleId: 'designer', extraServiceFeeFen: 0 });
     await Salon.create({ id: 'salon-1', name: 'Salon', publishStatus: 'online', staffIds: ['staff-1'], openingHours: '09:00-20:00',
+      description: '首页门店简介', image: 'https://example.com/salon-cover.jpg',
       services: [{ id: 'service-1', name: 'Cut', tagIds: ['wash_cut_blow'], priceFen: 8000, durationMinutes: 60 }] });
     await UserCoupon.create({ id: 'coupon-1', userId: 'client-1', campaignKey: 'fixture', couponType: 'fixture',
       minimumSpendFen: 5000, discountFen: 1000, title: 'Fixture coupon', grantedAt: new Date(), claimedAt: new Date(),
@@ -43,7 +48,7 @@ describeWithMongo('three-client booking contracts against a real replica set', (
   });
   async function request(role, route, body, method = 'GET') {
     const res = await fetch(`${baseUrl}/api${route}`, { method,
-      headers: { Authorization: `Bearer ${sessions[role].token}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${sessions[role].token}`, 'Content-Type': 'application/json', 'x-load-test-token': rateLimitToken },
       ...(body ? { body: JSON.stringify(body) } : {}) });
     return { status: res.status, body: await res.json(), total: res.headers.get('x-total-count') };
   }
@@ -67,6 +72,16 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect(confirmed.body.booking.payableAmountFen).toBe(7000);
     expect((await UserCoupon.findOne({ id: 'coupon-1' }).lean()).reservedBookingId).toBe(bookingId);
     expect(await SlotOccupancy.countDocuments({ bookingId })).toBe(1);
+  });
+
+  test('released booking list includes homepage intro and cover without altering order state', async () => {
+    const list = await request('client', '/bookings?page=1&limit=20');
+    expect(list.status).toBe(200);
+    const row = list.body.find(booking => booking.id === bookingId);
+    expect(row).toMatchObject({ salonDescription: '首页门店简介', salonImageUrl: 'https://example.com/salon-cover.jpg', status: 'pending' });
+    expect(list.body.every(booking => booking.userId === 'client-1')).toBe(true);
+    expect(Number(list.total)).toBeGreaterThan(0);
+    expect((await Booking.findOne({ id: bookingId }).lean()).salonDescription).toBeUndefined();
   });
 
   test('legacy body remains accepted and a price decrease invalidating the selected coupon still returns a fresh quote', async () => {
@@ -308,7 +323,7 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     const broadcastBookingEvent = jest.fn();
     const dependencies = { mongoose, ...models, broadcastBookingEvent };
     expect(await completeDueBookings(dependencies, now)).toBe(2);
-    expect((await Booking.findOne({ id: 'auto-due' }).lean()).couponRedeemedAt).toEqual(now);
+    expect(await Booking.findOne({ id: 'auto-due' }).lean()).toMatchObject({ couponRedeemedAt: now, completionSource: 'automatic', completedAt: now });
     expect((await Booking.findOne({ id: 'auto-waiting' }).lean()).status).toBe('accepted');
     expect((await Booking.findOne({ id: 'auto-legacy' }).lean()).status).toBe('completed');
     expect(await SlotOccupancy.countDocuments({ bookingId: 'auto-due' })).toBe(0);
@@ -318,6 +333,87 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect(await BookingMessage.countDocuments({ bookingId: 'auto-due', status: 'completed' })).toBe(1);
     expect(broadcastBookingEvent).toHaveBeenCalledTimes(2);
     expect(await completeDueBookings(dependencies, now)).toBe(0);
+  });
+
+  test('released merchant complete and legacy complaint requests work with completion provenance and feedback handling', async () => {
+    const id = 'completion-feedback-legacy';
+    const timestamp = new Date('2028-01-01');
+    await Booking.create({ id, userId: 'client-1', salonId: 'salon-1', staffId: 'staff-1',
+      serviceId: 'service-1', serviceName: 'Cut', status: 'accepted', startTime: timestamp,
+      originalAmountFen: 8000, payableAmountFen: 7000, couponDiscountFen: 1000,
+      createdAt: timestamp, updatedAt: timestamp });
+    expect((await request('merchant', `/merchant/bookings/${id}`, { action: 'complete', reason: '' }, 'PATCH')).status).toBe(200);
+    const completed = await Booking.findOne({ id }).lean();
+    expect(completed.completionSource).toBe('merchant');
+    expect(completed.completedAt).toBeInstanceOf(Date);
+    expect((await request('client', `/bookings/${id}`)).body.completionSource).toBe('merchant');
+    expect((await request('client', `/bookings/${id}/complaint`, { description: '订单有问题', imageObjects: [] }, 'POST')).status).toBe(201);
+    const before = await Booking.findOne({ id }).lean();
+    expect(before.complaint).toMatchObject({ reason: 'other', status: 'submitted' });
+    expect((await request('merchant', `/merchant/bookings/${id}`, { action: 'cancel', reason: '纠正' }, 'PATCH')).status).toBe(409);
+    for (const response of ['', 'x'.repeat(2001), {}]) {
+      expect((await request('admin', `/admin/complaints/${id}`, { response }, 'PATCH')).status).toBe(400);
+    }
+    expect((await request('client', `/admin/complaints/${id}`, { response: '越权处理' }, 'PATCH')).status).toBe(401);
+    const messagesBefore = await BookingMessage.countDocuments({ bookingId: id });
+    const failure = jest.spyOn(BookingMessage, 'create').mockRejectedValueOnce(new Error('Injected complaint notification failure'));
+    try {
+      expect((await request('admin', `/admin/complaints/${id}`, { response: '应回滚' }, 'PATCH')).status).toBe(500);
+    } finally { failure.mockRestore(); }
+    expect(await Booking.findOne({ id }).lean()).toEqual(before);
+    expect(await BookingMessage.countDocuments({ bookingId: id })).toBe(messagesBefore);
+    const replies = await Promise.all([1, 2].map(() => request('admin', `/admin/complaints/${id}`, { response: '已核实双方情况，记录处理结果' }, 'PATCH')));
+    expect(replies.map(item => item.status).sort()).toEqual([200, 409]);
+    const after = await Booking.findOne({ id }).lean();
+    expect({ ...after, complaint: before.complaint }).toEqual(before);
+    expect(after.complaint).toMatchObject({ status: 'handled', response: '已核实双方情况，记录处理结果', reviewStatus: 'pending' });
+    expect(after.complaint.handledAt).toBeInstanceOf(Date);
+    expect(await BookingMessage.countDocuments({ bookingId: id, type: 'complaint_handled' })).toBe(1);
+    const detail = await request('client', `/bookings/${id}`);
+    expect(detail.body.complaint).toMatchObject({ status: 'handled', response: after.complaint.response });
+    // Content moderation does not erase the separate handling result or remove it from the complaint list.
+    expect((await request('admin', '/admin/user-images', { bookingId: id, type: 'complaint', action: 'approve' }, 'PATCH')).status).toBe(200);
+    const list = await request('admin', '/admin/complaints?page=1&limit=100');
+    expect(list.body.find(row => row.bookingId === id)).toMatchObject({ handlingStatus: 'handled', response: after.complaint.response });
+    const messages = await request('client', '/booking-messages?page=1&limit=100');
+    expect(messages.body.find(row => row.bookingId === id && row.type === 'complaint_handled').userMessage).toContain('处理结果');
+  });
+
+  test('stale complaint content moderation preserves a concurrently saved processing response', async () => {
+    const id = 'completion-complaint-moderation-race';
+    await Booking.create({ id, userId: 'client-1', serviceId: 'service-1', status: 'completed',
+      startTime: new Date('2028-01-01'), complaint: { id: 'race-issue', description: '订单问题', status: 'submitted', reviewStatus: 'pending' } });
+    const stale = await Booking.findOne({ id });
+    const handlerTime = new Date();
+    const intercepted = jest.spyOn(Booking, 'findOne').mockImplementationOnce(async () => {
+      await Booking.updateOne({ id }, { $set: { 'complaint.status': 'handled', 'complaint.response': '并发处理意见', 'complaint.handledAt': handlerTime } });
+      return stale;
+    });
+    try {
+      expect((await request('admin', '/admin/user-images', { bookingId: id, type: 'complaint', action: 'approve' }, 'PATCH')).status).toBe(200);
+    } finally { intercepted.mockRestore(); }
+    expect((await Booking.findOne({ id }).lean()).complaint).toMatchObject({
+      status: 'handled', response: '并发处理意见', handledAt: handlerTime, reviewStatus: 'approved',
+    });
+    // Even released clients cannot overwrite the processing result after content rejection.
+    expect((await request('admin', '/admin/user-images', { bookingId: id, type: 'complaint', action: 'reject' }, 'PATCH')).status).toBe(200);
+    expect((await request('client', `/bookings/${id}/complaint`, { description: '重新提交', imageObjects: [] }, 'POST')).status).toBe(409);
+  });
+
+  test.each(['not_arrived', 'service_incomplete', 'other'])('completion feedback validates owner, reason and duplicate submission: %s', async reason => {
+    const id = `completion-issue-${reason}`;
+    await Booking.create({ id, userId: 'client-1', salonId: 'salon-1', serviceId: 'service-1',
+      status: 'completed', startTime: new Date('2028-01-01'), completionSource: 'automatic' });
+    const input = { reason, description: '实际情况与订单不一致', imageObjects: [] };
+    await Booking.updateOne({ id }, { $set: { userId: 'another-user' } });
+    expect((await request('client', `/bookings/${id}/complaint`, input, 'POST')).status).toBe(403);
+    await Booking.updateOne({ id }, { $set: { userId: 'client-1' } });
+    for (const invalid of ['fake', null, {}, ['other']]) {
+      expect((await request('client', `/bookings/${id}/complaint`, { ...input, reason: invalid }, 'POST')).status).toBe(400);
+    }
+    expect((await request('client', `/bookings/${id}/complaint`, input, 'POST')).status).toBe(201);
+    expect((await request('client', `/bookings/${id}/complaint`, input, 'POST')).status).toBe(409);
+    expect((await request('client', `/bookings/${id}`)).body.complaint.reason).toBe(reason);
   });
 
   test.each(['cancel', 'no_show'])('merchant corrects automatic completion with %s atomically using the released request body', async action => {

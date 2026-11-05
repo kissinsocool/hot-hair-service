@@ -68,6 +68,9 @@ test('completes accepted bookings at the saved service end with coupon and messa
   const { result, calls } = await runCompletion(bookings);
   assert.equal(result, 1);
   assert.equal(bookings[0].status, 'completed');
+  assert.equal(bookings[0].completionSource, 'automatic');
+  assert.equal(bookings[0].completedAt, now);
+  assert.match(bookings[0].userMessage, /系统已自动完成/);
   assert.equal(bookings[0].couponRedeemedAt, now);
   assert.equal(bookings[1].status, 'accepted');
   assert.equal(bookings[2].status, 'canceled');

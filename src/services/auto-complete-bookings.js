@@ -62,9 +62,11 @@ const completeDueBookings = async ({
             },
             { $set: {
               status: 'completed',
+              completionSource: 'automatic',
+              completedAt: now,
               updatedAt: now,
-              merchantMessage: '订单已完成。',
-              userMessage: '本次预约已完成，感谢到店。',
+              merchantMessage: '预约时间已结束，系统已自动完成订单。如实际未到店，请及时更正订单状态。',
+              userMessage: '预约时间已结束，系统已自动完成订单。如未到店、服务未完成或订单有问题，请进入订单详情反馈。',
               ...(couponRedeemedAt ? { couponRedeemedAt } : {}),
             } },
             { new: true, session },

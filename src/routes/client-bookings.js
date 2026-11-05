@@ -40,6 +40,7 @@ module.exports = (app, ctx) => {
     INPUT_LIMITS,
     rateLimits,
     AnalyticsEvent,
+    publicImageUrl,
   } = ctx;
 
   const reserveBookingSlot = (...args) => bookingService.reserveBookingSlot(SlotOccupancy, ...args);
@@ -56,8 +57,20 @@ module.exports = (app, ctx) => {
       Booking.find(query).select('-_id -__v').sort({ createdAt: -1 }).skip(pagination.skip).limit(pagination.limit).lean(),
       Booking.countDocuments(query),
     ]);
+    const salonIds = [...new Set(result.map(booking => booking.salonId).filter(Boolean))];
+    const salons = salonIds.length
+      ? await Salon.find({ id: { $in: salonIds } }).select('id description image images').lean()
+      : [];
+    const salonsById = new Map(salons.map(salon => [salon.id, salon]));
     setPaginationHeaders(res, pagination, total);
-    res.json(result.map(normalizeBooking));
+    res.json(result.map(booking => {
+      const salon = salonsById.get(booking.salonId);
+      return {
+        ...normalizeBooking(booking),
+        salonImageUrl: publicImageUrl(salon?.image || salon?.images?.[0] || ''),
+        salonDescription: salon?.description || '',
+      };
+    }));
   });
 
   app.get('/api/bookings/:id', async (req, res) => {
@@ -354,11 +367,15 @@ module.exports = (app, ctx) => {
     if (booking.status !== 'completed') {
       return res.status(409).json({ message: 'Only completed bookings can be complained' });
     }
-    if (booking.complained) {
+    if (booking.complained || booking.complaint?.status === 'handled') {
       return res.status(409).json({ message: 'Booking already complained' });
     }
   
     const description = String(req.body.description || '').trim();
+    const reason = req.body.reason === undefined ? 'other' : req.body.reason;
+    if (!['not_arrived', 'service_incomplete', 'other'].includes(reason)) {
+      return res.status(400).json({ message: '请选择有效的问题类型' });
+    }
     const imageObjects = Array.isArray(req.body.imageObjects) ? req.body.imageObjects : [];
     if (Array.isArray(req.body.images) && req.body.images.length) {
       return res.status(400).json({ message: '请升级客户端后重新上传图片' });
@@ -389,6 +406,7 @@ module.exports = (app, ctx) => {
       staffName: booking.staffName,
       serviceName: booking.serviceName,
       description,
+      reason,
       imageUrls,
       reviewStatus: 'pending',
       date: new Date().toISOString().slice(0, 10),
@@ -397,7 +415,7 @@ module.exports = (app, ctx) => {
     };
   
     const updatedBooking = await Booking.findOneAndUpdate(
-      { _id: booking._id, status: 'completed', complained: { $ne: true } },
+      { _id: booking._id, status: 'completed', complained: { $ne: true }, 'complaint.status': { $ne: 'handled' } },
       { $set: { complained: true, complaint, updatedAt: new Date() } },
       { new: true },
     );

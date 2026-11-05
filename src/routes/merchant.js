@@ -519,6 +519,7 @@ module.exports = (app, ctx) => {
       }
 
       update = {
+        ...(action === 'complete' ? { completionSource: 'merchant', completedAt: new Date() } : {}),
         status: {
           accept: 'accepted',
           cancel: 'canceled',
@@ -537,7 +538,7 @@ module.exports = (app, ctx) => {
         userMessage: {
           accept: '商家已确认，预约成功！',
           cancel: `商家已取消本次预约${reason ? `：${reason}` : '。'}`,
-          complete: '本次预约已完成，感谢到店。',
+          complete: '商家已确认本次服务完成。如订单有问题，请进入订单详情反馈。',
           no_show: '商家已将本次预约标记为爽约。直接爽约3次账号将被拉黑。',
           reject: `商家已拒绝本次预约${reason ? `：${reason}` : '。'}`,
         }[action],
