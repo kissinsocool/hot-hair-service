@@ -59,16 +59,18 @@ module.exports = (app, ctx) => {
     ]);
     const salonIds = [...new Set(result.map(booking => booking.salonId).filter(Boolean))];
     const salons = salonIds.length
-      ? await Salon.find({ id: { $in: salonIds } }).select('id description image images').lean()
+      ? await Salon.find({ id: { $in: salonIds } }).select('id description image images services.id services.note').lean()
       : [];
     const salonsById = new Map(salons.map(salon => [salon.id, salon]));
     setPaginationHeaders(res, pagination, total);
     res.json(result.map(booking => {
       const salon = salonsById.get(booking.salonId);
+      const service = salon?.services?.find(service => service.id === booking.serviceId);
       return {
         ...normalizeBooking(booking),
         salonImageUrl: publicImageUrl(salon?.image || salon?.images?.[0] || ''),
         salonDescription: salon?.description || '',
+        serviceDescription: service?.note || '',
       };
     }));
   });

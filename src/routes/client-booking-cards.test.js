@@ -11,8 +11,8 @@ test('client booking cards batch current salon presentation by distinct IDs with
     if (method === 'get' && path === '/api/bookings') handler = handlers.at(-1);
   }]));
   const rows = [
-    { id: 'B1', userId: 'u', salonId: 's', salonName: '预约时店名', status: 'completed', reviewed: true },
-    { id: 'B2', userId: 'u', salonId: 's', status: 'accepted' },
+    { id: 'B1', userId: 'u', salonId: 's', serviceId: 'cut', salonName: '预约时店名', status: 'completed', reviewed: true },
+    { id: 'B2', userId: 'u', salonId: 's', serviceId: 'removed', status: 'accepted' },
     { id: 'B3', userId: 'u', salonId: 'deleted', status: 'canceled' },
     { id: 'legacy', userId: 'u', status: 'completed' },
   ];
@@ -20,7 +20,7 @@ test('client booking cards batch current salon presentation by distinct IDs with
   let paging;
   registerRoutes(app, {
     Booking: { find(query) { assert.deepEqual(query, { userId: { $in: ['u'] } }); return cursor(rows); }, async countDocuments() { return 7; } },
-    Salon: { find(query) { salonReads++; assert.deepEqual(query, { id: { $in: ['s', 'deleted'] } }); return cursor([{ id: 's', description: '首页简介', images: ['https://example.com/cover.jpg'] }]); } },
+    Salon: { find(query) { salonReads++; assert.deepEqual(query, { id: { $in: ['s', 'deleted'] } }); return cursor([{ id: 's', description: '首页简介', images: ['https://example.com/cover.jpg'], services: [{ id: 'other', note: '不能串套餐简介' }, { id: 'cut', note: '洗剪吹造型' }] }]); } },
     publicImageUrl, normalizeBooking: value => ({ ...value }), normalizeUserId: value => value, userIdAliases: value => [value],
     normalizePagination: () => ({ page: 1, limit: 4, skip: 0 }), setPaginationHeaders(_res, pagination, total) { paging = { ...pagination, total }; },
     rateLimits: { booking: [] },
@@ -34,5 +34,6 @@ test('client booking cards batch current salon presentation by distinct IDs with
   assert.equal(body[1].salonImageUrl, 'https://example.com/cover.jpg');
   assert.equal(body[2].salonImageUrl, '');
   assert.equal(body[3].salonDescription, '');
-  assert.deepEqual(body.map(({ salonImageUrl, salonDescription, ...booking }) => booking), rows);
+  assert.deepEqual(body.map(booking => booking.serviceDescription), ['洗剪吹造型', '', '', '']);
+  assert.deepEqual(body.map(({ salonImageUrl, salonDescription, serviceDescription, ...booking }) => booking), rows);
 });

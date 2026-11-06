@@ -32,7 +32,7 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     await StaffProfile.create({ id: 'staff-1', name: 'Stylist', roleId: 'designer', extraServiceFeeFen: 0 });
     await Salon.create({ id: 'salon-1', name: 'Salon', publishStatus: 'online', staffIds: ['staff-1'], openingHours: '09:00-20:00',
       description: '首页门店简介', image: 'https://example.com/salon-cover.jpg',
-      services: [{ id: 'service-1', name: 'Cut', tagIds: ['wash_cut_blow'], priceFen: 8000, durationMinutes: 60 }] });
+      services: [{ id: 'service-1', name: 'Cut', note: '洗剪吹造型', tagIds: ['wash_cut_blow'], priceFen: 8000, durationMinutes: 60 }] });
     await UserCoupon.create({ id: 'coupon-1', userId: 'client-1', campaignKey: 'fixture', couponType: 'fixture',
       minimumSpendFen: 5000, discountFen: 1000, title: 'Fixture coupon', grantedAt: new Date(), claimedAt: new Date(),
       validFrom: new Date('2020-01-01'), validUntil: new Date('2035-01-01') });
@@ -78,7 +78,7 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     const list = await request('client', '/bookings?page=1&limit=20');
     expect(list.status).toBe(200);
     const row = list.body.find(booking => booking.id === bookingId);
-    expect(row).toMatchObject({ salonDescription: '首页门店简介', salonImageUrl: 'https://example.com/salon-cover.jpg', status: 'pending' });
+    expect(row).toMatchObject({ salonDescription: '首页门店简介', salonImageUrl: 'https://example.com/salon-cover.jpg', serviceName: 'Cut', serviceDescription: '洗剪吹造型', status: 'pending' });
     expect(list.body.every(booking => booking.userId === 'client-1')).toBe(true);
     expect(Number(list.total)).toBeGreaterThan(0);
     expect((await Booking.findOne({ id: bookingId }).lean()).salonDescription).toBeUndefined();
