@@ -29,11 +29,9 @@ module.exports = (app, ctx) => {
     rateLimits,
     getStaffById,
     getSalonByStaffId,
-    getStaffMapByIds,
-    getApprovedReviewsByStaffIds,
     getApprovedRatingSummariesByStaffIds,
     addApprovedSalonRatings,
-    buildStaffPayload,
+    buildPublicStaffSummary,
     generateSlotsForNoPreferenceAndDate,
     generateSlotsForStaffAndDate,
     expandedSalonClosedDates,
@@ -256,34 +254,32 @@ module.exports = (app, ctx) => {
     res.json(posts.map(post => salonPostPayload(post, publicImageUrl)));
   });
 
+  // Review text is served by /api/staff/:id/reviews so this payload stays small as reviews accumulate.
   app.get('/api/staff/:id', ...rateLimits.publicRead, async (req, res) => {
     const person = await getStaffById(req.params.id).lean();
     if (!person) return res.status(404).json({ message: 'Staff not found' });
-    const salon = await getSalonByStaffId(req.params.id).lean();
-    const staffMap = salon ? await getStaffMapByIds(salon.staffIds) : {};
-    const [reviews, salonReviews, ratingSummaries] = await Promise.all([
-      getApprovedReviewsByStaffIds([req.params.id], 50),
-      salon ? getApprovedReviewsByStaffIds(salon.staffIds, 150) : [],
-      getApprovedRatingSummariesByStaffIds(salon?.staffIds || [req.params.id]),
+    const [salon, ratingSummaries] = await Promise.all([
+      getSalonByStaffId(req.params.id).lean(),
+      getApprovedRatingSummariesByStaffIds([person.id]),
     ]);
-    const reviewsByStaff = salonReviews.reduce((grouped, review) => {
-      (grouped[review.staffId] ||= []).push(review);
-      return grouped;
-    }, {});
     res.json({
-      ...buildStaffPayload(person, reviews, ratingSummaries[req.params.id]),
+      ...buildPublicStaffSummary(person, ratingSummaries[person.id]),
       salonId: salon?.id || '',
       salonName: salon?.name || '',
       salonServices: (salon?.services || []).map(servicePayload),
-      salonStaff: salon ? salon.staffIds.map(id => staffMap[id]).filter(Boolean)
-        .map(profile => buildStaffPayload(
-          profile,
-          reviewsByStaff[profile.id] || [],
-          ratingSummaries[profile.id],
-        )) : [],
       salonClosedDates: expandedSalonClosedDates(salon),
       salonAcceptsSameDayBooking: salon?.acceptsSameDayBooking !== false,
     });
+  });
+
+  app.get('/api/staff/:id/reviews', ...rateLimits.publicRead, async (req, res) => {
+    const person = await getStaffById(req.params.id).lean();
+    if (!person) return res.status(404).json({ message: 'Staff not found' });
+    const pagination = normalizePagination(req.query, 10, 50);
+    const result = await getSalonReviewsPage({ staffIds: [person.id] }, pagination, 'latest');
+    const items = await addReviewHelpfulState(result.items, sessionTokenFromRequest(req));
+    res.set('Cache-Control', 'private, no-store');
+    res.json({ ...result, items });
   });
 
   app.get('/api/staff/:id/slots', ...rateLimits.publicRead, async (req, res) => {

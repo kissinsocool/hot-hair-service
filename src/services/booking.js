@@ -8,29 +8,37 @@ const bookingDayRange = (value, now = new Date()) => {
   return { start, end: new Date(start.getTime() + 24 * 60 * 60 * 1000) };
 };
 
+// Intl.DateTimeFormat construction costs tens of microseconds; slot generation calls these per slot.
+const localDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: businessTimeZone,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+const localTimeFormatter = new Intl.DateTimeFormat('en-GB', {
+  timeZone: businessTimeZone,
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
 const localDateKey = (date = new Date()) => {
   const value = date instanceof Date ? date : new Date(date);
   if (Number.isNaN(value.getTime())) return '';
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: businessTimeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(value);
+  return localDateFormatter.format(value);
 };
 
 const localTimeMinutes = (date) => {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: businessTimeZone,
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(date);
+  const parts = localTimeFormatter.formatToParts(date);
   const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
   return Number(values.hour) * 60 + Number(values.minute);
 };
 
 const parseBookingTime = (value) => {
+  // A Date is already an absolute instant; stringifying it would use the process time zone.
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : new Date(value.getTime());
+  }
   const input = String(value || '').trim();
   if (!input) return null;
   const explicit = /(Z|[+-]\d{2}:\d{2})$/i.test(input)

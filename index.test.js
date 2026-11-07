@@ -12,6 +12,7 @@ const {
   buildGeoLocation,
   buildMerchantSalonPayload,
   buildPublicSalonDetail,
+  buildPublicStaffSummary,
   buildStaffPayload,
   buildMerchantBookingScope,
   campaignPayload,
@@ -514,6 +515,25 @@ test('public salon details expose weekly closures and fold them into closedDates
   clearPublicSalonDetailCache();
 });
 
+test('public staff summaries expose rating totals without review text or legacy profile fields', () => {
+  const summary = buildPublicStaffSummary({
+    id: 'staff-1',
+    roleId: 'technical_director',
+    role: '不应返回的旧字段',
+    reviews: [{ rating: 1 }],
+    rating: 1,
+  }, { rating: 4.5, reviewCount: 12, ratingTotal: 54 });
+  assert.equal('reviews' in summary, false);
+  assert.equal(summary.rating, 4.5);
+  assert.equal(summary.reviewCount, 12);
+  assert.equal(summary.roleId, 'technical_director');
+  assert.equal('role' in summary, false);
+  assert.deepEqual(
+    [buildPublicStaffSummary({ id: 'staff-2' }).rating, buildPublicStaffSummary({ id: 'staff-2' }).reviewCount],
+    [null, 0],
+  );
+});
+
 test('public staff payloads use supplied booking reviews and ignore legacy profile reviews', () => {
   const reviews = Array.from({ length: 205 }, (_, index) => ({
     id: `review-${index}`,
@@ -743,7 +763,7 @@ test('closed dates are normalized and matched by calendar date', () => {
 });
 
 test('same-day booking policy blocks only today', () => {
-  const now = new Date(2026, 6, 20, 9);
+  const now = new Date('2026-07-20T09:00:00+08:00');
   const salon = { acceptsSameDayBooking: false };
 
   assert.equal(isSameDayBookingBlocked(salon, '2026-07-20T18:00:00', now), true);
@@ -1427,17 +1447,45 @@ test('query indexes match geospatial and filtered booking access patterns', () =
 });
 
 test('merchant booking day range defaults to today and accepts an explicit date', () => {
-  const today = registerMerchantRoutes.bookingDayRange(undefined, new Date(2030, 0, 2, 15, 30));
+  const today = registerMerchantRoutes.bookingDayRange(undefined, new Date('2030-01-02T15:30:00+08:00'));
   assert.deepEqual(today, {
-    start: new Date(2030, 0, 2),
-    end: new Date(2030, 0, 3),
+    start: new Date('2030-01-02T00:00:00+08:00'),
+    end: new Date('2030-01-03T00:00:00+08:00'),
   });
+  assert.deepEqual(
+    registerMerchantRoutes.bookingDayRange(undefined, new Date('2030-01-02T23:30:00+08:00')),
+    today,
+  );
   assert.deepEqual(registerMerchantRoutes.bookingDayRange('2030-02-03'), {
-    start: new Date(2030, 1, 3),
-    end: new Date(2030, 1, 4),
+    start: new Date('2030-02-03T00:00:00+08:00'),
+    end: new Date('2030-02-04T00:00:00+08:00'),
   });
   assert.equal(registerMerchantRoutes.bookingDayRange('03/02/2030'), null);
   assert.equal(registerMerchantRoutes.bookingDayRange('2030-02-30'), null);
+});
+
+test('booking times given as Date objects keep their instant regardless of process time zone', (t) => {
+  const originalTimeZone = process.env.TZ;
+  t.after(() => {
+    if (originalTimeZone === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTimeZone;
+  });
+  const startTime = new Date('2030-01-01T11:00:00+08:00');
+  for (const timeZone of ['UTC', 'America/Los_Angeles', 'Asia/Shanghai']) {
+    process.env.TZ = timeZone;
+    const parsed = bookingDomain.parseBookingTime(startTime);
+    assert.equal(parsed.toISOString(), '2030-01-01T03:00:00.000Z', timeZone);
+    assert.notEqual(parsed, startTime, 'returns a copy so callers cannot mutate the input');
+    assert.deepEqual(
+      bookingDomain.occupiedSlotStarts(startTime, 60).map(slot => slot.toISOString()),
+      ['2030-01-01T03:00:00.000Z', '2030-01-01T03:30:00.000Z'],
+      timeZone,
+    );
+    assert.equal(bookingDomain.localTimeMinutes(startTime), 11 * 60, timeZone);
+    assert.equal(bookingDomain.localDateKey(new Date('2030-01-01T16:30:00Z')), '2030-01-02', timeZone);
+    assert.equal(bookingDomain.isHalfHourStart(parsed), true, timeZone);
+  }
+  assert.equal(bookingDomain.parseBookingTime(new Date(Number.NaN)), null);
 });
 
 test('booking IDs are eight numeric digits', () => {
@@ -1944,7 +1992,7 @@ test('staff slots load daily bookings and unavailability with fixed query count'
   Salon.findOne = () => ({ lean: async () => ({ openingHours: '10:00 - 11:00' }) });
   Booking.find = () => {
     bookingQueries += 1;
-    return { select: () => ({ lean: async () => [{ startTime: new Date('2030-01-01T10:30:00') }] }) };
+    return { select: () => ({ lean: async () => [{ startTime: new Date('2030-01-01T10:30:00+08:00') }] }) };
   };
   StaffProfile.findOne = () => {
     staffQueries += 1;

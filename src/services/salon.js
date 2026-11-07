@@ -308,6 +308,16 @@ const buildStaffPayload = (person, reviews = [], summary = ratingSummaryFromRevi
   };
 };
 
+// Public staff listings carry only the rating summary; review text is served by the paginated review endpoints.
+const buildPublicStaffSummary = (person, summary = ratingSummary(0, 0)) => {
+  const { reviews: _legacyReviews, rating: _legacyRating, ...profile } = person || {};
+  return {
+    ...staffPayload(profile),
+    rating: summary.rating,
+    reviewCount: summary.reviewCount,
+  };
+};
+
 const publicReviewFromBooking = (bookingDocument, avatarUrl = '') => {
   const bookingValue = normalizeDocument(bookingDocument);
   const { pendingImageUrls, pendingMerchantReply, pendingEdit, ...review } = bookingValue.review || {};
@@ -387,6 +397,7 @@ module.exports = {
   AFTER_SALES_POLICY_IDS,
   buildGeoLocation,
   buildPublicSalonDetail,
+  buildPublicStaffSummary,
   buildSalonImageList,
   buildStaffPayload,
   calculateDistanceKm,

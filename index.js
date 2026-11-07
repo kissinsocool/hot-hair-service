@@ -659,7 +659,10 @@ const incrementNoShowCount = (userId, session) => {
 };
 
 const PUBLIC_SALON_REVIEWS_LIMIT = 150;
+// The salon detail page previews this many reviews; the rest come from /api/salons/:id/reviews.
+const PUBLIC_SALON_DETAIL_REVIEWS_LIMIT = 3;
 const buildStaffPayload = salonDomain.buildStaffPayload;
+const buildPublicStaffSummary = salonDomain.buildPublicStaffSummary;
 const publicReviewFromBooking = salonDomain.publicReviewFromBooking;
 
 const getApprovedReviewsByStaffIds = async (staffIds = [], limit = PUBLIC_SALON_REVIEWS_LIMIT) => {
@@ -751,16 +754,13 @@ const buildSalonDetail = async (salonDocument) => {
   const salon = normalizeDocument(salonDocument);
   const staffMap = await getStaffMapByIds(salon.staffIds);
   const staffList = salon.staffIds.map(id => staffMap[id]).filter(Boolean);
-  const [reviews, ratingSummaries, reviewTags] = await Promise.all([
-    getApprovedReviewsByStaffIds(salon.staffIds, PUBLIC_SALON_REVIEWS_LIMIT),
+  const [reviewPage, ratingSummaries] = await Promise.all([
+    getSalonReviewsPage(salon, { page: 1, limit: PUBLIC_SALON_DETAIL_REVIEWS_LIMIT, skip: 0 }, 'latest'),
     getApprovedRatingSummariesByStaffIds(salon.staffIds),
-    getApprovedReviewTagCountsByStaffIds(salon.staffIds),
   ]);
-  const reviewsByStaff = groupReviewsByStaff(reviews);
   const images = await existingSalonImages(salon);
-  const staff = staffList.map(person => buildStaffPayload(
+  const staff = staffList.map(person => buildPublicStaffSummary(
     person,
-    reviewsByStaff[person.id] || [],
     ratingSummaries[person.id] || salonDomain.ratingSummary(0, 0),
   ));
   const publicSalon = stripSensitiveSalonFields(salon);
@@ -774,8 +774,8 @@ const buildSalonDetail = async (salonDocument) => {
     images,
     promoImages: images,
     staff,
-    reviews,
-    reviewTags,
+    reviews: reviewPage.items,
+    reviewTags: reviewPage.reviewTags,
   };
 };
 
@@ -1344,6 +1344,7 @@ const routeContext = {
   buildSalonDetail,
   buildPublicSalonDetail,
   buildStaffPayload,
+  buildPublicStaffSummary,
   calculateDistanceKm,
   clearPublicSalonDetailCache,
   ClientUser,
@@ -1542,6 +1543,7 @@ module.exports = {
   buildMerchantSalonPayload,
   buildPublicSalonDetail,
   buildStaffPayload,
+  buildPublicStaffSummary,
   addApprovedSalonRatings,
   clearPublicSalonDetailCache,
   buildMerchantBookingScope,

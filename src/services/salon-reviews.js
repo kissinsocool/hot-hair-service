@@ -15,13 +15,20 @@ async function getApprovedReviewTagCountsByStaffIds(staffIds = []) {
   return REVIEW_TAGS.filter(name => counts[name]).map(name => ({ name, count: counts[name] }));
 }
 
+const EMPTY_REVIEW_COUNTS = Object.freeze({ all: 0, negative: 0, neutral: 0, photos: 0 });
+
 async function getSalonReviewsPage(salon, pagination, filter) {
+  const staffIds = [...new Set((salon.staffIds || []).map(String).filter(Boolean))];
+  if (!staffIds.length) {
+    return { items: [], page: pagination.page, limit: pagination.limit, total: 0, hasMore: false,
+      counts: { ...EMPTY_REVIEW_COUNTS }, reviewTags: [] };
+  }
   const ratingFilter = filter === 'negative' ? { $gte: 1, $lt: 3 }
     : filter === 'neutral' ? { $gte: 3, $lt: 4 } : { $gte: 1, $lte: 5 };
   const hasPhotos = { $gt: [{ $size: { $ifNull: ['$review.imageUrls', []] } }, 0] };
   const [rows, reviewTags] = await Promise.all([Booking.aggregate([
     { $match: {
-      staffId: { $in: salon.staffIds || [] },
+      staffId: { $in: staffIds },
       'review.reviewStatus': 'approved',
       'review.rating': { $gte: 1, $lte: 5 },
     } },
@@ -48,7 +55,7 @@ async function getSalonReviewsPage(salon, pagination, filter) {
         ] }, 1, 0] } },
       } }],
     } },
-  ]).option({ maxTimeMS: 5000, allowDiskUse: true }), getApprovedReviewTagCountsByStaffIds(salon.staffIds)]);
+  ]).option({ maxTimeMS: 5000, allowDiskUse: true }), getApprovedReviewTagCountsByStaffIds(staffIds)]);
   const [result] = rows;
   const bookings = result?.items || [];
   const userIds = [...new Set(bookings.flatMap(booking => userIdAliases(booking.userId)))];

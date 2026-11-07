@@ -143,7 +143,7 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect((await request('otherMerchant', '/merchant/bookings/summary?includePending=true')).body.counts).toEqual({});
   });
 
-  test('public review pages cover more than the legacy cap, count every category and preserve released detail requests', async () => {
+  test('public review pages cover more than the legacy cap, count every category and keep detail payloads to a preview', async () => {
     const staffId = 'review-pages-staff';
     await StaffProfile.create({ id: staffId, name: 'Reviews stylist', roleId: 'designer' });
     await Salon.create({ id: 'review-pages-salon', name: 'Reviews salon', publishStatus: 'online', staffIds: [staffId] });
@@ -203,9 +203,31 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       const empty = await request('client', `/salons/review-pages-salon/reviews?filter=${filter}&page=100&limit=10`);
       expect(empty.body.items).toEqual([]); expect(empty.body.hasMore).toBe(false); expect(empty.body.counts).toEqual(counts);
     }
-    const legacy = await request('client', '/salons/review-pages-salon');
-    expect(legacy.status).toBe(200); expect(legacy.body.reviews).toHaveLength(150); expect(legacy.body.reviewCount).toBe(165);
-    expect(legacy.body.reviewTags).toEqual(reviewTags);
+    // Salon detail previews the newest reviews in list order; staff entries carry only rating summaries.
+    const detail = await request('client', '/salons/review-pages-salon');
+    expect(detail.status).toBe(200); expect(detail.body.reviewCount).toBe(165);
+    expect(detail.body.reviews.map(review => review.id)).toEqual(expected.slice(0, 3).map(doc => doc.review.id));
+    expect(detail.body.reviewTags).toEqual(reviewTags);
+    expect(detail.body.staff).toHaveLength(1);
+    expect(detail.body.staff[0]).toMatchObject({ id: staffId, reviewCount: 165 });
+    expect(detail.body.staff[0].reviews).toBeUndefined();
+    // Staff detail no longer embeds reviews; they are paginated per staff member.
+    const staffDetail = await request('client', `/staff/${staffId}`);
+    expect(staffDetail.status).toBe(200); expect(staffDetail.body.reviewCount).toBe(165);
+    expect(staffDetail.body.reviews).toBeUndefined(); expect(staffDetail.body.salonStaff).toBeUndefined();
+    expect(staffDetail.body.salonId).toBe('review-pages-salon');
+    const staffSeen = [];
+    for (let page = 1; page <= 17; page++) {
+      const result = await request('client', `/staff/${staffId}/reviews?page=${page}&limit=10`);
+      expect(result.status).toBe(200); expect(result.body.total).toBe(165);
+      expect(result.body.hasMore).toBe(page < 17);
+      for (const review of result.body.items) {
+        expect(review.pendingEdit).toBeUndefined(); expect(review.userId).toBeUndefined();
+      }
+      staffSeen.push(...result.body.items.map(review => review.id));
+    }
+    expect(staffSeen).toEqual(expected.map(doc => doc.review.id));
+    expect((await request('client', '/staff/missing-staff/reviews')).status).toBe(404);
     const empty = await request('client', '/salons/review-pages-empty/reviews?filter=photos');
     expect(empty.body).toMatchObject({ items: [], page: 1, limit: 10, total: 0, hasMore: false, counts: { all: 0, negative: 0, neutral: 0, photos: 0 } });
     expect(empty.body.reviewTags).toEqual([]);
@@ -241,6 +263,8 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect(firstViewer.body.reviews[0]).toMatchObject({ helpfulCount: 1, helpful: true });
     const otherViewer = await request('reviewer', '/salons/helpful-salon');
     expect(otherViewer.body.reviews[0]).toMatchObject({ helpfulCount: 1, helpful: false });
+    expect((await request('client', '/staff/helpful-staff/reviews')).body.items[0]).toMatchObject({ helpfulCount: 1, helpful: true });
+    expect((await request('reviewer', '/staff/helpful-staff/reviews')).body.items[0]).toMatchObject({ helpfulCount: 1, helpful: false });
     expect((await request('reviewer', route, { reviewId: 'helpful-review' }, 'POST')).body.helpfulCount).toBe(2);
     expect((await request('client', route, { reviewId: 'helpful-review' }, 'POST')).body.helpfulCount).toBe(2);
     const anonymous = await fetch(`${baseUrl}/api/salons/helpful-salon/reviews`);
