@@ -1,71 +1,48 @@
 const { Booking, ClientUser } = require('../models');
 const { normalizeUserId, userIdAliases } = require('./auth');
-const { publicReviewFromBooking, REVIEW_TAGS } = require('./salon');
+const { publicReviewFromBooking } = require('./salon');
+const { readReviewListStats } = require('./staff-ratings');
 
+const RATING_FILTERS = Object.freeze({
+  latest: { $gte: 1, $lte: 5 },
+  negative: { $gte: 1, $lt: 3 },
+  neutral: { $gte: 3, $lt: 4 },
+  photos: { $gte: 1, $lte: 5 },
+});
+
+const uniqueIds = (staffIds = []) => [...new Set(staffIds.map(String).filter(Boolean))];
+
+// Tag counts over the approved reviews of these stylists, in the configured display order.
 async function getApprovedReviewTagCountsByStaffIds(staffIds = []) {
-  const ids = [...new Set(staffIds.map(String).filter(Boolean))];
-  if (!ids.length) return [];
-  const rows = await Booking.aggregate([
-    { $match: { staffId: { $in: ids }, 'review.reviewStatus': 'approved' } },
-    { $unwind: '$review.tags' },
-    { $match: { 'review.tags': { $in: REVIEW_TAGS } } },
-    { $group: { _id: '$review.tags', count: { $sum: 1 } } },
-  ]);
-  const counts = Object.fromEntries(rows.map(row => [String(row._id), Number(row.count) || 0]));
-  return REVIEW_TAGS.filter(name => counts[name]).map(name => ({ name, count: counts[name] }));
+  return (await readReviewListStats(staffIds)).reviewTags;
 }
 
-const EMPTY_REVIEW_COUNTS = Object.freeze({ all: 0, negative: 0, neutral: 0, photos: 0 });
-
+// One page of approved reviews for a salon (or any group of stylists), newest first.
+// Counts and tag counts come from stored stylist statistics; the page itself is read through the
+// { staffId, review.reviewStatus, review.createdAt, _id } index, so a page never scans the other reviews.
 async function getSalonReviewsPage(salon, pagination, filter) {
-  const staffIds = [...new Set((salon.staffIds || []).map(String).filter(Boolean))];
-  if (!staffIds.length) {
-    return { items: [], page: pagination.page, limit: pagination.limit, total: 0, hasMore: false,
-      counts: { ...EMPTY_REVIEW_COUNTS }, reviewTags: [] };
-  }
-  const ratingFilter = filter === 'negative' ? { $gte: 1, $lt: 3 }
-    : filter === 'neutral' ? { $gte: 3, $lt: 4 } : { $gte: 1, $lte: 5 };
-  const hasPhotos = { $gt: [{ $size: { $ifNull: ['$review.imageUrls', []] } }, 0] };
-  const [rows, reviewTags] = await Promise.all([Booking.aggregate([
-    { $match: {
+  const staffIds = uniqueIds(salon.staffIds);
+  const [bookings, { counts, reviewTags }] = staffIds.length ? await Promise.all([
+    Booking.find({
       staffId: { $in: staffIds },
       'review.reviewStatus': 'approved',
-      'review.rating': { $gte: 1, $lte: 5 },
-    } },
-    { $facet: {
-      items: [
-        { $match: { 'review.rating': ratingFilter } },
-        ...(filter === 'photos' ? [{ $match: { $expr: hasPhotos } }] : []),
-        { $set: { reviewCreatedAt: { $ifNull: [
-          '$review.createdAt',
-          { $convert: { input: '$review.date', to: 'date', onError: '$updatedAt', onNull: '$updatedAt' } },
-        ] } } },
-        { $sort: { reviewCreatedAt: -1, _id: -1 } },
-        { $skip: pagination.skip },
-        { $limit: pagination.limit },
-        { $project: { id: 1, userId: 1, staffId: 1, staffName: 1, review: 1 } },
-      ],
-      counts: [{ $group: {
-        _id: null,
-        all: { $sum: 1 },
-        photos: { $sum: { $cond: [hasPhotos, 1, 0] } },
-        negative: { $sum: { $cond: [{ $lt: ['$review.rating', 3] }, 1, 0] } },
-        neutral: { $sum: { $cond: [{ $and: [
-          { $gte: ['$review.rating', 3] }, { $lt: ['$review.rating', 4] },
-        ] }, 1, 0] } },
-      } }],
-    } },
-  ]).option({ maxTimeMS: 5000, allowDiskUse: true }), getApprovedReviewTagCountsByStaffIds(staffIds)]);
-  const [result] = rows;
-  const bookings = result?.items || [];
+      'review.rating': RATING_FILTERS[filter] || RATING_FILTERS.latest,
+      ...(filter === 'photos' ? { 'review.imageUrls.0': { $exists: true } } : {}),
+    })
+      .sort({ 'review.createdAt': -1, _id: -1 })
+      .skip(pagination.skip)
+      .limit(pagination.limit)
+      .select('id userId staffId staffName review')
+      .maxTimeMS(5000)
+      .lean(),
+    readReviewListStats(staffIds),
+  ]) : [[], { counts: { all: 0, negative: 0, neutral: 0, photos: 0 }, reviewTags: [] }];
   const userIds = [...new Set(bookings.flatMap(booking => userIdAliases(booking.userId)))];
   const users = userIds.length
     ? await ClientUser.find({ id: { $in: userIds } }).select('id avatarUrl').lean()
     : [];
   const avatars = new Map(users.map(user => [normalizeUserId(user.id), user.avatarUrl]));
-  const summary = result?.counts?.[0];
-  const counts = { all: summary?.all || 0, negative: summary?.negative || 0, neutral: summary?.neutral || 0, photos: summary?.photos || 0 };
-  const total = counts[filter === 'latest' ? 'all' : filter];
+  const total = counts[filter === 'latest' ? 'all' : filter] || 0;
   return {
     items: bookings.map(booking => publicReviewFromBooking(booking, avatars.get(normalizeUserId(booking.userId)) || '')),
     page: pagination.page,

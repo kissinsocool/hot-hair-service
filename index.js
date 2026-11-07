@@ -768,9 +768,19 @@ const buildSalonDetail = async (salonDocument) => {
   };
 };
 
-const buildPublicSalonDetail = (salonDocument, builder = buildSalonDetail, now = Date.now()) =>
+const PUBLIC_SALON_DETAIL_PROJECTION = '-licenseUrl -legalPersonIdFrontUrl -legalPersonIdBackUrl -addressProofUrl -licenseStatus -licenseRejectReason -licenseSubmittedAt -licenseReviewedAt -pendingContent -contentReviewStatus -contentRejectReason -contentReviewedAt';
+
+// The detail cache is keyed by salon id and updatedAt, so the route reads only those two fields and the full
+// salon document is loaded only when the cached detail is missing or stale. Null when it went offline meanwhile.
+const buildSalonDetailFromVersion = async (current) => {
+  const salon = await Salon.findOne({ id: current.id, publishStatus: 'online' }).select(PUBLIC_SALON_DETAIL_PROJECTION);
+  return salon ? buildSalonDetail(salon) : null;
+};
+
+const buildPublicSalonDetail = (salonDocument, builder = buildSalonDetailFromVersion, now = Date.now()) =>
   salonDomain.buildPublicSalonDetail(salonDocument, async document => {
     const detail = await builder(document);
+    if (!detail) return null;
     if (detail.closedDates === undefined && detail.weeklyClosedDays === undefined) return detail;
     return {
       ...detail,
@@ -1489,6 +1499,8 @@ const startServer = async () => {
     CouponCampaign.createIndexes(),
     UserCoupon.createIndexes(),
     AnalyticsEvent.createIndexes(),
+    // Its unique staffId index is what stops an older rating refresh from replacing a newer one.
+    StaffRatingSummary.createIndexes(),
   ]);
   console.log('MongoDB connected');
 

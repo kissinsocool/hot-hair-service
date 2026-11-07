@@ -595,14 +595,21 @@ test('rating summaries round averages to two decimal places', () => {
   assert.equal(salonDomain.ratingSummary(0, 0).rating, null);
 });
 
-test('stored stylist ratings are recomputed from every approved review and never replaced by an older snapshot', async () => {
+test('stored stylist review statistics are recomputed from every approved review and never replaced by an older snapshot', async () => {
   const originalAggregate = Booking.aggregate;
   const originalUpdateOne = StaffRatingSummary.updateOne;
   let pipeline;
   const writes = [];
   Booking.aggregate = async (value) => {
     pipeline = value;
-    return [{ _id: 'staff-1', reviewCount: 2, ratingTotal: 9, techniqueCount: 2, techniqueTotal: 7 }];
+    return [{
+      ratings: [{ _id: 'staff-1', reviewCount: 2, ratingTotal: 9, techniqueCount: 2, techniqueTotal: 7,
+        negativeCount: 0, neutralCount: 1, photoCount: 1 }],
+      tags: [
+        { _id: { staffId: 'staff-1', name: '服务周到' }, count: 2 },
+        { _id: { staffId: 'staff-1', name: '善于沟通' }, count: 1 },
+      ],
+    }];
   };
   StaffRatingSummary.updateOne = async (filter, update, options) => {
     writes.push({ filter, update, options });
@@ -610,24 +617,25 @@ test('stored stylist ratings are recomputed from every approved review and never
   };
   try {
     await refreshStaffRatingSummaries(['staff-1', 'staff-2', 'staff-1', '']);
-    assert.deepEqual(pipeline[0], {
-      $match: {
-        staffId: { $in: ['staff-1', 'staff-2'] },
-        'review.reviewStatus': 'approved',
-        'review.rating': { $gte: 1, $lte: 5 },
-      },
-    });
+    assert.deepEqual(pipeline[0], { $match: { staffId: { $in: ['staff-1', 'staff-2'] }, 'review.reviewStatus': 'approved' } });
+    // Ratings and list counts only use valid scores; tag counts use every approved review.
+    assert.deepEqual(pipeline[1].$facet.ratings[0], { $match: { 'review.rating': { $gte: 1, $lte: 5 } } });
+    assert.equal(pipeline[1].$facet.tags[0].$unwind, '$review.tags');
     assert.equal(writes.length, 2);
     const [first, second] = writes;
     assert.equal(first.options.upsert, true);
     assert.ok(first.filter.computedAt.$lt instanceof Date);
     assert.equal(first.update.$set.computedAt, first.filter.computedAt.$lt);
     assert.deepEqual({ ...first.update.$set, computedAt: undefined }, {
-      reviewCount: 2, ratingTotal: 9, techniqueCount: 2, techniqueTotal: 7, computedAt: undefined,
+      reviewCount: 2, ratingTotal: 9, techniqueCount: 2, techniqueTotal: 7,
+      negativeCount: 0, neutralCount: 1, photoCount: 1,
+      tagCounts: [{ name: '善于沟通', count: 1 }, { name: '服务周到', count: 2 }],
+      computedAt: undefined,
     });
     // A stylist without approved reviews is reset to zero; a duplicate key means a newer refresh already won.
     assert.deepEqual({ ...second.update.$set, computedAt: undefined }, {
-      reviewCount: 0, ratingTotal: 0, techniqueCount: 0, techniqueTotal: 0, computedAt: undefined,
+      reviewCount: 0, ratingTotal: 0, techniqueCount: 0, techniqueTotal: 0,
+      negativeCount: 0, neutralCount: 0, photoCount: 0, tagCounts: [], computedAt: undefined,
     });
     StaffRatingSummary.updateOne = async () => { throw new Error('connection lost'); };
     await assert.rejects(refreshStaffRatingSummaries(['staff-1']), /connection lost/);
@@ -636,6 +644,7 @@ test('stored stylist ratings are recomputed from every approved review and never
     StaffRatingSummary.updateOne = originalUpdateOne;
   }
 });
+
 
 test('rating summaries are read from stored stylist totals', async () => {
   const restore = stubStoredRatings([
@@ -658,34 +667,14 @@ test('rating summaries are read from stored stylist totals', async () => {
 });
 
 
-test('review tag counts use every approved review and keep the configured display order', async () => {
-  const originalAggregate = Booking.aggregate;
-  let pipeline;
-  Booking.aggregate = async (value) => {
-    pipeline = value;
-    return [
-      { _id: '服务周到', count: 2 },
-      { _id: '善于沟通', count: 3 },
-      { _id: '接待热情', count: 4 },
-      { _id: '守时商家', count: 2 },
-      { _id: '好沟通', count: 1 },
-    ];
-  };
-
+test('review tag counts sum stored stylist statistics and keep the configured display order', async () => {
+  const restore = stubStoredRatings([
+    { staffId: 'staff-1', reviewCount: 3, tagCounts: [{ name: '善于沟通', count: 2 }, { name: '服务周到', count: 2 }, { name: '好沟通', count: 1 }] },
+    { staffId: 'staff-2', reviewCount: 2, tagCounts: [{ name: '接待热情', count: 4 }, { name: '善于沟通', count: 1 }, { name: '守时商家', count: 2 }] },
+  ]);
   try {
-    const tags = await getApprovedReviewTagCountsByStaffIds(['staff-1', 'staff-1']);
-    assert.deepEqual(pipeline, [
-      { $match: { staffId: { $in: ['staff-1'] }, 'review.reviewStatus': 'approved' } },
-      { $unwind: '$review.tags' },
-      {
-        $match: {
-          'review.tags': {
-            $in: ['善于沟通', '环境舒适', '技术一流', '服务周到', '无推销', '环镜整洁', '效果好评', '接待热情', '守时商家', '好沟通'],
-          },
-        },
-      },
-      { $group: { _id: '$review.tags', count: { $sum: 1 } } },
-    ]);
+    const tags = await getApprovedReviewTagCountsByStaffIds(['staff-1', 'staff-2', 'staff-1']);
+    assert.deepEqual(restore.queries, [{ staffId: { $in: ['staff-1', 'staff-2'] } }]);
     assert.deepEqual(tags, [
       { name: '善于沟通', count: 3 },
       { name: '服务周到', count: 2 },
@@ -694,9 +683,10 @@ test('review tag counts use every approved review and keep the configured displa
       { name: '好沟通', count: 1 },
     ]);
   } finally {
-    Booking.aggregate = originalAggregate;
+    restore();
   }
 });
+
 
 test('salon rating summaries expose an explicit unrated state', async () => {
   const originalAggregate = Booking.aggregate;
@@ -4231,6 +4221,26 @@ test('merchant content and approval preserve admin featured state for old and ec
   }
 });
 
+test('salon detail returns 404 when the salon goes offline between the version read and the full load', async () => {
+  const routes = new Map();
+  const app = { get: (path, ...handlers) => routes.set(path, handlers.at(-1)) };
+  registerPublicRoutes(app, {
+    rateLimits: { publicRead: [] },
+    Salon: { findOne: () => ({ select: () => ({ lean: async () => ({ id: 'leaving', updatedAt: new Date(0) }) }) }) },
+    SalonPost: { find: () => ({ sort() { return this; }, limit() { return this; }, lean: async () => [] }) },
+    buildPublicSalonDetail: (current) => buildPublicSalonDetail(current, async () => null, 1),
+  });
+  const res = { statusCode: 200, body: null, status(code) { this.statusCode = code; return this; }, set() {}, json(value) { this.body = value; } };
+  clearPublicSalonDetailCache();
+  try {
+    await routes.get('/api/salons/:id')({ params: { id: 'leaving' } }, res);
+    assert.equal(res.statusCode, 404);
+    assert.deepEqual(res.body, { message: 'Salon not found' });
+  } finally {
+    clearPublicSalonDetailCache();
+  }
+});
+
 test('current mini-program detail request returns persisted featured state and cache refreshes after admin toggle', async () => {
   const routes = new Map();
   const app = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map(method => [
@@ -4239,13 +4249,22 @@ test('current mini-program detail request returns persisted featured state and c
   const salon = new Salon({ id: 'featured-detail', name: '精选测试', publishStatus: 'online' });
   salon.save = async () => { await salon.validate(); return salon; };
   const originalFind = StaffProfile.find;
+  const originalSalonFindOne = Salon.findOne;
   StaffProfile.find = () => ({ lean: async () => [] });
+  // The route reads only the cache key; the full salon is loaded only when the cached detail is missing.
+  let fullLoads = 0;
+  const salonFindOne = (query) => {
+    assert.deepEqual(query, { id: salon.id, publishStatus: 'online' });
+    return { select(fields) {
+      if (fields === 'id updatedAt') return { lean: async () => ({ id: salon.id, updatedAt: salon.updatedAt }) };
+      fullLoads += 1;
+      return Promise.resolve(salon);
+    } };
+  };
+  Salon.findOne = salonFindOne;
   registerPublicRoutes(app, {
     rateLimits: { publicRead: [] },
-    Salon: { findOne(query) {
-      assert.deepEqual(query, { id: salon.id, publishStatus: 'online' });
-      return { select: async () => salon };
-    } },
+    Salon: { findOne: salonFindOne },
     SalonPost: { find: () => ({ sort() { return this; }, limit() { return this; }, lean: async () => [] }) },
     buildPublicSalonDetail,
     addReviewHelpfulState: async reviews => reviews,
@@ -4270,6 +4289,8 @@ test('current mini-program detail request returns persisted featured state and c
   clearPublicSalonDetailCache();
   try {
     assert.equal((await read()).isFeatured, false);
+    assert.equal((await read()).isFeatured, false);
+    assert.equal(fullLoads, 1);
     for (const isFeatured of [true, false]) {
       await routes.get('patch:/api/admin/merchants/:id/featured')({
         params: { id: 'merchant-1' }, body: { isFeatured },
@@ -4279,8 +4300,10 @@ test('current mini-program detail request returns persisted featured state and c
       assert.equal(detail.name, '精选测试');
       assert.equal(detail.publishStatus, 'online');
     }
+    assert.equal(fullLoads, 3);
   } finally {
     StaffProfile.find = originalFind;
+    Salon.findOne = originalSalonFindOne;
     clearPublicSalonDetailCache();
   }
 });

@@ -229,6 +229,10 @@ bookingSchema.index({ userId: 1, status: 1, createdAt: -1 });
 bookingSchema.index({ createdAt: -1 });
 bookingSchema.index({ 'review.reviewStatus': 1, updatedAt: -1 });
 bookingSchema.index({ staffId: 1, 'review.reviewStatus': 1, updatedAt: -1 });
+// Public review pages read approved reviews newest first, one page at a time. The rating-prefixed index
+// serves the negative and neutral filters, which match few reviews and would otherwise walk all of them.
+bookingSchema.index({ staffId: 1, 'review.reviewStatus': 1, 'review.createdAt': -1, _id: -1 });
+bookingSchema.index({ staffId: 1, 'review.reviewStatus': 1, 'review.rating': 1, 'review.createdAt': -1, _id: -1 });
 bookingSchema.index({ 'complaint.reviewStatus': 1, updatedAt: -1 });
 bookingSchema.index({ 'merchantAppeal.submittedAt': -1, id: 1 }, {
   partialFilterExpression: { 'merchantAppeal.submittedAt': { $exists: true } },
@@ -504,6 +508,11 @@ const staffRatingSummarySchema = new mongoose.Schema({
   ratingTotal: { type: Number, default: 0 },
   techniqueCount: { type: Number, default: 0 },
   techniqueTotal: { type: Number, default: 0 },
+  // Review list filter counts and tag counts, so paginated review pages need not rescan every review.
+  negativeCount: { type: Number, default: 0 },
+  neutralCount: { type: Number, default: 0 },
+  photoCount: { type: Number, default: 0 },
+  tagCounts: { type: [{ _id: false, name: String, count: Number }], default: [] },
   // Start time of the aggregation that produced these totals; an older aggregation never replaces a newer one.
   computedAt: { type: Date, required: true },
 }, { versionKey: false });

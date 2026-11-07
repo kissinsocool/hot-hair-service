@@ -207,15 +207,16 @@ module.exports = (app, ctx) => {
   });
   
   app.get('/api/salons/:id', ...rateLimits.publicRead, async (req, res) => {
-    const salon = await Salon.findOne({ id: req.params.id, publishStatus: 'online' })
-      .select('-licenseUrl -legalPersonIdFrontUrl -legalPersonIdBackUrl -addressProofUrl -licenseStatus -licenseRejectReason -licenseSubmittedAt -licenseReviewedAt -pendingContent -contentReviewStatus -contentRejectReason -contentReviewedAt');
-    if (!salon) return res.status(404).json({ message: 'Salon not found' });
+    // Only the cache key is read here; the full salon is loaded when the cached detail is missing or stale.
+    const current = await Salon.findOne({ id: req.params.id, publishStatus: 'online' }).select('id updatedAt').lean();
+    if (!current) return res.status(404).json({ message: 'Salon not found' });
   
     const [detail, latestPosts] = await Promise.all([
-      buildPublicSalonDetail(salon),
-      SalonPost.find({ salonId: salon.id, reviewStatus: 'approved' })
+      buildPublicSalonDetail(current),
+      SalonPost.find({ salonId: current.id, reviewStatus: 'approved' })
         .sort({ createdAt: -1, _id: -1 }).limit(4).lean(),
     ]);
+    if (!detail) return res.status(404).json({ message: 'Salon not found' });
     const reviews = await addReviewHelpfulState(detail.reviews || [], sessionTokenFromRequest(req));
     res.set('Cache-Control', 'private, no-store');
     res.json({
