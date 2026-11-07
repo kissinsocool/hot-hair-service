@@ -45,6 +45,7 @@ module.exports = (app, ctx) => {
     logoutSession,
     revokeSessionHash,
     clearPublicSalonDetailCache,
+    refreshStaffRatingSummaries,
     SupportMessage,
     CouponCampaign,
     UserCoupon,
@@ -748,6 +749,15 @@ module.exports = (app, ctx) => {
     res.json(bookings.flatMap(booking => userImageReviewItems(booking, privateImageUrl)));
   });
 
+  // Approval, rejection, deletion and edit moderation change which reviews count towards a stylist's rating.
+  const refreshRatingsAfterModeration = async (booking) => {
+    try {
+      await refreshStaffRatingSummaries([booking.staffId]);
+    } catch (error) {
+      console.error(`Staff rating refresh failed after review moderation for ${booking.id}:`, error.message);
+    }
+  };
+
   app.patch('/api/admin/user-images', async (req, res) => {
     const bookingId = String(req.body.bookingId || '').trim();
     const type = String(req.body.type || '').trim();
@@ -772,6 +782,7 @@ module.exports = (app, ctx) => {
         deleteModeratedImages,
       );
       if (!moderated) return res.status(404).json({ message: 'Review edit item not found' });
+      await refreshRatingsAfterModeration(booking);
       clearPublicSalonDetailCache?.();
       return res.json({ ok: true });
     }
@@ -801,6 +812,7 @@ module.exports = (app, ctx) => {
     booking.markModified(type === 'complaint' && action !== 'delete' ? 'complaint.reviewStatus' : type);
     booking.updatedAt = new Date().toISOString();
     await booking.save();
+    if (type === 'review') await refreshRatingsAfterModeration(booking);
     clearPublicSalonDetailCache?.();
 
     res.json({ ok: true });

@@ -36,6 +36,7 @@ module.exports = (app, ctx) => {
     isSameDayBookingBlocked,
     isStaffUnavailable,
     clearPublicSalonDetailCache,
+    refreshStaffRatingSummaries,
     couponDiscountForOrder,
     INPUT_LIMITS,
     rateLimits,
@@ -344,6 +345,12 @@ module.exports = (app, ctx) => {
       return res.status(409).json({ message: 'Review has changed, please refresh and try again' });
     }
 
+    // Refresh before responding so the next read shows the stylist's rating without this review.
+    try {
+      await refreshStaffRatingSummaries([booking.staffId]);
+    } catch (error) {
+      console.error(`Staff rating refresh failed after review delete for ${booking.id}:`, error.message);
+    }
     clearPublicSalonDetailCache?.();
     res.json({ ok: true });
     Promise.allSettled([

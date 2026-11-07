@@ -7,6 +7,8 @@ const models = require('../models');
 const { createSession } = require('../services/auth');
 const { occupiedSlotStarts } = require('../services/booking');
 const { completeDueBookings } = require('../services/auto-complete-bookings');
+// Fixtures insert approved reviews directly, so they refresh stored ratings the way moderation routes do.
+const { refreshStaffRatingSummaries } = require('../services/staff-ratings');
 // This in-process test server exercises many writes without waiting for production rate windows.
 const rateLimitToken = crypto.randomBytes(32).toString('hex');
 process.env.LOAD_TEST_BYPASS_ENABLED = 'true';
@@ -168,6 +170,7 @@ describeWithMongo('three-client booking contracts against a real replica set', (
         },
       },
     })));
+    await refreshStaffRatingSummaries([staffId]);
     const staff = await request('client', `/staff/${staffId}`);
     expect(staff.status).toBe(200);
     expect(staff.body).toMatchObject({ rating: 3.5, reviewCount: 3 });
@@ -218,6 +221,7 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       id: `review-pages-${status}`, staffId, serviceId: 'service', startTime: new Date('2030-01-01'),
       review: { id: status, rating: 1, reviewStatus: status, imageUrls: ['https://example.com/unapproved.jpg'], tags: ['善于沟通'] },
     })));
+    await refreshStaffRatingSummaries([staffId]);
     const counts = { all: 165,
       negative: documents.filter(doc => doc.review.rating < 3).length,
       neutral: documents.filter(doc => doc.review.rating >= 3 && doc.review.rating < 4).length,
@@ -355,6 +359,7 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       review: { id: `precision-review-${index}`, rating, reviewStatus: 'approved',
         ratings: { environment: rating, technique: rating, service: rating, price: rating } },
     })));
+    await refreshStaffRatingSummaries(['precision-staff']);
     for (const sort of ['', '&sort=rating']) {
       const result = await request('client', `/salons?latitude=39.9042&longitude=116.4074&page=1&limit=10${sort}`);
       expect(result.status).toBe(200);
@@ -369,6 +374,7 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       review: { id: `precision-half-review-${index}`, rating, reviewStatus: 'approved',
         ratings: { environment: rating, technique: rating, service: rating, price: rating } },
     })));
+    await refreshStaffRatingSummaries(['precision-staff']);
     for (const sort of ['', '&sort=rating']) {
       const result = await request('client', `/salons?latitude=39.9042&longitude=116.4074&page=1&limit=10${sort}`);
       expect(result.status).toBe(200);
@@ -769,6 +775,57 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect(saved.review.pendingEdit).toBeUndefined();
     if (kind === 'pendingReply') expect(saved.review.merchantReply.content).toBe('原公开回复');
     if (kind === 'publicReply') expect(saved.review.merchantReply).toBeUndefined();
+  });
+
+  test('stored ratings follow review approval, approved edits, rejection and client deletion through the real routes', async () => {
+    const staffId = 'stored-rating-staff';
+    const salonId = 'stored-rating-salon';
+    const coordinates = [114.0579, 22.5431];
+    await StaffProfile.create({ id: staffId, name: 'Stored stylist', roleId: 'designer' });
+    await Salon.create({ id: salonId, name: 'Stored salon', publishStatus: 'online', staffIds: [staffId],
+      location: { latitude: coordinates[1], longitude: coordinates[0] }, geoLocation: { type: 'Point', coordinates } });
+    const scores = score => ({ environment: score, technique: score, service: score, price: score });
+    // Reviews start pending, as the client review route creates them.
+    await Booking.create([5, 3].map((score, index) => ({
+      id: `stored-rating-${index}`, userId: 'client-1', salonId, staffId, serviceId: 'service', status: 'completed',
+      startTime: new Date('2030-03-01T02:00:00Z'),
+      review: { id: `stored-rating-review-${index}`, rating: score, ratings: scores(score), reviewStatus: 'pending', createdAt: new Date() },
+    })));
+    const ratings = async () => {
+      const [staff, salon, list] = await Promise.all([
+        request('client', `/staff/${staffId}`),
+        request('client', `/salons/${salonId}`),
+        request('client', `/salons?latitude=${coordinates[1]}&longitude=${coordinates[0]}&radiusKm=1&sort=rating&page=1&limit=10`),
+      ]);
+      const card = list.body.find(item => item.id === salonId);
+      return { staff: [staff.body.rating, staff.body.reviewCount], salon: [salon.body.rating, salon.body.reviewCount],
+        list: [card.rating, card.reviewCount], detailStaff: [salon.body.staff[0].rating, salon.body.staff[0].reviewCount] };
+    };
+    const expectRatings = async (staff, salon) => expect(await ratings()).toEqual({ staff, salon, list: salon, detailStaff: staff });
+    const moderate = async (bookingId, type, action) => expect((await request('admin', '/admin/user-images', { bookingId, type, action }, 'PATCH')).status).toBe(200);
+
+    await expectRatings([null, 0], [null, 0]);
+    await moderate('stored-rating-0', 'review', 'approve');
+    await expectRatings([5, 1], [5, 1]);
+    await moderate('stored-rating-1', 'review', 'approve');
+    await expectRatings([4, 2], [4, 2]);
+    // An approved edit replaces the score that counts; a pending one does not.
+    await Booking.updateOne({ id: 'stored-rating-1' }, { $set: { 'review.pendingEdit': {
+      id: 'stored-rating-review-1', rating: 1, ratings: scores(1), reviewStatus: 'pending', imageUrls: [], createdAt: new Date() } } });
+    await expectRatings([4, 2], [4, 2]);
+    await moderate('stored-rating-1', 'reviewEdit', 'approve');
+    await expectRatings([3, 2], [3, 2]);
+    await moderate('stored-rating-0', 'review', 'reject');
+    await expectRatings([1, 1], [1, 1]);
+    expect((await request('client', '/bookings/stored-rating-1/review', undefined, 'DELETE')).status).toBe(200);
+    await expectRatings([null, 0], [null, 0]);
+    expect(await models.StaffRatingSummary.findOne({ staffId }).lean()).toMatchObject({ reviewCount: 0, ratingTotal: 0, techniqueCount: 0 });
+
+    // Concurrent refreshes converge, and a rebuild from bookings reproduces the stored totals.
+    await moderate('stored-rating-0', 'review', 'approve');
+    await Promise.all(Array.from({ length: 5 }, () => refreshStaffRatingSummaries([staffId])));
+    expect(await models.StaffRatingSummary.countDocuments({ staffId })).toBe(1);
+    await expectRatings([5, 1], [5, 1]);
   });
 
   test('admin today bookings snapshot and per-account viewed state persist through actual HTTP and MongoDB', async () => {

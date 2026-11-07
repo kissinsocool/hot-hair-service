@@ -496,6 +496,18 @@ const reviewHelpfulSchema = new mongoose.Schema({
 }, { timestamps: true });
 reviewHelpfulSchema.index({ bookingId: 1, reviewId: 1, userId: 1 }, { unique: true });
 
+// Derived from approved booking reviews by services/staff-ratings.js; never edited directly.
+// Kept apart from StaffProfile so profile payloads and merchant drafts can neither expose nor overwrite it.
+const staffRatingSummarySchema = new mongoose.Schema({
+  staffId: { type: String, required: true, unique: true },
+  reviewCount: { type: Number, default: 0 },
+  ratingTotal: { type: Number, default: 0 },
+  techniqueCount: { type: Number, default: 0 },
+  techniqueTotal: { type: Number, default: 0 },
+  // Start time of the aggregation that produced these totals; an older aggregation never replaces a newer one.
+  computedAt: { type: Date, required: true },
+}, { versionKey: false });
+
 module.exports = {
   ReviewHelpful: mongoose.model('ReviewHelpful', reviewHelpfulSchema),
   Booking: mongoose.model('Booking', bookingSchema),
@@ -514,4 +526,5 @@ module.exports = {
   UserCoupon: mongoose.model('UserCoupon', userCouponSchema),
   SupportMessage: mongoose.model('SupportMessage', supportMessageSchema),
   AnalyticsEvent: mongoose.model('AnalyticsEvent', analyticsEventSchema),
+  StaffRatingSummary: mongoose.model('StaffRatingSummary', staffRatingSummarySchema),
 };

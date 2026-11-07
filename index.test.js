@@ -73,7 +73,21 @@ const {
   Salon,
   SlotOccupancy,
   StaffProfile,
+  StaffRatingSummary,
 } = require('./src/models');
+const { refreshStaffRatingSummaries } = require('./src/services/staff-ratings');
+
+// Public ratings are read from stored stylist totals: StaffRatingSummary.find(...).select(...).lean().
+const stubStoredRatings = (rows) => {
+  const original = StaffRatingSummary.find;
+  const queries = [];
+  StaffRatingSummary.find = (filter) => {
+    queries.push(filter);
+    const chain = { select() { return chain; }, lean: async () => rows };
+    return chain;
+  };
+  return Object.assign(() => { StaffRatingSummary.find = original; }, { queries });
+};
 const registerAdminRoutes = require('./src/routes/admin');
 const registerAuthEntryRoutes = require('./src/routes/auth-entry');
 const registerClientBookingRoutes = require('./src/routes/client-bookings');
@@ -581,19 +595,21 @@ test('rating summaries round averages to two decimal places', () => {
   assert.equal(salonDomain.ratingSummary(0, 0).rating, null);
 });
 
-test('rating summaries use every approved review and group them by staff', async () => {
+test('stored stylist ratings are recomputed from every approved review and never replaced by an older snapshot', async () => {
   const originalAggregate = Booking.aggregate;
+  const originalUpdateOne = StaffRatingSummary.updateOne;
   let pipeline;
+  const writes = [];
   Booking.aggregate = async (value) => {
     pipeline = value;
-    return [
-      { _id: 'staff-1', reviewCount: 2, ratingTotal: 9, techniqueCount: 2, techniqueTotal: 7 },
-      { _id: 'staff-2', reviewCount: 1, ratingTotal: 3 },
-    ];
+    return [{ _id: 'staff-1', reviewCount: 2, ratingTotal: 9, techniqueCount: 2, techniqueTotal: 7 }];
   };
-
+  StaffRatingSummary.updateOne = async (filter, update, options) => {
+    writes.push({ filter, update, options });
+    if (filter.staffId === 'staff-2') throw Object.assign(new Error('duplicate key'), { code: 11000 });
+  };
   try {
-    const summaries = await getApprovedRatingSummariesByStaffIds(['staff-1', 'staff-2', 'staff-1']);
+    await refreshStaffRatingSummaries(['staff-1', 'staff-2', 'staff-1', '']);
     assert.deepEqual(pipeline[0], {
       $match: {
         staffId: { $in: ['staff-1', 'staff-2'] },
@@ -601,14 +617,46 @@ test('rating summaries use every approved review and group them by staff', async
         'review.rating': { $gte: 1, $lte: 5 },
       },
     });
+    assert.equal(writes.length, 2);
+    const [first, second] = writes;
+    assert.equal(first.options.upsert, true);
+    assert.ok(first.filter.computedAt.$lt instanceof Date);
+    assert.equal(first.update.$set.computedAt, first.filter.computedAt.$lt);
+    assert.deepEqual({ ...first.update.$set, computedAt: undefined }, {
+      reviewCount: 2, ratingTotal: 9, techniqueCount: 2, techniqueTotal: 7, computedAt: undefined,
+    });
+    // A stylist without approved reviews is reset to zero; a duplicate key means a newer refresh already won.
+    assert.deepEqual({ ...second.update.$set, computedAt: undefined }, {
+      reviewCount: 0, ratingTotal: 0, techniqueCount: 0, techniqueTotal: 0, computedAt: undefined,
+    });
+    StaffRatingSummary.updateOne = async () => { throw new Error('connection lost'); };
+    await assert.rejects(refreshStaffRatingSummaries(['staff-1']), /connection lost/);
+  } finally {
+    Booking.aggregate = originalAggregate;
+    StaffRatingSummary.updateOne = originalUpdateOne;
+  }
+});
+
+test('rating summaries are read from stored stylist totals', async () => {
+  const restore = stubStoredRatings([
+    { staffId: 'staff-1', reviewCount: 2, ratingTotal: 9, techniqueCount: 2, techniqueTotal: 7 },
+    { staffId: 'staff-2', reviewCount: 1, ratingTotal: 3, techniqueCount: 0, techniqueTotal: 0 },
+    { staffId: 'staff-3', reviewCount: 0, ratingTotal: 0, techniqueCount: 0, techniqueTotal: 0 },
+  ]);
+  try {
+    const summaries = await getApprovedRatingSummariesByStaffIds(['staff-1', 'staff-2', 'staff-1', 'staff-3']);
+    assert.deepEqual(restore.queries, [{ staffId: { $in: ['staff-1', 'staff-2', 'staff-3'] } }]);
     assert.deepEqual(summaries, {
       'staff-1': { rating: 4.5, reviewCount: 2, ratingTotal: 9, techniqueRating: 3.5 },
       'staff-2': { rating: 3, reviewCount: 1, ratingTotal: 3, techniqueRating: null },
     });
+    assert.deepEqual(await getApprovedRatingSummariesByStaffIds([]), {});
+    assert.equal(restore.queries.length, 1);
   } finally {
-    Booking.aggregate = originalAggregate;
+    restore();
   }
 });
+
 
 test('review tag counts use every approved review and keep the configured display order', async () => {
   const originalAggregate = Booking.aggregate;
@@ -653,6 +701,7 @@ test('review tag counts use every approved review and keep the configured displa
 test('salon rating summaries expose an explicit unrated state', async () => {
   const originalAggregate = Booking.aggregate;
   Booking.aggregate = async () => [];
+  const restoreRatings = stubStoredRatings([]);
 
   try {
     const [salon] = await addApprovedSalonRatings([{
@@ -663,6 +712,7 @@ test('salon rating summaries expose an explicit unrated state', async () => {
     assert.equal(salon.reviewCount, 0);
   } finally {
     Booking.aggregate = originalAggregate;
+    restoreRatings();
   }
 });
 
@@ -1027,6 +1077,7 @@ test('current mini-program salon-list request returns an explicit unrated contra
   };
   const originalAggregate = Booking.aggregate;
   Booking.aggregate = async () => [];
+  const restoreRatings = stubStoredRatings([]);
   registerPublicRoutes(app, {
     rateLimits: { publicRead: [] },
     getCoordinates,
@@ -1059,6 +1110,7 @@ test('current mini-program salon-list request returns an explicit unrated contra
     assert.equal(Object.hasOwn(payload[0], 'staffIds'), false);
   } finally {
     Booking.aggregate = originalAggregate;
+    restoreRatings();
   }
 });
 
@@ -1686,10 +1738,11 @@ test('normalizeRadiusKm applies defaults and bounds', () => {
 test('nearby salons retain expanded-radius results after reaching the minimum count', async () => {
   const originalFind = Salon.find;
   let queries = 0;
+  const projections = [];
   Salon.find = () => {
     queries += 1;
     const chain = {
-      select() { return chain; },
+      select(value) { projections.push(value); return chain; },
       skip() { return chain; },
       limit() { return chain; },
       async lean() {
@@ -1705,6 +1758,10 @@ test('nearby salons retain expanded-radius results after reaching the minimum co
   try {
     const salons = await getNearbySalons({ latitude: 31.2304, longitude: 121.4737 }, 1, 10, 1, 50);
     assert.equal(queries, 1);
+    // List cards never return detail fields, so the query must not read them.
+    const excluded = projections[0].split(' ');
+    for (const field of ['-services', '-fullDescription', '-pendingContent', '-licenseUrl']) assert.ok(excluded.includes(field), field);
+    for (const field of ['-staffIds', '-image', '-images', '-promoImages', '-geoLocation', '-location']) assert.ok(!excluded.includes(field), field);
     assert.deepEqual(salons.map(salon => salon.id), ['near', 'farther']);
   } finally {
     Salon.find = originalFind;
@@ -1772,8 +1829,18 @@ test('rating sort pages all nearby salons by approved ratings, then distance', a
     assert.deepEqual(first.map(salon => salon.id), ['high', 'near']);
     assert.deepEqual(second.map(salon => salon.id), ['unrated']);
     assert.equal(pipelines[1][0].$geoNear.maxDistance, 50000);
-    assert.equal(pipelines[1].find(stage => stage.$lookup).$lookup.foreignField, 'staffId');
-    assert.equal(pipelines[1].find(stage => stage.$set).$set.rating.$cond[1].$divide[1], 100);
+    // Heavy detail fields are dropped before the rating lookup; staffIds must survive for it.
+    assert.ok(pipelines[1][1].$unset.includes('services'));
+    assert.ok(pipelines[1][1].$unset.includes('fullDescription'));
+    assert.ok(!pipelines[1][1].$unset.includes('staffIds'));
+    assert.equal(pipelines[1][2].$lookup.localField, 'staffIds');
+    // Ratings come from stored stylist totals, not from scanning every booking review.
+    const lookup = pipelines[1].find(stage => stage.$lookup).$lookup;
+    assert.equal(lookup.from, StaffRatingSummary.collection.name);
+    assert.equal(lookup.foreignField, 'staffId');
+    assert.deepEqual(pipelines[1].find(stage => stage.$set?.ratingTotal).$set,
+      { reviewCount: { $sum: '$ratingRows.reviewCount' }, ratingTotal: { $sum: '$ratingRows.ratingTotal' } });
+    assert.equal(pipelines[1].find(stage => stage.$set?.rating).$set.rating.$cond[1].$divide[1], 100);
     assert.deepEqual(pipelines[1].find(stage => stage.$sort).$sort, { rating: -1, distanceKm: 1, id: 1 });
     assert.deepEqual(pipelines[3].slice(-3, -1), [{ $skip: 2 }, { $limit: 2 }]);
   } finally {
@@ -1839,7 +1906,8 @@ test('favorite reads return ids or card summaries without building salon details
       async lean() { return [{ id: 'salon-1', name: '最新店名', description: '摘要', staffIds: ['staff-1'], image: '' }]; },
     };
   };
-  Booking.aggregate = async () => [{ _id: 'staff-1', reviewCount: 2, ratingTotal: 9 }];
+  Booking.aggregate = async () => [];
+  const restoreRatings = stubStoredRatings([{ staffId: 'staff-1', reviewCount: 2, ratingTotal: 9, techniqueCount: 0, techniqueTotal: 0 }]);
 
   try {
     assert.deepEqual(await readFavoriteSalonIds('user-1'), ['salon-1']);
@@ -1859,6 +1927,7 @@ test('favorite reads return ids or card summaries without building salon details
     FavoriteSalon.find = originalFavoriteFind;
     Salon.find = originalSalonFind;
     Booking.aggregate = originalBookingAggregate;
+    restoreRatings();
   }
 });
 
@@ -2838,7 +2907,9 @@ test('approving a review publishes moderated images before making it public', as
     async save() {},
   };
   const published = [];
+  const refreshedRatings = [];
   registerAdminRoutes(app, {
+    async refreshStaffRatingSummaries(ids) { refreshedRatings.push(ids); },
     Booking: { async findOne() { return booking; } },
     async publishModeratedImage(name) {
       published.push(name);
@@ -2856,6 +2927,8 @@ test('approving a review publishes moderated images before making it public', as
   assert.deepEqual(published, ['moderation/review-1.png']);
   assert.equal(booking.review.reviewStatus, 'approved');
   assert.deepEqual(booking.review.imageUrls, ['https://public.example/uploads/review-1.png']);
+  // Moderating the review itself changes which reviews count towards the stylist's stored rating.
+  assert.deepEqual(refreshedRatings, [['staff-1']]);
 });
 
 test('approving a review edit replaces the public review only after approval', async () => {
@@ -2891,7 +2964,9 @@ test('approving a review edit replaces the public review only after approval', a
     markModified() {},
     async save() {},
   };
+  const refreshedRatings = [];
   registerAdminRoutes(app, {
+    async refreshStaffRatingSummaries(ids) { refreshedRatings.push(ids); },
     Booking: { async findOne() { return booking; } },
     async publishModeratedImage() { return 'https://public.example/new.png'; },
     async deleteModeratedImages() {},
@@ -2906,6 +2981,8 @@ test('approving a review edit replaces the public review only after approval', a
 
   assert.equal(booking.review.comment, '修改后评论');
   assert.equal(booking.review.pendingEdit, undefined);
+  // Moderating the review itself changes which reviews count towards the stylist's stored rating.
+  assert.deepEqual(refreshedRatings, [['staff-1']]);
 });
 
 test('rejecting a review keeps moderated images for preview and later approval', async () => {
@@ -2924,7 +3001,9 @@ test('rejecting a review keeps moderated images for preview and later approval',
     async save() {},
   };
   let deleted = false;
+  const refreshedRatings = [];
   registerAdminRoutes(app, {
+    async refreshStaffRatingSummaries(ids) { refreshedRatings.push(ids); },
     Booking: { async findOne() { return booking; } },
     async deleteModeratedImages() { deleted = true; },
     async getStaffById() { return null; },
@@ -2939,6 +3018,8 @@ test('rejecting a review keeps moderated images for preview and later approval',
   assert.equal(deleted, false);
   assert.equal(booking.review.reviewStatus, 'rejected');
   assert.deepEqual(booking.review.imageUrls, ['moderation/review-1.png']);
+  // Moderating the review itself changes which reviews count towards the stylist's stored rating.
+  assert.deepEqual(refreshedRatings, [['staff-1']]);
 });
 
 test('deleting an approved review removes the single booking review', async () => {
@@ -2957,7 +3038,9 @@ test('deleting an approved review removes the single booking review', async () =
     markModified() {},
     async save() {},
   };
+  const refreshedRatings = [];
   registerAdminRoutes(app, {
+    async refreshStaffRatingSummaries(ids) { refreshedRatings.push(ids); },
     Booking: { async findOne() { return booking; } },
     async publishModeratedImage(name) { return name; },
     async deleteModeratedImages() {},
@@ -2971,6 +3054,8 @@ test('deleting an approved review removes the single booking review', async () =
 
   assert.equal(booking.review, undefined);
   assert.equal(booking.reviewed, false);
+  // Moderating the review itself changes which reviews count towards the stylist's stored rating.
+  assert.deepEqual(refreshedRatings, [['staff-1']]);
 });
 
 test('merchant review replies are scoped to the authenticated merchant salon', async () => {
@@ -3088,7 +3173,9 @@ test('approving a merchant reply publishes it without changing the user review s
     markModified() {},
     async save() {},
   };
+  const refreshedRatings = [];
   registerAdminRoutes(app, {
+    async refreshStaffRatingSummaries(ids) { refreshedRatings.push(ids); },
     Booking: { async findOne() { return booking; } },
     rateLimits: { login: [], upload: [] },
   });
@@ -3102,6 +3189,8 @@ test('approving a merchant reply publishes it without changing the user review s
   assert.equal(booking.review.pendingMerchantReply, undefined);
   assert.equal(booking.review.merchantReply.content, '新回复');
   assert.equal(booking.review.merchantReply.reviewStatus, 'approved');
+  // Merchant replies never change ratings.
+  assert.deepEqual(refreshedRatings, []);
 });
 
 test('rejecting an approved merchant reply hides it without rejecting the user review', async () => {
@@ -3124,7 +3213,9 @@ test('rejecting an approved merchant reply hides it without rejecting the user r
     markModified() {},
     async save() {},
   };
+  const refreshedRatings = [];
   registerAdminRoutes(app, {
+    async refreshStaffRatingSummaries(ids) { refreshedRatings.push(ids); },
     Booking: { async findOne() { return booking; } },
     rateLimits: { login: [], upload: [] },
   });
@@ -3145,6 +3236,8 @@ test('rejecting an approved merchant reply hides it without rejecting the user r
 
   assert.equal(booking.review.reviewStatus, 'approved');
   assert.equal(booking.review.merchantReply.reviewStatus, 'approved');
+  // Merchant replies never change ratings.
+  assert.deepEqual(refreshedRatings, []);
 });
 
 test('client booking payloads hide pending merchant replies', () => {

@@ -43,6 +43,7 @@ const {
   UserCoupon,
   SupportMessage,
   AnalyticsEvent,
+  StaffRatingSummary,
 } = require('./src/models');
 const {
   campaignPayload,
@@ -78,6 +79,7 @@ const bookingDomain = require('./src/services/booking');
 const salonDomain = require('./src/services/salon');
 const salonPosts = require('./src/services/salon-posts');
 const { getSalonReviewsPage, getApprovedReviewTagCountsByStaffIds } = require('./src/services/salon-reviews');
+const { refreshStaffRatingSummaries, readStaffRatingSummaries } = require('./src/services/staff-ratings');
 const { addReviewHelpfulState, recordReviewHelpful } = require('./src/services/review-helpful');
 const {
   activeSessionQuery,
@@ -428,6 +430,16 @@ const INPUT_LIMITS = Object.freeze({
   unavailableSlots: 500,
 });
 
+// The public salon list renders cards only: drop private fields and heavy detail fields at the query.
+// staffIds, images and location stay because ratings, cover images and distances are derived from them.
+const SALON_LIST_EXCLUDED_FIELDS = Object.freeze([
+  'licenseUrl', 'legalPersonIdFrontUrl', 'legalPersonIdBackUrl', 'addressProofUrl', 'licenseStatus',
+  'licenseRejectReason', 'licenseSubmittedAt', 'licenseReviewedAt', 'pendingContent', 'contentReviewStatus',
+  'contentRejectReason', 'contentReviewedAt', 'bookingCreationFence',
+  'services', 'fullDescription', 'openingHours', 'weeklyClosedDays', 'afterSalesPolicyIds', 'phone', 'staff', 'reviews',
+]);
+const SALON_LIST_PROJECTION = SALON_LIST_EXCLUDED_FIELDS.map(field => `-${field}`).join(' ');
+
 const findNearbySalons = async (userLocation, radiusKm, limit, skip = 0, keyword = '') => {
   const query = {
     publishStatus: 'online',
@@ -443,7 +455,7 @@ const findNearbySalons = async (userLocation, radiusKm, limit, skip = 0, keyword
     },
   };
   const salonList = await Salon.find(query)
-    .select('-licenseUrl -legalPersonIdFrontUrl -legalPersonIdBackUrl -addressProofUrl -licenseStatus -licenseRejectReason -licenseSubmittedAt -licenseReviewedAt -pendingContent -contentReviewStatus -contentRejectReason -contentReviewedAt')
+    .select(SALON_LIST_PROJECTION)
     .skip(skip).limit(limit).lean();
   return salonList
     .map((salon) => {
@@ -471,23 +483,25 @@ const getNearbySalons = async (userLocation, _radiusKm, limit, minResults = 10, 
     const radiusKm = (probe[0]?.count || 0) < minResults ? null : maxRadiusKm;
     return Salon.aggregate([
       geoNear(radiusKm),
+      { $unset: [...SALON_LIST_EXCLUDED_FIELDS] },
+      // Salon ratings sum the stored totals of the salon's current stylists (one indexed row each).
       { $lookup: {
-        from: Booking.collection.name,
+        from: StaffRatingSummary.collection.name,
         localField: 'staffIds',
         foreignField: 'staffId',
-        pipeline: [
-          { $match: { 'review.reviewStatus': 'approved', 'review.rating': { $gte: 1, $lte: 5 } } },
-          { $group: { _id: null, reviewCount: { $sum: 1 }, ratingTotal: { $sum: '$review.rating' } } },
-        ],
+        pipeline: [{ $project: { _id: 0, reviewCount: 1, ratingTotal: 1 } }],
         as: 'ratingRows',
       } },
       { $set: {
-        reviewCount: { $ifNull: [{ $first: '$ratingRows.reviewCount' }, 0] },
+        reviewCount: { $sum: '$ratingRows.reviewCount' },
+        ratingTotal: { $sum: '$ratingRows.ratingTotal' },
+      } },
+      { $set: {
         rating: { $cond: [
-          { $gt: [{ $first: '$ratingRows.reviewCount' }, 0] },
+          { $gt: ['$reviewCount', 0] },
           { $divide: [
             { $floor: { $add: [
-              { $divide: [{ $multiply: [{ $first: '$ratingRows.ratingTotal' }, 100] }, { $first: '$ratingRows.reviewCount' }] },
+              { $divide: [{ $multiply: ['$ratingTotal', 100] }, '$reviewCount'] },
               0.5,
             ] } },
             100,
@@ -499,10 +513,7 @@ const getNearbySalons = async (userLocation, _radiusKm, limit, minResults = 10, 
       { $sort: { rating: -1, distanceKm: 1, id: 1 } },
       { $skip: skip },
       { $limit: limit },
-      { $unset: ['ratingRows', 'distanceMeters', 'licenseUrl', 'legalPersonIdFrontUrl',
-        'legalPersonIdBackUrl', 'addressProofUrl', 'licenseStatus', 'licenseRejectReason',
-        'licenseSubmittedAt', 'licenseReviewedAt', 'pendingContent', 'contentReviewStatus',
-        'contentRejectReason', 'contentReviewedAt', 'bookingCreationFence'] },
+      { $unset: ['ratingRows', 'ratingTotal', 'distanceMeters'] },
     ]).option({ maxTimeMS: 5000, allowDiskUse: true });
   }
   const probeLimit = skip ? minResults : limit;
@@ -687,40 +698,8 @@ const getApprovedReviewsByStaffIds = async (staffIds = [], limit = PUBLIC_SALON_
   ));
 };
 
-const getApprovedRatingSummariesByStaffIds = async (staffIds = []) => {
-  const ids = [...new Set(staffIds.map(String).filter(Boolean))];
-  if (!ids.length) return {};
-  const validTechnique = { $and: [
-    { $isNumber: '$review.ratings.technique' },
-    { $gte: ['$review.ratings.technique', 1] },
-    { $lte: ['$review.ratings.technique', 5] },
-  ] };
-  const rows = await Booking.aggregate([
-    {
-      $match: {
-        staffId: { $in: ids },
-        'review.reviewStatus': 'approved',
-        'review.rating': { $gte: 1, $lte: 5 },
-      },
-    },
-    {
-      $group: {
-        _id: '$staffId',
-        reviewCount: { $sum: 1 },
-        ratingTotal: { $sum: '$review.rating' },
-        techniqueCount: { $sum: { $cond: [validTechnique, 1, 0] } },
-        techniqueTotal: { $sum: { $cond: [validTechnique, '$review.ratings.technique', 0] } },
-      },
-    },
-  ]);
-  return Object.fromEntries(rows.map(row => [
-    String(row._id),
-    {
-      ...salonDomain.ratingSummary(row.reviewCount, row.ratingTotal),
-      techniqueRating: salonDomain.ratingSummary(row.techniqueCount, row.techniqueTotal).rating,
-    },
-  ]));
-};
+// Reads the stored per-stylist totals maintained by refreshStaffRatingSummaries.
+const getApprovedRatingSummariesByStaffIds = staffIds => readStaffRatingSummaries(staffIds);
 
 const approvedSalonRatingSummary = (salon, summariesByStaffId) => {
   const totals = (salon.staffIds || []).reduce((totals, staffId) => {
@@ -1381,6 +1360,7 @@ const routeContext = {
   getSalonReviewsPage,
   getApprovedReviewsByStaffIds,
   getApprovedRatingSummariesByStaffIds,
+  refreshStaffRatingSummaries,
   getCoordinates,
   getSalonByStaffId,
   getServiceById,
@@ -1564,6 +1544,7 @@ module.exports = {
   couponStatus,
   getApprovedReviewsByStaffIds,
   getApprovedRatingSummariesByStaffIds,
+  refreshStaffRatingSummaries,
   getApprovedReviewTagCountsByStaffIds,
   getNearbySalons,
   getCoordinates,
