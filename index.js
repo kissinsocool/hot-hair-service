@@ -771,7 +771,7 @@ const buildSalonDetail = async (salonDocument) => {
   const images = await existingSalonImages(salon);
   const staff = staffList.map(person => buildPublicStaffSummary(
     person,
-    ratingSummaries[person.id] || salonDomain.ratingSummary(0, 0),
+    ratingSummaries[person.id],
   ));
   const publicSalon = stripSensitiveSalonFields(salon);
   const { rating, reviewCount } = approvedSalonRatingSummary(salon, ratingSummaries);

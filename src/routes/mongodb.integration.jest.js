@@ -186,6 +186,13 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect(buildStaffPayload({ id: staffId }, stored.map(booking => booking.review))).toMatchObject({
       rating: 3.5, reviewCount: 3,
     });
+    const emptyStaffId = 'technique-score-empty-staff';
+    await StaffProfile.create({ id: emptyStaffId, name: 'Unrated stylist', roleId: 'designer' });
+    await Salon.create({ id: 'technique-score-empty-salon', name: 'Unrated salon',
+      publishStatus: 'online', staffIds: [emptyStaffId] });
+    const emptySalon = await request('client', '/salons/technique-score-empty-salon');
+    expect(emptySalon.body.staff[0]).toMatchObject({ rating: null, reviewCount: 0 });
+    expect((await request('client', `/staff/${emptyStaffId}`)).body).toMatchObject({ rating: null, reviewCount: 0 });
   });
 
   test('public review pages cover more than the legacy cap, count every category and keep detail payloads to a preview', async () => {
