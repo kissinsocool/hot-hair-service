@@ -690,6 +690,11 @@ const getApprovedReviewsByStaffIds = async (staffIds = [], limit = PUBLIC_SALON_
 const getApprovedRatingSummariesByStaffIds = async (staffIds = []) => {
   const ids = [...new Set(staffIds.map(String).filter(Boolean))];
   if (!ids.length) return {};
+  const validTechnique = { $and: [
+    { $isNumber: '$review.ratings.technique' },
+    { $gte: ['$review.ratings.technique', 1] },
+    { $lte: ['$review.ratings.technique', 5] },
+  ] };
   const rows = await Booking.aggregate([
     {
       $match: {
@@ -703,12 +708,17 @@ const getApprovedRatingSummariesByStaffIds = async (staffIds = []) => {
         _id: '$staffId',
         reviewCount: { $sum: 1 },
         ratingTotal: { $sum: '$review.rating' },
+        techniqueCount: { $sum: { $cond: [validTechnique, 1, 0] } },
+        techniqueTotal: { $sum: { $cond: [validTechnique, '$review.ratings.technique', 0] } },
       },
     },
   ]);
   return Object.fromEntries(rows.map(row => [
     String(row._id),
-    salonDomain.ratingSummary(row.reviewCount, row.ratingTotal),
+    {
+      ...salonDomain.ratingSummary(row.reviewCount, row.ratingTotal),
+      techniqueRating: salonDomain.ratingSummary(row.techniqueCount, row.techniqueTotal).rating,
+    },
   ]));
 };
 
@@ -1121,7 +1131,7 @@ const buildMerchantSalonPayload = async (salonId = '1') => {
   merged.staff = (merged.staff || [])
     .map((person) => {
       const live = liveStaff[person.id];
-      const summary = live ? { rating: live.rating, reviewCount: live.reviewCount } : undefined;
+      const summary = live ? { techniqueRating: live.rating, reviewCount: live.reviewCount } : undefined;
       return buildStaffPayload(person, reviewsByStaff[person.id] || [], summary);
     });
   merged.reviews = payload.reviews;

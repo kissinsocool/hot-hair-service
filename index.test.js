@@ -522,9 +522,9 @@ test('public staff summaries expose rating totals without review text or legacy 
     role: '不应返回的旧字段',
     reviews: [{ rating: 1 }],
     rating: 1,
-  }, { rating: 4.5, reviewCount: 12, ratingTotal: 54 });
+  }, { rating: 4.5, reviewCount: 12, ratingTotal: 54, techniqueRating: 3 });
   assert.equal('reviews' in summary, false);
-  assert.equal(summary.rating, 4.5);
+  assert.equal(summary.rating, 3);
   assert.equal(summary.reviewCount, 12);
   assert.equal(summary.roleId, 'technical_director');
   assert.equal('role' in summary, false);
@@ -538,6 +538,7 @@ test('public staff payloads use supplied booking reviews and ignore legacy profi
   const reviews = Array.from({ length: 205 }, (_, index) => ({
     id: `review-${index}`,
     rating: 5,
+    ratings: { environment: 5, technique: 3, service: 5, price: 5 },
     reviewStatus: 'approved',
   }));
   const payload = buildStaffPayload({
@@ -547,7 +548,7 @@ test('public staff payloads use supplied booking reviews and ignore legacy profi
     reviews: [{ rating: 1 }],
   }, reviews);
   assert.equal(payload.reviews.length, 50);
-  assert.equal(payload.rating, 5);
+  assert.equal(payload.rating, 3);
   assert.equal(payload.reviewCount, 205);
   assert.equal(payload.roleId, 'technical_director');
   assert.equal('role' in payload, false);
@@ -557,6 +558,18 @@ test('public staff payloads do not invent a rating when there are no approved re
   const payload = buildStaffPayload({ id: 'staff-without-reviews' }, []);
   assert.equal(payload.rating, null);
   assert.equal(payload.reviewCount, 0);
+});
+
+test('staff scores ignore unapproved reviews and missing technique scores without discarding review counts', () => {
+  const review = (technique, reviewStatus = 'approved') => ({
+    reviewStatus, rating: 4.5, ratings: { technique },
+    pendingEdit: { ratings: { technique: 1 }, reviewStatus: 'pending' },
+  });
+  const reviews = [review(3), review(4), review(undefined), review(1, 'pending'), review(1, 'rejected')];
+  const payload = buildStaffPayload({ id: 'staff' }, reviews);
+  assert.equal(payload.rating, 3.5);
+  assert.equal(payload.reviewCount, 3);
+  assert.equal(buildStaffPayload({ id: 'staff' }, [review(undefined)]).rating, null);
 });
 
 test('rating summaries round averages to two decimal places', () => {
@@ -574,7 +587,7 @@ test('rating summaries use every approved review and group them by staff', async
   Booking.aggregate = async (value) => {
     pipeline = value;
     return [
-      { _id: 'staff-1', reviewCount: 2, ratingTotal: 9 },
+      { _id: 'staff-1', reviewCount: 2, ratingTotal: 9, techniqueCount: 2, techniqueTotal: 7 },
       { _id: 'staff-2', reviewCount: 1, ratingTotal: 3 },
     ];
   };
@@ -589,8 +602,8 @@ test('rating summaries use every approved review and group them by staff', async
       },
     });
     assert.deepEqual(summaries, {
-      'staff-1': { rating: 4.5, reviewCount: 2, ratingTotal: 9 },
-      'staff-2': { rating: 3, reviewCount: 1, ratingTotal: 3 },
+      'staff-1': { rating: 4.5, reviewCount: 2, ratingTotal: 9, techniqueRating: 3.5 },
+      'staff-2': { rating: 3, reviewCount: 1, ratingTotal: 3, techniqueRating: null },
     });
   } finally {
     Booking.aggregate = originalAggregate;

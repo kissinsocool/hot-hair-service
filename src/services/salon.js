@@ -297,23 +297,33 @@ const ratingSummaryFromReviews = (reviews = []) => ratingSummary(
   reviews.reduce((sum, review) => sum + Number(review.rating || 0), 0),
 );
 
-const buildStaffPayload = (person, reviews = [], summary = ratingSummaryFromReviews(reviews)) => {
+const staffRatingSummaryFromReviews = (reviews = []) => {
+  const approved = reviews.filter(review => review.reviewStatus === 'approved');
+  const scores = approved.map(review => review.ratings?.technique)
+    .filter(score => typeof score === 'number' && score >= 1 && score <= 5);
+  return {
+    reviewCount: approved.length,
+    techniqueRating: ratingSummary(scores.length, scores.reduce((sum, score) => sum + score, 0)).rating,
+  };
+};
+
+const buildStaffPayload = (person, reviews = [], summary = staffRatingSummaryFromReviews(reviews)) => {
   const { reviews: _legacyReviews, rating: _legacyRating, ...profile } = person || {};
   const publicReviews = reviews.slice(0, PUBLIC_STAFF_REVIEWS_LIMIT);
   return {
     ...staffPayload(profile),
     reviews: publicReviews,
-    rating: summary.rating,
+    rating: summary.techniqueRating,
     reviewCount: summary.reviewCount,
   };
 };
 
 // Public staff listings carry only the rating summary; review text is served by the paginated review endpoints.
-const buildPublicStaffSummary = (person, summary = ratingSummary(0, 0)) => {
+const buildPublicStaffSummary = (person, summary = { techniqueRating: null, reviewCount: 0 }) => {
   const { reviews: _legacyReviews, rating: _legacyRating, ...profile } = person || {};
   return {
     ...staffPayload(profile),
-    rating: summary.rating,
+    rating: summary.techniqueRating,
     reviewCount: summary.reviewCount,
   };
 };

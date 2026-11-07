@@ -143,6 +143,51 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect((await request('otherMerchant', '/merchant/bookings/summary?includePending=true')).body.counts).toEqual({});
   });
 
+  test('staff scores average only approved technique scores while salon scores retain the overall rating', async () => {
+    const staffId = 'technique-score-staff';
+    const salonId = 'technique-score-salon';
+    await StaffProfile.create({ id: staffId, name: 'Technique stylist', roleId: 'designer' });
+    await Salon.create({ id: salonId, name: 'Technique salon', publishStatus: 'online', staffIds: [staffId] });
+    await Booking.create([
+      { status: 'approved', rating: 4.5, technique: 3 },
+      { status: 'approved', rating: 4.75, technique: 4 },
+      { status: 'approved', rating: 5 },
+      { status: 'pending', rating: 1, technique: 1 },
+      { status: 'rejected', rating: 1, technique: 1 },
+    ].map((item, i) => ({
+      id: `technique-score-booking-${i}`, salonId, staffId, serviceId: 'service',
+      startTime: new Date('2030-01-01'),
+      review: {
+        id: `technique-score-review-${i}`, rating: item.rating, reviewStatus: item.status,
+        ...(item.technique === undefined ? {} : {
+          ratings: { environment: 5, technique: item.technique, service: 5, price: 5 },
+        }),
+        pendingEdit: {
+          rating: 1, reviewStatus: 'pending',
+          ratings: { environment: 1, technique: 1, service: 1, price: 1 },
+        },
+      },
+    })));
+    const staff = await request('client', `/staff/${staffId}`);
+    expect(staff.status).toBe(200);
+    expect(staff.body).toMatchObject({ rating: 3.5, reviewCount: 3 });
+    const salon = await request('client', `/salons/${salonId}`);
+    expect(salon.status).toBe(200);
+    expect(salon.body).toMatchObject({ rating: 4.75, reviewCount: 3 });
+    expect(salon.body.staff[0]).toMatchObject({ id: staffId, rating: 3.5, reviewCount: 3 });
+    const reviews = await request('client', `/staff/${staffId}/reviews`);
+    expect(reviews.body.total).toBe(3);
+    expect(reviews.body.items.map(review => review.rating).sort()).toEqual([4.5, 4.75, 5]);
+    const { buildMerchantSalonPayload } = require('../../index');
+    const merchant = await buildMerchantSalonPayload(salonId);
+    expect(merchant.staff[0]).toMatchObject({ id: staffId, rating: 3.5, reviewCount: 3 });
+    const stored = await Booking.find({ staffId, 'review.reviewStatus': 'approved' });
+    const { buildStaffPayload } = require('../services/salon');
+    expect(buildStaffPayload({ id: staffId }, stored.map(booking => booking.review))).toMatchObject({
+      rating: 3.5, reviewCount: 3,
+    });
+  });
+
   test('public review pages cover more than the legacy cap, count every category and keep detail payloads to a preview', async () => {
     const staffId = 'review-pages-staff';
     await StaffProfile.create({ id: staffId, name: 'Reviews stylist', roleId: 'designer' });
@@ -214,6 +259,7 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     // Staff detail no longer embeds reviews; they are paginated per staff member.
     const staffDetail = await request('client', `/staff/${staffId}`);
     expect(staffDetail.status).toBe(200); expect(staffDetail.body.reviewCount).toBe(165);
+    expect(staffDetail.body.rating).toBeNull();
     expect(staffDetail.body.reviews).toBeUndefined(); expect(staffDetail.body.salonStaff).toBeUndefined();
     expect(staffDetail.body.salonId).toBe('review-pages-salon');
     const staffSeen = [];
@@ -299,7 +345,8 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     await Booking.create([5, 5, 4].map((rating, index) => ({
       id: `precision-booking-${index}`, salonId: 'precision-salon', staffId: 'precision-staff',
       serviceId: 'precision-service', startTime: new Date('2030-02-01T02:00:00Z'),
-      review: { id: `precision-review-${index}`, rating, reviewStatus: 'approved' },
+      review: { id: `precision-review-${index}`, rating, reviewStatus: 'approved',
+        ratings: { environment: rating, technique: rating, service: rating, price: rating } },
     })));
     for (const sort of ['', '&sort=rating']) {
       const result = await request('client', `/salons?latitude=39.9042&longitude=116.4074&page=1&limit=10${sort}`);
@@ -312,7 +359,8 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     await Booking.create([4, 4, 4, 4, 3].map((rating, index) => ({
       id: `precision-half-booking-${index}`, salonId: 'precision-salon', staffId: 'precision-staff',
       serviceId: 'precision-service', startTime: new Date('2030-02-02T02:00:00Z'),
-      review: { id: `precision-half-review-${index}`, rating, reviewStatus: 'approved' },
+      review: { id: `precision-half-review-${index}`, rating, reviewStatus: 'approved',
+        ratings: { environment: rating, technique: rating, service: rating, price: rating } },
     })));
     for (const sort of ['', '&sort=rating']) {
       const result = await request('client', `/salons?latitude=39.9042&longitude=116.4074&page=1&limit=10${sort}`);
