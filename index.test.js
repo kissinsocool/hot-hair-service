@@ -586,6 +586,7 @@ test('review tag counts use every approved review and keep the configured displa
       { _id: '服务周到', count: 2 },
       { _id: '善于沟通', count: 3 },
       { _id: '接待热情', count: 4 },
+      { _id: '守时商家', count: 2 },
       { _id: '好沟通', count: 1 },
     ];
   };
@@ -598,7 +599,7 @@ test('review tag counts use every approved review and keep the configured displa
       {
         $match: {
           'review.tags': {
-            $in: ['善于沟通', '环境舒适', '技术一流', '服务周到', '无推销', '环镜整洁', '效果好评', '接待热情', '好沟通'],
+            $in: ['善于沟通', '环境舒适', '技术一流', '服务周到', '无推销', '环镜整洁', '效果好评', '接待热情', '守时商家', '好沟通'],
           },
         },
       },
@@ -608,6 +609,7 @@ test('review tag counts use every approved review and keep the configured displa
       { name: '善于沟通', count: 3 },
       { name: '服务周到', count: 2 },
       { name: '接待热情', count: 4 },
+      { name: '守时商家', count: 2 },
       { name: '好沟通', count: 1 },
     ]);
   } finally {
@@ -3359,14 +3361,14 @@ test('editing a review stores a pending draft without changing the approved revi
       body: {
         rating: 5,
         comment: '再次修改',
-        tags: ['技术一流', '服务周到', '接待热情'],
+        tags: ['技术一流', '服务周到', '接待热情', '守时商家'],
         retainedImageUrls: ['https://public.example/old.jpg'],
         imageObjects: [],
       },
     },
     { status() { return this; }, json() {} },
   );
-  assert.deepEqual(update.$set['review.pendingEdit'].tags, ['技术一流', '服务周到', '接待热情']);
+  assert.deepEqual(update.$set['review.pendingEdit'].tags, ['技术一流', '服务周到', '接待热情', '守时商家']);
 });
 
 test('deleting a review returns success even when post-delete cleanup fails', async () => {
@@ -3416,7 +3418,7 @@ test('deleting a review returns success even when post-delete cleanup fails', as
   assert.equal(updateQuery['review.id'], 'review-1');
 });
 
-for (const receptionTag of ['好沟通', '接待热情']) test(`concurrent review and complaint submissions only update once (${receptionTag})`, async () => {
+for (const receptionTag of ['好沟通', '接待热情', '守时商家']) test(`concurrent review and complaint submissions only update once (${receptionTag})`, async () => {
   const routes = new Map();
   const app = {
     get() {},
@@ -3487,6 +3489,7 @@ for (const receptionTag of ['好沟通', '接待热情']) test(`concurrent revie
 
   const reviewStatuses = await invokeTwice('/api/bookings/:id/review', {
     rating: 5,
+    ...(receptionTag === '守时商家' ? { ratings: { environment: 5, technique: 5, service: 5, price: 5 } } : {}),
     comment: 'good',
     tags: ['无推销', '环镜整洁', '效果好评', receptionTag],
     imageObjects: [],
