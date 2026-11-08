@@ -24,10 +24,14 @@ const routeIpKey = req => {
   const route = req.route?.path || String(req.path || req.originalUrl || '').split('?')[0];
   return ip && route ? `${ip}:${route}` : ip;
 };
-const bodyKey = field => req => {
+// Count failed-login pressure per account *and* client IP: one source guessing a password is throttled,
+// but nobody can lock an account for everyone else by spamming wrong passwords from their own IP.
+const accountIpKey = req => {
+  const field = req.body?.account === undefined ? 'username' : 'account';
   const value = String(req.body?.[field] || '').trim().toLowerCase();
+  const ip = ipKey(req);
   const endpoint = String(req.originalUrl || req.path || '').split('?')[0];
-  return value ? hash(`${endpoint}:${value}`) : '';
+  return value && ip ? hash(`${endpoint}:${value}:${ip}`) : '';
 };
 const actorKey = req => {
   const actor = req.clientUser?.id || req.merchantUser?.id || req.adminUser?.id;
@@ -95,8 +99,7 @@ const rateLimits = {
   ],
   login: [
     createRateLimiter({ name: 'login-ip', limit: 30, windowMs: 5 * MINUTE }),
-    createRateLimiter({ name: 'login-account', limit: 10, windowMs: 15 * MINUTE, key: req =>
-      bodyKey(req.body?.account === undefined ? 'username' : 'account')(req) }),
+    createRateLimiter({ name: 'login-account-ip', limit: 10, windowMs: 15 * MINUTE, key: accountIpKey }),
   ],
   booking: [
     createRateLimiter({ name: 'booking-ip', limit: 60, windowMs: MINUTE }),

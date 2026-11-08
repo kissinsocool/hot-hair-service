@@ -123,7 +123,6 @@ app.use(cors({
   },
   exposedHeaders: ['X-Total-Count', 'X-Page', 'X-Page-Size', 'X-Has-More'],
 }));
-app.use(express.json({ limit: process.env.JSON_LIMIT || '10mb' }));
 
 app.get('/health', (_req, res) => {
   res.set('Cache-Control', 'no-store').json({ status: 'ok', uptimeSeconds: Math.floor(process.uptime()) });
@@ -246,6 +245,17 @@ const {
   requireMerchantAuth,
   rotateSession,
 } = authDomain.createAuthService({ revokeSessionHash });
+
+// Request body limits: images upload directly to OSS, so no route needs a large JSON body.
+// JSON_LIMIT can tighten the default (e.g. 100kb); merchant salon saves keep 1mb for large service/staff lists.
+const MERCHANT_SALON_JSON_PATH = '/api/merchant/salon';
+const jsonDefault = express.json({ limit: process.env.JSON_LIMIT || '1mb' });
+const jsonMerchantSalon = express.json({ limit: '1mb' });
+app.use((req, res, next) => (
+  req.path === MERCHANT_SALON_JSON_PATH
+    ? jsonMerchantSalon(req, res, next)
+    : jsonDefault(req, res, next)
+));
 
 const sendSocketMessage = (socket, payload) => {
   if (socket.readyState !== WebSocket.OPEN) return;
@@ -1459,8 +1469,23 @@ app.use('/api/admin', requireAdminAuth);
 require('./src/routes/admin')(app, routeContext);
 
 app.use((error, req, res, next) => {
-  errorLogger(error, req);
   if (res.headersSent) return next(error);
+  if (error?.type === 'entity.too.large') {
+    console.warn(JSON.stringify({
+      level: 'warn',
+      event: 'request_body_too_large',
+      requestId: req.requestId,
+      method: req.method,
+      path: req.path,
+      contentLength: Number(req.headers['content-length']) || null,
+      limit: error.limit,
+    }));
+    return res.status(413).json({ message: '请求内容过大', requestId: req.requestId });
+  }
+  if (error?.type === 'entity.parse.failed') {
+    return res.status(400).json({ message: '请求格式错误', requestId: req.requestId });
+  }
+  errorLogger(error, req);
   res.status(500).json({ message: 'Internal server error', requestId: req.requestId });
 });
 
