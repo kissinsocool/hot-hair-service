@@ -29,7 +29,6 @@ module.exports = (app, ctx) => {
     applyDirectSalonContent,
     validateSalonStaffIds,
     hasReviewableContentChanges,
-    saveBase64Image,
     verifyModeratedImageObjects,
     deleteModeratedImages,
     privateImageUrl,

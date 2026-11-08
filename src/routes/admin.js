@@ -35,7 +35,7 @@ module.exports = (app, ctx) => {
     normalizeBooking,
     buildAdPayload,
     normalizeAdLink,
-    saveBase64Image,
+    createMerchantUploadPolicies,
     privateImageUrl,
     publishModeratedImage,
     deleteModeratedImages,
@@ -163,6 +163,19 @@ module.exports = (app, ctx) => {
     res.json(buildAdPayload(await AdConfig.findOne({ key: 'main' }).lean()));
   });
 
+  app.post('/api/admin/uploads/sign', ...rateLimits.upload, async (req, res) => {
+    try {
+      const uploads = createMerchantUploadPolicies({
+        type: 'public',
+        userId: `admin:${req.adminUser.id}`,
+        files: req.body.files,
+      });
+      res.json({ uploads });
+    } catch (error) {
+      res.status(error.httpStatus || 500).json({ message: error.message });
+    }
+  });
+
   app.get('/api/admin/campaigns/new-user-registration', async (_req, res) => {
     res.json(await buildCampaignResponse(
       await CouponCampaign.findOne({ key: 'new-user-registration' }).lean(),
@@ -170,21 +183,8 @@ module.exports = (app, ctx) => {
   });
 
   app.patch('/api/admin/campaigns/new-user-registration', ...rateLimits.upload, async (req, res) => {
-    const hasNewImage = Boolean(req.body.promotionImageData);
-    const parsed = validateCampaignInput({
-      ...req.body,
-      promotionImageUrl: req.body.promotionImageUrl || (hasNewImage ? 'pending-upload' : ''),
-    });
+    const parsed = validateCampaignInput(req.body);
     if (parsed.error) return res.status(400).json({ message: parsed.error });
-    if (hasNewImage) {
-      const imageUrl = await saveBase64Image(
-        'coupon-promotion',
-        req.body.promotionImageFileName || 'coupon-promotion.jpeg',
-        req.body.promotionImageData,
-      );
-      if (!imageUrl) return res.status(400).json({ message: '图片无效或超过 5MB' });
-      parsed.value.promotionImageUrl = imageUrl;
-    }
     const campaign = await CouponCampaign.findOneAndUpdate(
       { key: 'new-user-registration' },
       { ...parsed.value, updatedBy: req.adminUser.id },
@@ -198,11 +198,7 @@ module.exports = (app, ctx) => {
     if (!link) return res.status(400).json({ message: '跳转链接必须是 HTTPS H5 地址或 /pages/... 小程序页面路径' });
     if (typeof req.body.enabled !== 'boolean') return res.status(400).json({ message: '是否显示必须是布尔值' });
 
-    let imageUrl = String(req.body.imageUrl || '').trim();
-    if (req.body.data) {
-      imageUrl = await saveBase64Image('ad', req.body.fileName || 'ad.jpeg', req.body.data);
-      if (!imageUrl) return res.status(400).json({ message: '图片无效或超过 5MB' });
-    }
+    const imageUrl = String(req.body.imageUrl || '').trim();
     if (req.body.enabled && !imageUrl) return res.status(400).json({ message: '请上传广告图片' });
 
     const config = await AdConfig.findOneAndUpdate(

@@ -764,6 +764,8 @@ test('health, readiness and centralized auth boundaries work without database ac
     assert.equal(admin.status, 401);
 
     const emptyLogin = { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' };
+    const adminUpload = await fetch(`${baseUrl}/api/admin/uploads/sign`, emptyLogin);
+    assert.equal(adminUpload.status, 401);
     const [wechatLogin, merchantLogin, adminLogin] = await Promise.all([
       fetch(`${baseUrl}/api/auth/wechat/phone`, emptyLogin),
       fetch(`${baseUrl}/api/merchant/auth/login`, emptyLogin),
