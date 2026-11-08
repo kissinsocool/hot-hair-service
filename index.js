@@ -68,6 +68,7 @@ const { rateLimits } = require('./src/rate-limit');
 const { hashPassword, verifyPassword } = require('./src/passwords');
 const {
   connectRedis,
+  disconnectRedis,
   getRedisClient,
   publishSessionRevocation,
   subscribeSessionRevocations,
@@ -115,7 +116,13 @@ const wss = new WebSocketServer({
 
 if (trustProxyHops > 0) app.set('trust proxy', trustProxyHops);
 
+// Set once a shutdown signal arrives: /ready reports 503 and responses ask clients to drop keep-alive connections.
+let shuttingDown = false;
 app.use(requestLogger);
+app.use((_req, res, next) => {
+  if (shuttingDown) res.set('Connection', 'close');
+  next();
+});
 app.use(cors({
   origin: (origin, callback) => {
     if (isAllowedOrigin(origin)) return callback(null, true);
@@ -128,6 +135,9 @@ app.get('/health', (_req, res) => {
   res.set('Cache-Control', 'no-store').json({ status: 'ok', uptimeSeconds: Math.floor(process.uptime()) });
 });
 app.get('/ready', (_req, res) => {
+  if (shuttingDown) {
+    return res.status(503).set('Cache-Control', 'no-store').json({ status: 'shutting_down' });
+  }
   const mongoReady = mongoose.connection.readyState === 1;
   const redisRequired = Boolean(String(process.env.REDIS_URL || '').trim());
   const redisReady = !redisRequired || Boolean(getRedisClient());
@@ -1531,26 +1541,86 @@ const startServer = async () => {
     console.log(`Backend running at http://localhost:${PORT}`);
   });
 
-  let completingBookings = false;
-  const runBookingCompletion = async () => {
-    if (completingBookings) return;
-    completingBookings = true;
-    try {
-      await completeDueBookings({
-        mongoose, Booking, BookingMessage, SlotOccupancy, UserCoupon,
-        AnalyticsEvent, broadcastBookingEvent,
-      });
-    } catch (error) {
-      console.error('Automatic booking completion failed:', error);
-    } finally {
-      completingBookings = false;
-    }
-  };
   void runBookingCompletion();
-  setInterval(runBookingCompletion, 15 * 60 * 1000).unref();
+  bookingCompletionTimer = setInterval(runBookingCompletion, 15 * 60 * 1000);
+  bookingCompletionTimer.unref();
+};
+
+let bookingCompletionRun = null;
+let bookingCompletionTimer;
+const runBookingCompletion = () => {
+  if (bookingCompletionRun || shuttingDown) return bookingCompletionRun;
+  bookingCompletionRun = completeDueBookings({
+    mongoose, Booking, BookingMessage, SlotOccupancy, UserCoupon,
+    AnalyticsEvent, broadcastBookingEvent,
+  })
+    .catch(error => console.error('Automatic booking completion failed:', error))
+    .finally(() => { bookingCompletionRun = null; });
+  return bookingCompletionRun;
+};
+
+// Graceful shutdown: stop taking new work, let in-flight requests and the booking-completion job finish,
+// then close WebSockets, Redis and MongoDB. Anything still running after the timeout is cut off.
+// Process managers must allow longer than this before SIGKILL (PM2: --kill-timeout; its default is 1.6s).
+const SHUTDOWN_TIMEOUT_MS = (() => {
+  const value = Math.floor(Number(process.env.SHUTDOWN_TIMEOUT_MS));
+  return Number.isFinite(value) && value > 0 ? value : 10000;
+})();
+let shutdownPromise = null;
+const gracefulShutdown = (signal, { timeoutMs = SHUTDOWN_TIMEOUT_MS, exit = code => process.exit(code) } = {}) => {
+  if (shutdownPromise) return shutdownPromise;
+  shuttingDown = true;
+  clearInterval(bookingCompletionTimer);
+  console.log(JSON.stringify({ level: 'info', event: 'shutdown_started', signal, timeoutMs }));
+
+  let exited = false;
+  const finish = (code) => {
+    if (exited) return;
+    exited = true;
+    exit(code);
+  };
+
+  shutdownPromise = new Promise((resolve) => {
+    const forceTimer = setTimeout(() => {
+      console.warn(JSON.stringify({ level: 'warn', event: 'shutdown_timeout', signal, timeoutMs }));
+      server.closeAllConnections();
+      wss.clients.forEach(socket => socket.terminate());
+      finish(1);
+      resolve();
+    }, timeoutMs);
+    forceTimer.unref();
+
+    (async () => {
+      let exitCode = 0;
+      try {
+        wss.clients.forEach(socket => socket.close(1001, 'Server restarting'));
+        const httpClosed = server.listening
+          ? new Promise(done => server.close(done))
+          : Promise.resolve();
+        server.closeIdleConnections();
+        await Promise.all([httpClosed, bookingCompletionRun]);
+        wss.clients.forEach(socket => socket.terminate());
+        await disconnectRedis();
+        await mongoose.disconnect();
+      } catch (error) {
+        exitCode = 1;
+        console.error(JSON.stringify({ level: 'error', event: 'shutdown_error', message: error.message }));
+      }
+      clearTimeout(forceTimer);
+      if (exited) return;
+      console.log(JSON.stringify({ level: 'info', event: 'shutdown_complete', signal }));
+      finish(exitCode);
+      resolve();
+    })();
+  });
+  return shutdownPromise;
 };
 
 if (require.main === module) {
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    // A second signal while draining means "stop now".
+    process.on(signal, () => (shutdownPromise ? process.exit(1) : gracefulShutdown(signal)));
+  }
   startServer().catch((error) => {
     console.error('Failed to start backend:', error.message);
     process.exit(1);
@@ -1558,6 +1628,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  gracefulShutdown,
   activeSessionQuery,
   acceptedBookingAtTimeQuery,
   applyDirectSalonContent,

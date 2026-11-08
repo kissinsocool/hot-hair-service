@@ -18,6 +18,12 @@ const connectRedis = async () => {
 
 const getRedisClient = () => client?.isReady ? client : null;
 
+const disconnectRedis = async () => {
+  await Promise.allSettled([subscriber, client]
+    .filter(connection => connection?.isOpen)
+    .map(connection => connection.close()));
+};
+
 const publishSessionRevocation = async (sessionHash) => {
   if (sessionHash && client?.isReady) {
     await client.publish(SESSION_REVOCATION_CHANNEL, sessionHash);
@@ -32,6 +38,7 @@ const subscribeSessionRevocations = async (handler) => {
 
 module.exports = {
   connectRedis,
+  disconnectRedis,
   getRedisClient,
   publishSessionRevocation,
   subscribeSessionRevocations,
