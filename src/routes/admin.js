@@ -4,6 +4,23 @@ const { funnelMetrics } = require('../services/analytics');
 const { bookingDayRange, localDateKey, runBookingTransaction, transactionError } = require('../services/booking');
 const { bookingMessagePayload } = require('../services/booking-messages');
 
+const isValidAdminImageUrl = (value) => {
+  if (value == null) return true;
+  if (typeof value !== 'string') return false;
+  const imageUrl = value.trim();
+  if (!imageUrl) return true;
+  try {
+    const url = new URL(imageUrl);
+    // Accept canonical object URLs emitted by the uploader, without processing parameters or encoded paths.
+    return url.origin === 'https://media.hothaircc.cn'
+      && !url.username && !url.password && !url.search && !url.hash
+      && url.href === imageUrl
+      && /^\/uploads\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(url.pathname);
+  } catch {
+    return false;
+  }
+};
+
 const parseBookingsSnapshot = (value) => {
   if (typeof value !== 'string') return null;
   const before = new Date(value);
@@ -183,6 +200,9 @@ module.exports = (app, ctx) => {
   });
 
   app.patch('/api/admin/campaigns/new-user-registration', ...rateLimits.upload, async (req, res) => {
+    if (!isValidAdminImageUrl(req.body.promotionImageUrl)) {
+      return res.status(400).json({ message: '推广图必须使用媒体域名下的上传图片地址' });
+    }
     const parsed = validateCampaignInput(req.body);
     if (parsed.error) return res.status(400).json({ message: parsed.error });
     const campaign = await CouponCampaign.findOneAndUpdate(
@@ -198,6 +218,9 @@ module.exports = (app, ctx) => {
     if (!link) return res.status(400).json({ message: '跳转链接必须是 HTTPS H5 地址或 /pages/... 小程序页面路径' });
     if (typeof req.body.enabled !== 'boolean') return res.status(400).json({ message: '是否显示必须是布尔值' });
 
+    if (!isValidAdminImageUrl(req.body.imageUrl)) {
+      return res.status(400).json({ message: '广告图必须使用媒体域名下的上传图片地址' });
+    }
     const imageUrl = String(req.body.imageUrl || '').trim();
     if (req.body.enabled && !imageUrl) return res.status(400).json({ message: '请上传广告图片' });
 
