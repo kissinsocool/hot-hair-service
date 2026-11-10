@@ -25,4 +25,8 @@ const verifyPassword = async (password, user) => {
   return Boolean(user) && matches;
 };
 
-module.exports = { hashPassword, verifyPassword };
+const newPasswordRule = '密码至少 10 位，且包含英文字母和数字';
+const hasPasswordLettersAndDigits = password => /[A-Za-z]/.test(password) && /[0-9]/.test(password);
+const isValidNewPassword = password => password.length >= 10 && hasPasswordLettersAndDigits(password);
+
+module.exports = { hashPassword, verifyPassword, newPasswordRule, hasPasswordLettersAndDigits, isValidNewPassword };

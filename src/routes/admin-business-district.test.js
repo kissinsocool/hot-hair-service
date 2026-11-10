@@ -44,7 +44,7 @@ function setup() {
 // Matches the released admin client's request, which has no businessDistrict.
 const legacyBody = {
   username: 'merchant', displayName: 'merchant', salonId: 'district-salon',
-  deposit: '0', tags: ['人气店铺'], password: '123456',
+  deposit: '0', tags: ['人气店铺'], password: 'fixture-pass7',
 };
 
 for (const method of ['post', 'patch']) {

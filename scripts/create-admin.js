@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const dotenv = require('dotenv');
 const mongoose = require('mongoose');
 const { AdminUser } = require('../src/models');
-const { hashPassword } = require('../src/passwords');
+const { hashPassword, hasPasswordLettersAndDigits } = require('../src/passwords');
 
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
@@ -13,6 +13,7 @@ const readAdminConfig = (env = process.env) => {
   const displayName = String(env.ADMIN_DISPLAY_NAME || '平台管理员').trim();
   if (!username || username.length > 100) throw new Error('ADMIN_USERNAME is required and must not exceed 100 characters');
   if (password.length < 12 || password.length > 128) throw new Error('ADMIN_PASSWORD must contain 12 to 128 characters');
+  if (!hasPasswordLettersAndDigits(password)) throw new Error('ADMIN_PASSWORD must contain letters and digits');
   if (!displayName || displayName.length > 100) throw new Error('ADMIN_DISPLAY_NAME must not exceed 100 characters');
   return { username, password, displayName };
 };

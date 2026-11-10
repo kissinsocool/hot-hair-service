@@ -1,3 +1,4 @@
+const { isValidNewPassword, newPasswordRule } = require('../passwords');
 const { BUSINESS_DISTRICTS } = require('../services/business-districts');
 const { normalizeDocument } = require('../services/salon');
 const { funnelMetrics } = require('../services/analytics');
@@ -280,7 +281,7 @@ module.exports = (app, ctx) => {
       && !BUSINESS_DISTRICTS.includes(req.body.businessDistrict)) {
       return res.status(400).json({ message: '请选择有效的商圈' });
     }
-    if (password.length < 6) return res.status(400).json({ message: '密码至少 6 位' });
+    if (!isValidNewPassword(password)) return res.status(400).json({ message: newPasswordRule });
     if (await MerchantUser.findOne({ username })) {
       return res.status(409).json({ message: '该商家账号已存在' });
     }
@@ -332,7 +333,7 @@ module.exports = (app, ctx) => {
       && !BUSINESS_DISTRICTS.includes(req.body.businessDistrict)) {
       return res.status(400).json({ message: '请选择有效的商圈' });
     }
-    if (password && password.length < 6) return res.status(400).json({ message: '密码至少 6 位' });
+    if (password && !isValidNewPassword(password)) return res.status(400).json({ message: newPasswordRule });
   
     if (username && username !== user.username) {
       if (await MerchantUser.findOne({ username })) {

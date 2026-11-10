@@ -2833,7 +2833,7 @@ test('admin merchant creation rejects a salon already owned by another account',
     body: {
       username: 'merchant041945',
       displayName: 'merchant041945',
-      password: '123456',
+      password: 'fixture-pass7',
       salonId: '701109',
       deposit: '0',
       tags: [],

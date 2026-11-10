@@ -1,3 +1,4 @@
+const { isValidNewPassword, newPasswordRule } = require('../passwords');
 const bookingService = require('../services/booking');
 const bookingMessages = require('../services/booking-messages');
 const salonService = require('../services/salon');
@@ -228,7 +229,7 @@ module.exports = (app, ctx) => {
   
     let session;
     if (newPassword) {
-      if (newPassword.length < 6) return res.status(400).json({ message: '新密码至少 6 位' });
+      if (!isValidNewPassword(newPassword)) return res.status(400).json({ message: newPasswordRule });
       if (!await verifyPassword(currentPassword, user)) {
         return res.status(401).json({ message: '当前密码错误' });
       }
