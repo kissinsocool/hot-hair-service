@@ -63,6 +63,34 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       sessionTokenHash: session.tokenHash, sessionExpiresAt: session.expiresAt });
   }
 
+  test('merchants require an explicit salon, including a valid association to salon 1', async () => {
+    const id = 'merchant-missing-salon';
+    const password = 'fixture-pass7';
+    const { salt, hash } = await hashPassword(password);
+    const credentials = { id, username: id, passwordSalt: salt, passwordHash: hash };
+    await expect(MerchantUser.create(credentials)).rejects.toThrow('salonId');
+    sessions.missingSalon = createSession();
+    await MerchantUser.collection.insertOne({ ...credentials,
+      sessionTokenHash: sessions.missingSalon.tokenHash, sessionExpiresAt: sessions.missingSalon.expiresAt });
+    const salon = await Salon.create({ id: '1', name: 'Explicit salon' });
+    try {
+      expect((await request('merchant', '/merchant/auth/login', { username: id, password }, 'POST')).status).toBe(403);
+      expect((await request('missingSalon', '/merchant/salon')).status).toBe(403);
+      expect((await request('missingSalon', '/merchant/bookings')).status).toBe(403);
+      expect((await request('missingSalon', '/merchant/auth/logout', {}, 'POST')).status).toBe(200);
+      const adminInput = { username: 'new-merchant', displayName: 'New merchant', password };
+      expect((await request('admin', '/admin/merchants', adminInput, 'POST')).status).toBe(400);
+      expect((await request('admin', `/admin/merchants/${id}`, { salonId: '1' }, 'PATCH')).status).toBe(200);
+      const login = await request('merchant', '/merchant/auth/login', { username: id, password }, 'POST');
+      expect(login.status).toBe(200);
+      sessions.missingSalon = { token: login.body.token };
+      expect((await request('missingSalon', '/merchant/salon')).body).toMatchObject({ id: '1', name: 'Explicit salon' });
+    } finally {
+      await MerchantUser.deleteOne({ id });
+      await Salon.deleteOne({ _id: salon._id });
+    }
+  });
+
   test('password rules apply to new credentials without invalidating existing logins', async () => {
     const username = 'password-policy-merchant';
     const oldPassword = '123456';

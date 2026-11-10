@@ -375,7 +375,7 @@ const merchantUserSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
   username: { type: String, required: true, unique: true, index: true },
   displayName: String,
-  salonId: { type: String, default: '1', index: true },
+  salonId: { type: String, required: true, index: true },
   deposit: { type: Number, default: 0 },
   role: { type: String, default: 'merchant' },
   passwordHash: { type: String, required: true },

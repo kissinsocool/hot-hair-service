@@ -264,13 +264,14 @@ module.exports = (app, ctx) => {
     const username = String(req.body.username || '').trim();
     const password = String(req.body.password || '');
     const displayName = String(req.body.displayName || '').trim();
-    const salonId = String(req.body.salonId || '1').trim();
+    const salonId = String(req.body.salonId || '').trim();
     const deposit = normalizeDeposit(req.body.deposit);
     const tagsError = validateSalonTags(req.body.tags);
   
     if (!username || !password || !displayName) {
       return res.status(400).json({ message: 'username, password and displayName are required' });
     }
+    if (!salonId) return res.status(400).json({ message: '请填写店铺 ID' });
     if (username.length > 100 || password.length > 128 || displayName.length > 100 || salonId.length > 100) {
       return res.status(400).json({ message: 'Merchant field is too long' });
     }
@@ -322,6 +323,9 @@ module.exports = (app, ctx) => {
     const deposit = req.body.deposit === undefined ? undefined : normalizeDeposit(req.body.deposit);
     const tagsError = validateSalonTags(req.body.tags);
 
+    if (!salonId && (req.body.salonId !== undefined || !String(user.salonId || '').trim())) {
+      return res.status(400).json({ message: '请填写店铺 ID' });
+    }
     if (username.length > 100 || displayName.length > 100 || salonId.length > 100 || password.length > 128) {
       return res.status(400).json({ message: 'Merchant field is too long' });
     }

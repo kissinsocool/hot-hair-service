@@ -1,3 +1,5 @@
+const { merchantHasSalon, merchantSalonError } = require('../services/auth');
+
 module.exports = (app, ctx) => {
   const {
     AdminUser,
@@ -37,7 +39,7 @@ module.exports = (app, ctx) => {
     }
   });
 
-  const passwordLogin = ({ path, Model, accountField, buildPayload }) => {
+  const passwordLogin = ({ path, Model, accountField, buildPayload, requireSalon = false }) => {
     app.post(path, ...rateLimits.login, async (req, res) => {
       const body = req.body || {};
       const account = String(body[accountField] || '').trim();
@@ -53,6 +55,9 @@ module.exports = (app, ctx) => {
       if (!await verifyPassword(password, user)) {
         return res.status(401).json({ message: '账号或密码错误' });
       }
+      if (requireSalon && !merchantHasSalon(user)) {
+        return res.status(403).json({ message: merchantSalonError });
+      }
       const session = await rotateSession(user);
       res.json({
         token: session.token,
@@ -67,6 +72,7 @@ module.exports = (app, ctx) => {
     Model: MerchantUser,
     accountField: 'username',
     buildPayload: buildMerchantUserPayload,
+    requireSalon: true,
   });
   passwordLogin({
     path: '/api/admin/auth/login',

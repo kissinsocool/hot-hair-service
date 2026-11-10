@@ -87,6 +87,7 @@ const {
   getWechatPhoneNumber,
   getWechatOpenId,
   hashSessionToken,
+  merchantHasSalon,
   normalizeUserId,
   sessionTokenFromRequest,
   userIdAliases,
@@ -307,7 +308,7 @@ const authenticateSocket = async (role, token) => {
   }
   if (role === 'merchant') {
     const user = await MerchantUser.findOne(activeSessionQuery(token)).select('salonId sessionExpiresAt').lean();
-    return user ? { role, salonId: user.salonId, sessionExpiresAt: user.sessionExpiresAt, sessionHash: hashSessionToken(token) } : null;
+    return merchantHasSalon(user) ? { role, salonId: user.salonId, sessionExpiresAt: user.sessionExpiresAt, sessionHash: hashSessionToken(token) } : null;
   }
   if (role === 'admin') {
     const user = await AdminUser.findOne(activeSessionQuery(token)).select('id sessionExpiresAt').lean();
@@ -1110,8 +1111,9 @@ const applyPendingContent = async (salon) => {
   salon.pendingContent = undefined;
 };
 
-const buildMerchantSalonPayload = async (salonId = '1') => {
+const buildMerchantSalonPayload = async (salonId) => {
   const salon = await Salon.findOne({ id: salonId });
+  if (!salon) return null;
   const payload = await buildSalonDetail(salon);
   const merged = {
     ...payload,
@@ -1146,7 +1148,7 @@ const buildMerchantSalonPayload = async (salonId = '1') => {
 };
 
 const ensureSalonForMerchant = async ({ salonId, displayName }) => {
-  const normalizedSalonId = String(salonId || '').trim() || `salon-${Date.now()}`;
+  const normalizedSalonId = String(salonId || '').trim();
   const existingSalon = await Salon.findOne({ id: normalizedSalonId });
   if (existingSalon) return existingSalon;
 

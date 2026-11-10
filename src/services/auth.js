@@ -30,6 +30,9 @@ const maskPhone = phone => phone.length === 11
   ? `${phone.slice(0, 3)}****${phone.slice(7)}`
   : phone;
 
+const merchantSalonError = '该商家账号未关联门店，请联系管理员';
+const merchantHasSalon = user => typeof user?.salonId === 'string' && user.salonId.trim().length > 0;
+
 const buildMerchantUserPayload = user => ({
   id: user.id,
   username: user.username,
@@ -253,15 +256,23 @@ const createAuthService = ({ revokeSessionHash = async () => {} } = {}) => {
       next();
     };
 
+  const requireMerchantSession = requireAuth({
+    Model: MerchantUser,
+    missing: 'Merchant login required',
+    expired: 'Merchant login expired',
+    requestKey: 'merchantUser',
+  });
+
   return {
     loginClientByPhone,
     logoutSession,
     rotateSession,
-    requireMerchantAuth: requireAuth({
-      Model: MerchantUser,
-      missing: 'Merchant login required',
-      expired: 'Merchant login expired',
-      requestKey: 'merchantUser',
+    requireMerchantAuth: (req, res, next) => requireMerchantSession(req, res, () => {
+      const logout = req.method === 'POST' && req.path === '/auth/logout';
+      if (!logout && !merchantHasSalon(req.merchantUser)) {
+        return res.status(403).json({ message: merchantSalonError });
+      }
+      return next();
     }),
     requireAdminAuth: requireAuth({
       Model: AdminUser,
@@ -291,6 +302,8 @@ module.exports = {
   getWechatPhoneNumber,
   getWechatOpenId,
   hashSessionToken,
+  merchantHasSalon,
+  merchantSalonError,
   normalizeUserId,
   sendWechatSubscribeMessage,
   sessionTokenFromRequest,

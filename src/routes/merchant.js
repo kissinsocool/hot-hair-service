@@ -248,7 +248,7 @@ module.exports = (app, ctx) => {
   });
   
   app.get('/api/merchant/qualification', async (req, res) => {
-    const salon = await Salon.findOne({ id: req.merchantUser.salonId || '1' }).lean();
+    const salon = await Salon.findOne({ id: req.merchantUser.salonId }).lean();
     if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
   
     res.json({
@@ -267,7 +267,7 @@ module.exports = (app, ctx) => {
   });
   
   app.patch('/api/merchant/qualification', async (req, res) => {
-    const salon = await Salon.findOne({ id: req.merchantUser.salonId || '1' });
+    const salon = await Salon.findOne({ id: req.merchantUser.salonId });
     if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
 
     const directObjects = [
@@ -314,11 +314,12 @@ module.exports = (app, ctx) => {
   });
   
   app.get('/api/merchant/salon', async (req, res) => {
-    const salonId = req.merchantUser.salonId || '1';
+    const salonId = req.merchantUser.salonId;
     const [salon, posts] = await Promise.all([
       buildMerchantSalonPayload(salonId),
       SalonPost.find({ salonId }).sort({ createdAt: -1, _id: -1 }).limit(50).lean(),
     ]);
+    if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
     res.json({
       ...salon,
       posts: posts.map(post => salonPostPayload(post, publicImageUrl)),
@@ -326,7 +327,7 @@ module.exports = (app, ctx) => {
   });
   
   app.patch('/api/merchant/salon', async (req, res) => {
-    const salon = await Salon.findOne({ id: req.merchantUser.salonId || '1' });
+    const salon = await Salon.findOne({ id: req.merchantUser.salonId });
     if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
   
     const payload = req.body || {};
@@ -371,11 +372,11 @@ module.exports = (app, ctx) => {
     }
     salon.contentSubmittedAt = new Date();
     await salon.save();
-    res.json(await buildMerchantSalonPayload(req.merchantUser.salonId || '1'));
+    res.json(await buildMerchantSalonPayload(req.merchantUser.salonId));
   });
 
   app.get('/api/merchant/salon-posts', async (req, res) => {
-    const salonId = req.merchantUser.salonId || '1';
+    const salonId = req.merchantUser.salonId;
     const pagination = normalizePagination(req.query);
     const [posts, total] = await Promise.all([
       SalonPost.find({ salonId }).sort({ createdAt: -1, _id: -1 })
@@ -389,7 +390,7 @@ module.exports = (app, ctx) => {
   app.post('/api/merchant/salon-posts', async (req, res) => {
     const parsed = validateSalonPostInput(req.body);
     if (parsed.error) return res.status(400).json({ message: parsed.error });
-    const salonId = req.merchantUser.salonId || '1';
+    const salonId = req.merchantUser.salonId;
     const salon = await Salon.findOne({ id: salonId }).select('staffIds services').lean();
     if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
     if (!(salon.staffIds || []).map(String).includes(parsed.value.authorStaffId)) {
@@ -424,7 +425,7 @@ module.exports = (app, ctx) => {
   app.delete('/api/merchant/salon-posts/:id', async (req, res) => {
     const deleted = await SalonPost.findOneAndDelete({
       id: req.params.id,
-      salonId: req.merchantUser.salonId || '1',
+      salonId: req.merchantUser.salonId,
     }).lean();
     if (!deleted) return res.status(404).json({ message: '动态不存在' });
     clearPublicSalonDetailCache(deleted.salonId);
