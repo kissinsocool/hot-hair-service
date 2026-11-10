@@ -1,12 +1,7 @@
-const path = require('path');
-
 const PORT = Number(process.env.PORT || 3000);
 const listenHost = process.env.LISTEN_HOST || '0.0.0.0';
 const publicBaseUrl = (process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
 const DEMO_USER_ID = 'demo';
-const uploadDir = path.join(__dirname, '..', 'uploads');
-const imageCacheDir = path.join(__dirname, '..', 'image-cache');
-const picturesDir = process.env.PICTURES_DIR || path.join(process.env.HOME || '', 'Pictures');
 const ossRegion = process.env.OSS_REGION || 'oss-cn-beijing';
 const ossBucket = process.env.OSS_BUCKET || 'hothairmedia';
 const ossPrivateBucket = process.env.OSS_PRIVATE_BUCKET || 'hothairprivate';
@@ -68,9 +63,6 @@ module.exports = {
   listenHost,
   publicBaseUrl,
   DEMO_USER_ID,
-  uploadDir,
-  imageCacheDir,
-  picturesDir,
   ossRegion,
   ossBucket,
   ossPrivateBucket,

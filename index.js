@@ -3,7 +3,6 @@ const dotenv = require('dotenv');
 dotenv.config({ path: path.join(__dirname, '.env') });
 const express = require('express');
 const cors = require('cors');
-const fs = require('fs');
 const http = require('http');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
@@ -11,9 +10,6 @@ const { WebSocket, WebSocketServer } = require('ws');
 const {
   PORT,
   listenHost,
-  uploadDir,
-  imageCacheDir,
-  picturesDir,
   amapWebServiceKey,
   publicBaseUrl,
   wechatAppId,
@@ -54,9 +50,7 @@ const {
   validateCampaignInput,
 } = require('./src/coupons');
 const {
-  compressedImageMiddleware,
   deleteModeratedImages,
-  imageExists,
   publishModeratedImage,
   createMerchantUploadPolicies,
   createModeratedUploadPolicies,
@@ -148,14 +142,7 @@ app.get('/ready', (_req, res) => {
     redis: redisReady ? 'up' : 'down',
   });
 });
-// 静态资源托管
-fs.mkdirSync(uploadDir, { recursive: true });
-fs.mkdirSync(imageCacheDir, { recursive: true });
-app.use('/cached-images', express.static(imageCacheDir));
-app.get(/^\/images\/(.+)/, compressedImageMiddleware(picturesDir));
-app.use('/images', express.static(picturesDir));
-app.get(/^\/uploads\/(.+)/, compressedImageMiddleware(uploadDir));
-app.use('/uploads', express.static(uploadDir));
+// Images are uploaded to and served from OSS; this process serves no files from local disk.
 
 const normalizeAdLink = (value) => {
   const link = String(value || '').trim();
@@ -751,17 +738,12 @@ const addApprovedSalonRatings = async (salons = []) => {
 const groupReviewsByStaff = salonDomain.groupReviewsByStaff;
 const buildSalonImageList = salonDomain.buildSalonImageList;
 
-const existingSalonImages = async (salon) => {
-  const images = buildSalonImageList(salon);
-  const exists = await Promise.all(images.map(imageExists));
-  return images.filter((_, index) => exists[index]).map(publicImageUrl);
-};
+const existingSalonImages = async salon => buildSalonImageList(salon).map(publicImageUrl);
 
 const salonCoverImage = async (salon) => {
-  const images = [salon?.image, ...buildSalonImageList(salon)]
-    .filter(image => typeof image === 'string' && image.trim());
-  const exists = await Promise.all(images.map(imageExists));
-  return publicImageUrl(images.find((_, index) => exists[index]) || '');
+  const cover = [salon?.image, ...buildSalonImageList(salon)]
+    .find(image => typeof image === 'string' && image.trim());
+  return publicImageUrl(cover || '');
 };
 
 const buildSalonDetail = async (salonDocument) => {

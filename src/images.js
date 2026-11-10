@@ -1,13 +1,7 @@
 const crypto = require('crypto');
-const fs = require('fs');
 const path = require('path');
 const OSS = require('ali-oss');
-const { execFile } = require('child_process');
-const { promisify } = require('util');
 const {
-  imageCacheDir,
-  picturesDir,
-  uploadDir,
   ossRegion,
   ossBucket,
   ossPrivateBucket,
@@ -22,10 +16,6 @@ const {
 const MODERATED_IMAGE_MAX_BYTES = 800 * 1024;
 const MERCHANT_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const MODERATED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
-
-const execFileAsync = promisify(execFile);
-const compressionJobs = new Map();
-let compressionQueue = Promise.resolve();
 
 const ossClient = ossEnabled
   ? new OSS({
@@ -46,82 +36,6 @@ const privateOssClient = ossEnabled
       accessKeySecret: process.env.OSS_ACCESS_KEY_SECRET,
     })
   : null;
-
-function compressedImageMiddleware(rootDir) {
-  return async (req, res, next) => {
-    try {
-      const relativePath = decodeURIComponent((req.params[0] || '').replace(/^\/+/, ''));
-      if (!/\.(jpe?g|png)$/i.test(relativePath)) return next();
-
-      const sourcePath = path.resolve(rootDir, relativePath);
-      if (!sourcePath.startsWith(path.resolve(rootDir) + path.sep)) return res.status(403).end();
-      const cachePath = await compressedImagePath(sourcePath, false);
-      if (!cachePath) return next();
-      res.type('jpg').sendFile(cachePath);
-    } catch (_) {
-      next();
-    }
-  };
-}
-
-async function compressedImagePath(sourcePath, waitForCompression = true) {
-  if (!/\.(jpe?g|png)$/i.test(sourcePath)) return '';
-
-  let stat;
-  try {
-    stat = await fs.promises.stat(sourcePath);
-  } catch {
-    return '';
-  }
-  const cacheName = crypto
-    .createHash('sha1')
-    .update(`${sourcePath}:${stat.mtimeMs}:${stat.size}`)
-    .digest('hex') + '.jpg';
-  const cachePath = path.join(imageCacheDir, cacheName);
-
-  try {
-    await fs.promises.access(cachePath);
-  } catch {
-    if (!compressionJobs.has(cachePath)) {
-      // ponytail: serialize local compression; move this queue to workers when upload throughput requires it.
-      const compression = compressionQueue.then(() =>
-        execFileAsync('sips', ['-Z', '900', '-s', 'format', 'jpeg', '-s', 'formatOptions', '72', sourcePath, '--out', cachePath])
-      );
-      compressionQueue = compression.catch(() => {});
-      const job = compression
-        .then(() => cachePath)
-        .catch(() => '')
-        .finally(() => compressionJobs.delete(cachePath));
-      compressionJobs.set(cachePath, job);
-    }
-    return waitForCompression ? compressionJobs.get(cachePath) : '';
-  }
-
-  return cachePath;
-}
-
-const localImagePath = (url) => {
-  try {
-    const parsed = new URL(url);
-    const publicOrigin = new URL(publicBaseUrl).origin;
-    if (parsed.origin !== publicOrigin) return '';
-    const pathname = decodeURIComponent(parsed.pathname);
-    if (pathname.startsWith('/uploads/')) return path.join(uploadDir, pathname.slice('/uploads/'.length));
-    if (pathname.startsWith('/images/')) return path.join(picturesDir, pathname.slice('/images/'.length));
-  } catch (_) {}
-  return '';
-};
-
-const imageExists = async (url) => {
-  const filePath = localImagePath(url);
-  if (!filePath) return true;
-  try {
-    await fs.promises.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 const publicOssOrigin = `https://${ossBucket}.${ossRegion}.aliyuncs.com`;
 const publicImageUrl = (url) => {
@@ -353,10 +267,8 @@ const privateImageUrl = (objectName, expires = 600) => {
 };
 
 module.exports = {
-  compressedImageMiddleware,
   createMerchantUploadPolicies,
   createModeratedUploadPolicies,
-  imageExists,
   publicImageUrl,
   deleteModeratedImages,
   publishModeratedImage,
