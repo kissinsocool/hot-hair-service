@@ -62,6 +62,13 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       sessionTokenHash: session.tokenHash, sessionExpiresAt: session.expiresAt });
   }
 
+  test('analytics event retention uses a 180-day TTL index', async () => {
+    const indexes = await models.AnalyticsEvent.collection.indexes();
+    expect(indexes).toContainEqual(expect.objectContaining({
+      key: { createdAt: 1 }, expireAfterSeconds: 15_552_000,
+    }));
+  });
+
   test('phone login query uses the account and phone indexes', async () => {
     const phone = '13900000000';
     const id = 'legacy-phone-index';

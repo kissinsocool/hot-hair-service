@@ -495,6 +495,7 @@ const analyticsEventSchema = new mongoose.Schema({
 }, { id: false });
 
 analyticsEventSchema.index({ name: 1, createdAt: -1 });
+analyticsEventSchema.index({ createdAt: 1 }, { expireAfterSeconds: 180 * 24 * 60 * 60 });
 
 const reviewHelpfulSchema = new mongoose.Schema({
   bookingId: { type: String, required: true },
