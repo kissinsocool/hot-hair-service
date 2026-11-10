@@ -114,8 +114,19 @@ if (trustProxyHops > 0) app.set('trust proxy', trustProxyHops);
 // Set once a shutdown signal arrives: /ready reports 503 and responses ask clients to drop keep-alive connections.
 let shuttingDown = false;
 app.use(requestLogger);
-app.use((_req, res, next) => {
+// Behind a reverse proxy every request must carry the real client address, or all clients share one rate-limit
+// bucket and one WebSocket quota. Warn once when a proxy header arrives while no proxy hop is trusted.
+let untrustedProxyWarned = false;
+app.use((req, res, next) => {
   if (shuttingDown) res.set('Connection', 'close');
+  if (!untrustedProxyWarned && trustProxyHops === 0 && req.headers['x-forwarded-for']) {
+    untrustedProxyWarned = true;
+    console.warn(JSON.stringify({
+      level: 'warn',
+      event: 'proxy_not_trusted',
+      message: 'X-Forwarded-For received but TRUST_PROXY_HOPS is 0: rate limits see the proxy address. Set NODE_ENV=production or TRUST_PROXY_HOPS=1.',
+    }));
+  }
   next();
 });
 app.use(cors({
@@ -1528,6 +1539,15 @@ const startServer = async () => {
 
   server.listen(PORT, listenHost, () => {
     console.log(`Backend running at http://localhost:${PORT}`);
+    // Values only an operator can check on the server; no secrets.
+    console.log(JSON.stringify({
+      level: 'info',
+      event: 'startup_config',
+      nodeEnv: process.env.NODE_ENV || '',
+      listenHost,
+      trustProxyHops,
+      rateLimitStore: redisConnected ? 'redis' : 'memory',
+    }));
   });
 
   void runBookingCompletion();
