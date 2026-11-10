@@ -420,6 +420,7 @@ const clientUserSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 clientUserSchema.index({ createdAt: -1 });
+clientUserSchema.index({ phone: 1 });
 
 const adConfigSchema = new mongoose.Schema({
   key: { type: String, required: true, unique: true, default: 'main' },

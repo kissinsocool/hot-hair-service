@@ -62,6 +62,20 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       sessionTokenHash: session.tokenHash, sessionExpiresAt: session.expiresAt });
   }
 
+  test('phone login query uses the account and phone indexes', async () => {
+    const phone = '13900000000';
+    const id = 'legacy-phone-index';
+    await ClientUser.create({ id, account: id, phone, authProvider: 'wechat' });
+    try {
+      const filter = { $or: [{ account: phone }, { phone }] };
+      expect((await ClientUser.findOne(filter).lean()).id).toBe(id);
+      const plan = await ClientUser.findOne(filter).explain('queryPlanner');
+      const winningPlan = JSON.stringify(plan.queryPlanner.winningPlan);
+      expect(winningPlan).toContain('"indexName":"account_1"');
+      expect(winningPlan).toContain('"indexName":"phone_1"');
+    } finally { await ClientUser.deleteOne({ id }); }
+  });
+
   test('new expected-price contract rolls back coupon, occupancy, policy and salon fence before reconfirmation', async () => {
     const input = { staffId: 'staff-1', salonId: 'salon-1', serviceId: 'service-1', startTime: '2030-01-01T10:00:00', couponId: 'coupon-1', expectedOriginalAmountFen: 8000, expectedPayableAmountFen: 5000 };
     const changed = await request('client', '/bookings', input, 'POST');
