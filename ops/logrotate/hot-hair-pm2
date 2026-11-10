@@ -1,0 +1,18 @@
+# PM2 application logs of hot-hair-service. Installed as /etc/logrotate.d/hot-hair-pm2 (see docs/server-limits-and-log-rotation.md).
+# The backend writes one JSON line per request to stdout, so without rotation these files grow until the disk
+# shared with MongoDB is full. System logrotate runs once a day and adds no resident process.
+/root/.pm2/logs/*.log {
+    su root root
+    daily
+    rotate 14
+    maxsize 50M
+    missingok
+    notifempty
+    # PM2 keeps the log files open; copy then truncate so it needs no signal or restart.
+    copytruncate
+    compress
+    # Leave yesterday's file uncompressed so it can still be read with tail/grep.
+    delaycompress
+    dateext
+    dateformat -%Y%m%d
+}
