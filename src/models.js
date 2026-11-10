@@ -275,6 +275,8 @@ const userPolicySchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true, index: true },
   noShowCount: { type: Number, default: 0 },
   isBlacklisted: { type: Boolean, default: false },
+  // Bumped inside every booking-creation transaction so one client's parallel submissions serialize.
+  bookingCreationFence: { type: Number, select: false },
   updatedAt: Date,
 }, { timestamps: true });
 

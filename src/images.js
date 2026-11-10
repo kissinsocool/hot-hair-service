@@ -7,7 +7,6 @@ const { promisify } = require('util');
 const {
   imageCacheDir,
   picturesDir,
-  publicBaseUrl,
   uploadDir,
   ossRegion,
   ossBucket,

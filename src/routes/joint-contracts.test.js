@@ -30,6 +30,7 @@ function creationHarness(servicePricing = {}) {
     return doc;
   }
   Model.exists = async () => false;
+  Model.countDocuments = () => ({ session: async () => 0 });
   const ctx = {
     Booking: Model, crypto, rateLimits: limits, INPUT_LIMITS: { note: 500 },
     mongoose: { async startSession() { return session; } },

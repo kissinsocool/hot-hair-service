@@ -3,6 +3,7 @@ const bookingService = require('../services/booking');
 const bookingMessages = require('../services/booking-messages');
 const { normalizeReviewTags, resolveServiceTagIds } = require('../services/salon');
 const { bookingEvent, recordAnalyticsEvent } = require('../services/analytics');
+const { maxActiveBookingsPerUser } = require('../config');
 const {
   generateBookingId,
   isDuplicateSlotError,
@@ -559,6 +560,17 @@ module.exports = (app, ctx) => {
         const userPolicy = await getUserPolicy(userId, session);
         if (userPolicy.isBlacklisted) {
           throw transactionError(403, '该账号已因爽约次数过多被拉黑，无法继续预约。');
+        }
+        // getUserPolicy wrote this client's fence above, so parallel submissions cannot both pass this count.
+        const activeBookings = await Booking.countDocuments({
+          userId: { $in: userIdAliases(userId) },
+          status: { $in: ['pending', 'accepted'] },
+        }).session(session);
+        if (activeBookings >= maxActiveBookingsPerUser) {
+          throw transactionError(
+            409,
+            `您已有${activeBookings}个进行中的预约，最多同时保留${maxActiveBookingsPerUser}个，请先完成或取消后再预约`,
+          );
         }
         if (!isNoPreference) {
           await reserveBookingSlot(bookingId, bookingStaffId, requestedStartTime, serviceDurationMinutes, session);

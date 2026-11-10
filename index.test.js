@@ -3753,6 +3753,8 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
   let legacyServiceTags = [];
   let staffFeeFen = 0;
   let minimumSpendFen = 9900;
+  let activeBookings = 0;
+  let activeBookingQuery;
   class Booking {
     constructor(value) { Object.assign(this, value); }
     async save(options) {
@@ -3760,6 +3762,10 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
       savedBooking = this;
     }
     static async exists() { return false; }
+    static countDocuments(query) {
+      activeBookingQuery = query;
+      return { async session(value) { assert.equal(value, session); return activeBookings; } };
+    }
   }
 
   registerClientBookingRoutes(app, {
@@ -3930,6 +3936,28 @@ test('booking creation atomically reserves an eligible claimed coupon', async ()
   });
   assert.equal(status, 409);
   assert.match(response.message, /下架/);
+
+  // A client already holding the maximum number of pending or accepted bookings cannot reserve more slots.
+  onlineInTransaction = true;
+  activeBookings = 5;
+  savedBooking = undefined;
+  status = 200;
+  await routes.get('/api/bookings')(request, {
+    status(value) { status = value; return this; }, json(value) { response = value; },
+  });
+  assert.equal(status, 409);
+  assert.match(response.message, /最多同时保留5个/);
+  assert.equal(savedBooking, undefined);
+  assert.deepEqual(activeBookingQuery, {
+    userId: { $in: ['user-1'] },
+    status: { $in: ['pending', 'accepted'] },
+  });
+  activeBookings = 4;
+  status = 200;
+  await routes.get('/api/bookings')(request, {
+    status(value) { status = value; return this; }, json(value) { response = value; },
+  });
+  assert.equal(status, 201);
 });
 
 test('completing a booking atomically redeems its reserved coupon', async () => {

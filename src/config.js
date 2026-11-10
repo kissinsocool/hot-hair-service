@@ -41,6 +41,17 @@ const positiveInteger = (value, fallback) => {
 const wsMaxConnections = positiveInteger(process.env.WS_MAX_CONNECTIONS, 5000);
 const wsMaxConnectionsPerIp = positiveInteger(process.env.WS_MAX_CONNECTIONS_PER_IP, 20);
 const sessionTtlSeconds = Math.min(positiveInteger(process.env.SESSION_TTL_SECONDS, 7 * 24 * 60 * 60), 30 * 24 * 60 * 60);
+const nonNegativeNumber = (value, fallback) => {
+  if (value === undefined || value === '') return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : fallback;
+};
+// Pending and accepted bookings one client may hold at once. Pending requests already reserve stylist slots,
+// so without a cap a single account could fill a salon's whole schedule.
+const maxActiveBookingsPerUser = positiveInteger(process.env.MAX_ACTIVE_BOOKINGS_PER_USER, 5);
+// A pending booking the merchant has not handled within this many hours is released.
+// 0 turns the time limit off; pending bookings whose start time has passed are always released.
+const pendingBookingTimeoutHours = nonNegativeNumber(process.env.PENDING_BOOKING_TIMEOUT_HOURS, 24);
 const requireQualificationForPublishing = String(
   process.env.REQUIRE_QUALIFICATION_FOR_PUBLISHING || '',
 ).toLowerCase() === 'true';
@@ -79,6 +90,8 @@ module.exports = {
   wsMaxConnections,
   wsMaxConnectionsPerIp,
   sessionTtlSeconds,
+  maxActiveBookingsPerUser,
+  pendingBookingTimeoutHours,
   requireQualificationForPublishing,
   businessTimeZone,
   businessUtcOffset,

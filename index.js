@@ -23,6 +23,7 @@ const {
   wsMaxConnections,
   wsMaxConnectionsPerIp,
   requireQualificationForPublishing,
+  pendingBookingTimeoutHours,
   isAllowedOrigin,
 } = require('./src/config');
 const {
@@ -97,7 +98,7 @@ const {
   userIdAliases,
 } = authDomain;
 const { sendBookingAcceptedNotification } = require('./src/services/wechat-subscriptions');
-const { completeDueBookings } = require('./src/services/auto-complete-bookings');
+const { completeDueBookings, expirePendingBookings } = require('./src/services/auto-complete-bookings');
 
 const app = express();
 const server = http.createServer(app);
@@ -665,10 +666,15 @@ const normalizeMerchantBooking = booking => normalizeBookingPayload(booking, tru
 const USER_CANCEL_WINDOW_MS = 3 * 60 * 60 * 1000;
 const BLACKLIST_NO_SHOW_LIMIT = 3;
 
+// Called inside the booking-creation transaction. The fence write makes parallel submissions by one client
+// conflict, so the active-booking cap counted in that transaction cannot be passed by a burst of requests.
 const getUserPolicy = async (userId, session) =>
   UserPolicy.findOneAndUpdate(
     { userId },
-    { $setOnInsert: { userId, noShowCount: 0, isBlacklisted: false } },
+    {
+      $setOnInsert: { userId, noShowCount: 0, isBlacklisted: false },
+      $inc: { bookingCreationFence: 1 },
+    },
     { upsert: true, new: true, setDefaultsOnInsert: true, session },
   );
 
@@ -1525,6 +1531,7 @@ const startServer = async () => {
     ReviewHelpful.createIndexes(),
     BookingMessage.createIndexes(),
     SlotOccupancy.createIndexes(),
+    UserPolicy.createIndexes(),
     ClientUser.createIndexes(),
     MerchantUser.createIndexes(),
     Salon.createIndexes(),
@@ -1550,11 +1557,16 @@ let bookingCompletionRun = null;
 let bookingCompletionTimer;
 const runBookingCompletion = () => {
   if (bookingCompletionRun || shuttingDown) return bookingCompletionRun;
-  bookingCompletionRun = completeDueBookings({
+  const dependencies = {
     mongoose, Booking, BookingMessage, SlotOccupancy, UserCoupon,
     AnalyticsEvent, broadcastBookingEvent,
-  })
+  };
+  bookingCompletionRun = completeDueBookings(dependencies)
     .catch(error => console.error('Automatic booking completion failed:', error))
+    .then(() => expirePendingBookings(dependencies, new Date(), {
+      timeoutMs: pendingBookingTimeoutHours * 60 * 60 * 1000,
+    }))
+    .catch(error => console.error('Pending booking expiry failed:', error))
     .finally(() => { bookingCompletionRun = null; });
   return bookingCompletionRun;
 };
@@ -1628,6 +1640,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  getUserPolicy,
   gracefulShutdown,
   activeSessionQuery,
   acceptedBookingAtTimeQuery,

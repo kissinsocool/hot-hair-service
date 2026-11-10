@@ -6,14 +6,14 @@ const WebSocket = require('ws');
 const models = require('../models');
 const { createSession } = require('../services/auth');
 const { occupiedSlotStarts } = require('../services/booking');
-const { completeDueBookings } = require('../services/auto-complete-bookings');
+const { completeDueBookings, expirePendingBookings } = require('../services/auto-complete-bookings');
 // Fixtures insert approved reviews directly, so they refresh stored ratings the way moderation routes do.
 const { refreshStaffRatingSummaries } = require('../services/staff-ratings');
 // This in-process test server exercises many writes without waiting for production rate windows.
 const rateLimitToken = crypto.randomBytes(32).toString('hex');
 process.env.LOAD_TEST_BYPASS_ENABLED = 'true';
 process.env.LOAD_TEST_BYPASS_TOKEN = rateLimitToken;
-const { server } = require('../../index');
+const { server, getUserPolicy } = require('../../index');
 const { Booking, BookingMessage, SlotOccupancy, Salon, StaffProfile, ClientUser, MerchantUser, AdminUser, UserCoupon, UserPolicy, ReviewHelpful } = models;
 const uri = String(process.env.TEST_MONGODB_URI || '').trim();
 const describeWithMongo = uri ? describe : describe.skip;
@@ -53,6 +53,13 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       headers: { Authorization: `Bearer ${sessions[role].token}`, 'Content-Type': 'application/json', 'x-load-test-token': rateLimitToken },
       ...(body ? { body: JSON.stringify(body) } : {}) });
     return { status: res.status, body: await res.json(), total: res.headers.get('x-total-count') };
+  }
+
+  async function createClient(id) {
+    const session = createSession();
+    sessions[id] = session;
+    await ClientUser.create({ id, account: id, authProvider: 'wechat',
+      sessionTokenHash: session.tokenHash, sessionExpiresAt: session.expiresAt });
   }
 
   test('new expected-price contract rolls back coupon, occupancy, policy and salon fence before reconfirmation', async () => {
@@ -867,6 +874,7 @@ describeWithMongo('three-client booking contracts against a real replica set', (
   });
 
   test('restricted package saves multiple selectable staff and validates slots, prices and bookings', async () => {
+    await createClient('package-client');
     await StaffProfile.create([
       { id: 'restricted-staff', name: 'Stylist', roleId: 'designer', extraServiceFeeFen: 2000 },
       { id: 'restricted-staff-2', name: 'Stylist 2', roleId: 'designer', extraServiceFeeFen: 1000 },
@@ -881,14 +889,14 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     await MerchantUser.create({ id: 'restricted-merchant', username: 'restricted-merchant', account: '13800000004',
       salonId: 'restricted-salon', passwordHash: 'fixture', passwordSalt: 'fixture',
       sessionTokenHash: sessions.restrictedMerchant.tokenHash, sessionExpiresAt: sessions.restrictedMerchant.expiresAt });
-    const detail = await request('client', '/salons/restricted-salon');
+    const detail = await request('package-client', '/salons/restricted-salon');
     expect(detail.status).toBe(200);
     expect(detail.body.services[0].staffSelectionRestricted).toBe(true);
     const input = { salonId: 'restricted-salon', serviceId: 'restricted-service',
       staffId: 'restricted-staff', startTime: '2030-01-06T10:00:00',
       expectedOriginalAmountFen: 8000, expectedPayableAmountFen: 8000 };
-    expect((await request('client', '/bookings', input, 'POST')).status).toBe(409);
-    const created = await request('client', '/bookings', { ...input, staffId: '__no_preference__' }, 'POST');
+    expect((await request('package-client', '/bookings', input, 'POST')).status).toBe(409);
+    const created = await request('package-client', '/bookings', { ...input, staffId: '__no_preference__' }, 'POST');
     expect(created.status).toBe(201);
     const stored = await Booking.findOne({ id: created.body.booking.id }).lean();
     expect(stored.isNoPreference).toBe(true);
@@ -897,25 +905,25 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     const saved = await request('restrictedMerchant', '/merchant/salon', { services: [service] }, 'PATCH');
     expect(saved.status).toBe(200);
     expect(saved.body.services[0].selectableStaffIds).toEqual(service.selectableStaffIds);
-    const published = await request('client', '/salons/restricted-salon');
+    const published = await request('package-client', '/salons/restricted-salon');
     expect(published.body.services[0].selectableStaffIds).toEqual(service.selectableStaffIds);
     for (const id of ['restricted-staff', 'restricted-staff-2', 'restricted-staff-3']) {
-      const slots = await request('client', `/staff/${id}/slots?date=2030-01-06&serviceId=restricted-service`);
+      const slots = await request('package-client', `/staff/${id}/slots?date=2030-01-06&serviceId=restricted-service`);
       expect(slots.status).toBe(id === 'restricted-staff-3' ? 409 : 200);
     }
-    const denied = await request('client', '/bookings', { ...input, staffId: 'restricted-staff-3' }, 'POST');
+    const denied = await request('package-client', '/bookings', { ...input, staffId: 'restricted-staff-3' }, 'POST');
     expect(denied.status).toBe(409);
-    const stalePrice = await request('client', '/bookings', input, 'POST');
+    const stalePrice = await request('package-client', '/bookings', input, 'POST');
     expect(stalePrice.status).toBe(409);
     expect(stalePrice.body.code).toBe('BOOKING_PRICE_CHANGED');
-    const selected = await request('client', '/bookings', { ...input, expectedOriginalAmountFen: 10000, expectedPayableAmountFen: 10000 }, 'POST');
+    const selected = await request('package-client', '/bookings', { ...input, expectedOriginalAmountFen: 10000, expectedPayableAmountFen: 10000 }, 'POST');
     expect(selected.status).toBe(201);
     expect(selected.body.booking.staffId).toBe('restricted-staff');
     expect(selected.body.booking.staffExtraServiceFeeFen).toBe(2000);
     expect(selected.body.booking.isNoPreference).toBe(false);
     const disabled = await request('restrictedMerchant', '/merchant/salon', { services: [{ ...service, staffSelectionRestricted: false }] }, 'PATCH');
     expect(disabled.status).toBe(200);
-    const unrestrictedSlots = await request('client', '/staff/restricted-staff-3/slots?date=2030-01-06&serviceId=restricted-service');
+    const unrestrictedSlots = await request('package-client', '/staff/restricted-staff-3/slots?date=2030-01-06&serviceId=restricted-service');
     expect(unrestrictedSlots.status).toBe(200);
     const editor = await request('restrictedMerchant', '/merchant/salon');
     const pending = await request('restrictedMerchant', '/merchant/salon', { staff: [
@@ -931,10 +939,172 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect(pendingSelection.status).toBe(200);
     const approved = await request('admin', '/admin/merchants/restricted-merchant/content', { action: 'approve' }, 'PATCH');
     expect(approved.status).toBe(200);
-    const approvedSalon = await request('client', '/salons/restricted-salon');
+    const approvedSalon = await request('package-client', '/salons/restricted-salon');
     const approvedStaff = approvedSalon.body.staff.find(profile => profile.name === '待审核理发师');
     expect(approvedStaff.id).not.toBe(pendingStaff.id);
     expect(approvedSalon.body.services[0].selectableStaffIds).toEqual([approvedStaff.id]);
+  });
+
+  test('user policy upserts increment the hidden fence and merchant responses never expose it', async () => {
+    const userId = 'policy-fence-client';
+    const session = await mongoose.startSession();
+    try {
+      for (const count of [1, 2]) {
+        await session.withTransaction(async () => {
+          const policy = await getUserPolicy(userId, session);
+          expect(policy.toObject()).toMatchObject({ userId, noShowCount: 0, isBlacklisted: false,
+            createdAt: expect.any(Date), updatedAt: expect.any(Date) });
+          expect(policy.toObject()).not.toHaveProperty('bookingCreationFence');
+        });
+        expect((await UserPolicy.findOne({ userId }).select('+bookingCreationFence').lean()).bookingCreationFence).toBe(count);
+      }
+    } finally { await session.endSession(); }
+    await Booking.create({ id: 'policy-no-show', userId, salonId: 'salon-1', serviceId: 'service-1',
+      status: 'accepted', startTime: new Date('2030-01-06T15:00:00+08:00') });
+    const response = await request('merchant', '/merchant/bookings/policy-no-show',
+      { action: 'no_show', reason: '用户未到店' }, 'PATCH');
+    expect(response.status).toBe(200);
+    expect(response.body.userPolicy).toMatchObject({ noShowCount: 1, isBlacklisted: false });
+    expect(response.body.userPolicy).not.toHaveProperty('bookingCreationFence');
+    expect((await UserPolicy.findOne({ userId }).select('+bookingCreationFence').lean()).bookingCreationFence).toBe(2);
+  });
+
+  async function createBookingCoupon(userId, id) {
+    await UserCoupon.create({ id, userId, campaignKey: 'fixture', couponType: id,
+      minimumSpendFen: 5000, discountFen: 1000, title: 'Fixture coupon',
+      grantedAt: new Date(), claimedAt: new Date(),
+      validFrom: new Date('2020-01-01'), validUntil: new Date('2035-01-01') });
+  }
+
+  test('eight concurrent bookings across salons hold at most five slots and coupons, and cancellation restores capacity', async () => {
+    const userId = 'capacity-client';
+    await createClient(userId);
+    await StaffProfile.create(Array.from({ length: 8 }, (_, index) => ({
+      id: `capacity-staff-${index}`, name: 'Stylist', roleId: 'designer',
+    })));
+    await Salon.create(Array.from({ length: 8 }, (_, index) => ({
+      id: `capacity-salon-${index}`, name: 'Capacity salon', publishStatus: 'online',
+      openingHours: '09:00-20:00', staffIds: [`capacity-staff-${index}`],
+      services: [{ id: 'cut', name: 'Cut', tagIds: ['wash_cut_blow'], priceFen: 8000, durationMinutes: 60 }],
+    })));
+    const inputs = Array.from({ length: 8 }, (_, index) => ({
+      staffId: `capacity-staff-${index}`, salonId: `capacity-salon-${index}`,
+      serviceId: 'cut', startTime: `2030-02-01T${10 + index}:00:00+08:00`, couponId: `capacity-coupon-${index}`,
+    }));
+    await Promise.all(inputs.map(({ couponId }) => createBookingCoupon(userId, couponId)));
+    const submit = input => request(userId, '/bookings', input, 'POST');
+    const responses = await Promise.all(inputs.map(submit));
+    expect(responses.map(result => result.status).sort()).toEqual([201, 201, 201, 201, 201, 409, 409, 409]);
+    const active = { userId, status: { $in: ['pending', 'accepted'] } };
+    expect(await Booking.countDocuments(active)).toBe(5);
+    expect(await BookingMessage.countDocuments({ userId })).toBe(5);
+    for (const [index, { status, body }] of responses.entries()) {
+      const { staffId, couponId } = inputs[index];
+      const occupancy = await SlotOccupancy.findOne({ staffId }).lean();
+      const coupon = await UserCoupon.findOne({ id: couponId }).lean();
+      if (status === 201) {
+        expect(occupancy.bookingId).toBe(body.booking.id);
+        expect(coupon.reservedBookingId).toBe(body.booking.id);
+      } else {
+        expect(body.message).toContain('最多同时保留5个');
+        expect(occupancy).toBeNull();
+        expect(coupon.reservedBookingId).toBe('');
+        expect(coupon.reservedAt).toBeUndefined();
+      }
+    }
+
+    const created = responses.find(result => result.status === 201).body.booking.id;
+    // An accepted booking occupies capacity too.
+    await Booking.updateOne({ id: created }, { $set: { status: 'accepted' } });
+    const blockedInput = inputs[responses.findIndex(result => result.status === 409)];
+    expect(await submit(blockedInput)).toMatchObject({ status: 409, body: { message: expect.stringContaining('最多同时保留5个') } });
+    expect((await request(userId, `/bookings/${created}/cancel`, {}, 'PATCH')).status).toBe(200);
+    expect((await submit(blockedInput)).status).toBe(201);
+    expect(await Booking.countDocuments(active)).toBe(5);
+  });
+
+  test('pending expiry releases occupancy and coupons atomically, leaving fresh and accepted bookings alone', async () => {
+    const userId = 'expiry-client';
+    await createClient(userId);
+    await createBookingCoupon(userId, 'expiry-coupon');
+    await StaffProfile.create({ id: 'expiry-staff', name: 'Stylist', roleId: 'designer' });
+    await Salon.create({ id: 'expiry-salon', name: 'Expiry salon', publishStatus: 'online',
+      openingHours: '09:00-20:00', staffIds: ['expiry-staff'],
+      services: [{ id: 'cut', name: 'Cut', tagIds: ['wash_cut_blow'], priceFen: 8000, durationMinutes: 60 }],
+    });
+    const now = new Date('2030-03-01T02:00:00Z');
+    const input = { salonId: 'expiry-salon', staffId: 'expiry-staff', serviceId: 'cut',
+      startTime: '2030-03-02T10:00:00+08:00', couponId: 'expiry-coupon',
+      expectedOriginalAmountFen: 8000, expectedPayableAmountFen: 7000 };
+    const response = await request(userId, '/bookings', input, 'POST');
+    expect(response.status).toBe(201);
+    const expiredId = response.body.booking.id;
+    await Booking.updateOne({ id: expiredId }, { $set: { createdAt: new Date('2030-02-27T02:00:00Z') } },
+      { timestamps: false, overwriteImmutable: true });
+
+    const started = new Date('2030-03-01T01:00:00Z');
+    await Booking.create([
+      { id: 'expiry-started', status: 'pending', startTime: started, createdAt: started },
+      { id: 'expiry-fresh', status: 'pending', startTime: new Date('2030-03-02'), createdAt: started },
+      { id: 'expiry-accepted', status: 'accepted', startTime: started, createdAt: started },
+    ].map(value => ({ userId, serviceId: 'cut', ...value })));
+    await SlotOccupancy.create({ bookingId: 'expiry-started', staffId: input.staffId,
+      startTime: started, slots: occupiedSlotStarts(started, 60) });
+
+    const broadcastBookingEvent = jest.fn();
+    const dependencies = { mongoose, ...models, broadcastBookingEvent };
+    const options = { timeoutMs: 24 * 60 * 60 * 1000 };
+    await expirePendingBookings(dependencies, now, options);
+    expect(await Booking.findOne({ id: 'expiry-started' }).lean()).toMatchObject({
+      status: 'rejected', rejectReason: expect.stringContaining('预约时间已到'),
+    });
+    expect(await Booking.findOne({ id: expiredId }).lean()).toMatchObject({
+      status: 'rejected', rejectReason: expect.stringContaining('长时间未确认'),
+      userMessage: expect.any(String), merchantMessage: expect.any(String),
+      couponId: '', couponCode: '', couponTitle: '', couponDiscountFen: 0,
+      originalAmountFen: 8000, payableAmountFen: 8000, couponRedeemedAt: null,
+    });
+    expect((await Booking.findOne({ id: 'expiry-fresh' }).lean()).status).toBe('pending');
+    expect((await Booking.findOne({ id: 'expiry-accepted' }).lean()).status).toBe('accepted');
+    expect(await SlotOccupancy.countDocuments({ bookingId: { $in: [expiredId, 'expiry-started'] } })).toBe(0);
+    for (const id of [expiredId, 'expiry-started']) {
+      expect(await BookingMessage.countDocuments({ bookingId: id, type: 'reject', status: 'rejected' })).toBe(1);
+      expect(broadcastBookingEvent).toHaveBeenCalledWith('booking.updated', expect.objectContaining({ id, status: 'rejected' }));
+    }
+    expect(await expirePendingBookings(dependencies, now, options)).toBe(0);
+    const coupons = await request(userId, '/auth/coupons');
+    expect(coupons.body).toEqual([expect.objectContaining({ id: input.couponId, status: 'available' })]);
+    expect((await request(userId, '/bookings', input, 'POST')).status).toBe(201);
+  });
+
+  test('merchant acceptance and pending expiry commit exactly one transition', async () => {
+    const id = 'expiry-accept-race';
+    const startTime = new Date('2030-03-05T02:00:00Z');
+    await Booking.create({ id, userId: 'expiry-client', salonId: 'salon-1', serviceId: 'service-1',
+      staffId: 'staff-1', staffName: 'Stylist', status: 'pending', startTime,
+      serviceDurationMinutes: 60 });
+    await SlotOccupancy.create({ bookingId: id, staffId: 'staff-1', startTime,
+      slots: occupiedSlotStarts(startTime, 60) });
+    const broadcastBookingEvent = jest.fn();
+    const [accepted] = await Promise.all([
+      request('merchant', `/merchant/bookings/${id}`, { action: 'accept' }, 'PATCH'),
+      expirePendingBookings({ mongoose, ...models, broadcastBookingEvent }, startTime),
+    ]);
+    const stored = await Booking.findOne({ id }).lean();
+    const messages = await BookingMessage.find({ bookingId: id }).lean();
+    expect(messages).toHaveLength(1);
+    if (accepted.status === 200) {
+      expect(stored.status).toBe('accepted');
+      expect(messages[0].type).toBe('accept');
+      expect(await SlotOccupancy.countDocuments({ bookingId: id })).toBe(1);
+      expect(broadcastBookingEvent).not.toHaveBeenCalledWith('booking.updated', expect.objectContaining({ id }));
+    } else {
+      expect(accepted.status).toBe(409);
+      expect(stored.status).toBe('rejected');
+      expect(messages[0].type).toBe('reject');
+      expect(await SlotOccupancy.countDocuments({ bookingId: id })).toBe(0);
+      expect(broadcastBookingEvent).toHaveBeenCalledWith('booking.updated', expect.objectContaining({ id }));
+    }
   });
 
   test('logout closes the old merchant websocket and revokes all three role tokens', async () => {
