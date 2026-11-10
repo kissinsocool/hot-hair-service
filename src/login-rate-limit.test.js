@@ -29,3 +29,32 @@ test('requests without an account field are not counted by the account limiter',
     assert.equal(await attempt('192.0.2.30', { code: 'wechat-code' }, '/api/auth/wechat/phone'), 200);
   }
 });
+
+test('both password login routes verify credentials even if the account is absent', async () => {
+  const registerAuth = require('./routes/auth-entry');
+  const routes = new Map();
+  const checked = [];
+  const missingAccount = { async findOne() { return null; } };
+  registerAuth({ post(path, ...handlers) { routes.set(path, handlers.at(-1)); } }, {
+    AdminUser: missingAccount,
+    MerchantUser: missingAccount,
+    rateLimits: { login: [] },
+    async verifyPassword(password, user) {
+      checked.push({ password, user });
+      return false;
+    },
+  });
+  for (const path of ['/api/admin/auth/login', '/api/merchant/auth/login']) {
+    const res = {
+      status(code) { this.statusCode = code; return this; },
+      json(body) { this.body = body; },
+    };
+    await routes.get(path)({ body: { username: 'absent', password: 'guess' } }, res);
+    assert.equal(res.statusCode, 401);
+    assert.deepEqual(res.body, { message: '账号或密码错误' });
+  }
+  assert.deepEqual(checked, [
+    { password: 'guess', user: null },
+    { password: 'guess', user: null },
+  ]);
+});

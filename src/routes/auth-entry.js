@@ -50,7 +50,7 @@ module.exports = (app, ctx) => {
       }
 
       const user = await Model.findOne({ [accountField]: account });
-      if (!user || !await verifyPassword(password, user)) {
+      if (!await verifyPassword(password, user)) {
         return res.status(401).json({ message: '账号或密码错误' });
       }
       const session = await rotateSession(user);

@@ -2,6 +2,10 @@ const crypto = require('crypto');
 const { promisify } = require('util');
 
 const pbkdf2 = promisify(crypto.pbkdf2);
+const dummyCredentials = {
+  passwordSalt: crypto.randomBytes(16).toString('hex'),
+  passwordHash: crypto.randomBytes(32).toString('hex'),
+};
 
 const hashPassword = async (password, salt = crypto.randomBytes(16).toString('hex')) => ({
   salt,
@@ -15,8 +19,10 @@ const timingSafeEqualHex = (left, right) => {
 };
 
 const verifyPassword = async (password, user) => {
-  const currentHash = (await hashPassword(password, user.passwordSalt)).hash;
-  return timingSafeEqualHex(currentHash, user.passwordHash);
+  const { passwordSalt, passwordHash } = user ?? dummyCredentials;
+  const currentHash = (await hashPassword(password, passwordSalt)).hash;
+  const matches = timingSafeEqualHex(currentHash, passwordHash);
+  return Boolean(user) && matches;
 };
 
 module.exports = { hashPassword, verifyPassword };

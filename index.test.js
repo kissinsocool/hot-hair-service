@@ -1414,6 +1414,7 @@ test('async password hashing remains verifiable', async () => {
     passwordSalt: password.salt,
     passwordHash: password.hash,
   }), false);
+  assert.equal(await verifyPassword('wrong', null), false);
   const legacySalt = 'legacy-salt';
   assert.equal(await verifyPassword('legacy-password', {
     passwordSalt: legacySalt,
