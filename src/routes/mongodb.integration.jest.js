@@ -62,6 +62,25 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       sessionTokenHash: session.tokenHash, sessionExpiresAt: session.expiresAt });
   }
 
+  test('booking list and promotion routes reject ambiguous or inherited query values', async () => {
+    for (const [role, route] of [
+      ['client', '/bookings?status=pending&status=accepted'],
+      ['client', '/bookings?staffId=staff-1&staffId=staff-2'],
+      ['merchant', '/merchant/bookings?status=pending&status=accepted'],
+      ['client', '/salons/promoted-services?category=constructor'],
+      ['client', '/salons/promoted-services?category=__proto__'],
+    ]) {
+      expect((await request(role, route)).status).toBe(400);
+    }
+    for (const [role, route] of [
+      ['client', '/bookings?status=pending&staffId=staff-1'],
+      ['merchant', '/merchant/bookings?status=pending'],
+      ['client', '/salons/promoted-services?category=women-cut'],
+    ]) {
+      expect((await request(role, route)).status).toBe(200);
+    }
+  });
+
   test('analytics event retention uses a 180-day TTL index', async () => {
     const indexes = await models.AnalyticsEvent.collection.indexes();
     expect(indexes).toContainEqual(expect.objectContaining({

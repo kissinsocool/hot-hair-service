@@ -50,6 +50,9 @@ module.exports = (app, ctx) => {
 
   app.get('/api/bookings', async (req, res) => {
     const { staffId, status } = req.query;
+    if ([staffId, status].some(value => value !== undefined && typeof value !== 'string')) {
+      return res.status(400).json({ message: 'staffId and status must be strings' });
+    }
     const userId = normalizeUserId(req.clientUser.id);
     const query = { userId: { $in: userIdAliases(userId) } };
     if (staffId) query.staffId = staffId;

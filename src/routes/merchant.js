@@ -83,10 +83,13 @@ module.exports = (app, ctx) => {
   const runBookingTransaction = work => bookingService.runBookingTransaction(mongoose, work);
 
   const merchantBookingQuery = async (req, ignoreStatuses = false) => {
+    const { date, fromDate, toDate, includePending, staffId, statuses, status } = req.query;
+    if (!ignoreStatuses && status !== undefined && typeof status !== 'string') {
+      throw transactionError(400, 'status must be a string');
+    }
     const salon = await Salon.findOne({ id: req.merchantUser.salonId }).select('staffIds').lean();
     const scope = buildMerchantBookingScope(req.merchantUser.salonId, salon?.staffIds || []);
     const filters = [scope];
-    const { date, fromDate, toDate, includePending, staffId, statuses, status } = req.query;
     let range;
     if (fromDate !== undefined || toDate !== undefined) {
       const from = bookingDayRange(fromDate);

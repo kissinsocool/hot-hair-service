@@ -60,9 +60,12 @@ module.exports = (app, ctx) => {
   });
 
   app.get('/api/salons/promoted-services', ...rateLimits.publicRead, async (req, res) => {
-    const tagId = PROMOTION_CATEGORY_TAG_IDS[String(req.query.category || '')];
-    if (!tagId) return res.status(400).json({ message: '分类不存在' });
-    const tagFilter = req.query.category === 'women-cut'
+    const { category } = req.query;
+    if (typeof category !== 'string' || !Object.hasOwn(PROMOTION_CATEGORY_TAG_IDS, category)) {
+      return res.status(400).json({ message: '分类不存在' });
+    }
+    const tagId = PROMOTION_CATEGORY_TAG_IDS[category];
+    const tagFilter = category === 'women-cut'
       ? { $all: ['wash_cut_blow', 'women'], $nin: ['perm', 'color', 'curly', 'straight'] }
       : tagId;
 
