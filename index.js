@@ -677,10 +677,11 @@ const getUserPolicy = async (userId, session) =>
     { upsert: true, new: true, setDefaultsOnInsert: true, session },
   );
 
-const incrementNoShowCount = (userId, session) => {
-  const nextCount = { $add: [{ $ifNull: ['$noShowCount', 0] }, 1] };
+const updateNoShowCount = (userId, delta, session) => {
+  const incrementing = delta > 0;
+  const nextCount = { $add: [{ $ifNull: ['$noShowCount', 0] }, delta] };
   return UserPolicy.findOneAndUpdate(
-    { userId },
+    incrementing ? { userId } : { userId, noShowCount: { $gt: 0 } },
     [{
       $set: {
         userId,
@@ -689,9 +690,12 @@ const incrementNoShowCount = (userId, session) => {
         updatedAt: new Date(),
       },
     }],
-    { upsert: true, new: true, updatePipeline: true, session },
+    { upsert: incrementing, new: true, updatePipeline: true, session },
   );
 };
+
+const incrementNoShowCount = (userId, session) => updateNoShowCount(userId, 1, session);
+const reverseNoShowCount = (userId, session) => updateNoShowCount(userId, -1, session);
 
 const PUBLIC_SALON_REVIEWS_LIMIT = 150;
 // The salon detail page previews this many reviews; the rest come from /api/salons/:id/reviews.
@@ -1404,6 +1408,7 @@ const routeContext = {
   ensureSalonForMerchant,
   existingSalonImages,
   incrementNoShowCount,
+  reverseNoShowCount,
   isSalonClosedOnDate,
   isSameDayBookingBlocked,
   isStaffUnavailable,

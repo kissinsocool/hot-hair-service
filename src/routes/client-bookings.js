@@ -377,16 +377,18 @@ module.exports = (app, ctx) => {
     if (!userIdAliases(userId).includes(normalizeUserId(booking.userId))) {
       return res.status(403).json({ message: 'Cannot complain another user booking' });
     }
-    if (booking.status !== 'completed') {
-      return res.status(409).json({ message: 'Only completed bookings can be complained' });
+    const noShowDispute = booking.status === 'no_show';
+    if (booking.status !== 'completed' && !noShowDispute) {
+      return res.status(409).json({ message: '仅已完成或被标记为未到店的订单可反馈' });
     }
-    if (booking.complained || booking.complaint?.status === 'handled') {
+    if (booking.complained || booking.complaint?.status === 'handled' || (noShowDispute && booking.complaint)) {
       return res.status(409).json({ message: 'Booking already complained' });
     }
   
     const description = String(req.body.description || '').trim();
     const reason = req.body.reason === undefined ? 'other' : req.body.reason;
-    if (!['not_arrived', 'service_incomplete', 'other'].includes(reason)) {
+    const allowedReasons = noShowDispute ? ['no_show_dispute'] : ['not_arrived', 'service_incomplete', 'other'];
+    if (!allowedReasons.includes(reason)) {
       return res.status(400).json({ message: '请选择有效的问题类型' });
     }
     const imageObjects = Array.isArray(req.body.imageObjects) ? req.body.imageObjects : [];
@@ -428,12 +430,21 @@ module.exports = (app, ctx) => {
     };
   
     const updatedBooking = await Booking.findOneAndUpdate(
-      { _id: booking._id, status: 'completed', complained: { $ne: true }, 'complaint.status': { $ne: 'handled' } },
-      { $set: { complained: true, complaint, updatedAt: new Date() } },
+      {
+        _id: booking._id,
+        status: booking.status,
+        complained: { $ne: true },
+        ...(noShowDispute ? { complaint: null } : { 'complaint.status': { $ne: 'handled' } }),
+      },
+      { $set: { complained: true, complaint, ...(!noShowDispute ? { updatedAt: new Date() } : {}) } },
       { new: true },
     );
     if (!updatedBooking) {
-      await deleteModeratedImages(imageUrls);
+      if (imageUrls.length) {
+        const current = await Booking.findById(booking._id).select('complaint.imageUrls').lean();
+        const savedImages = new Set(current?.complaint?.imageUrls || []);
+        await deleteModeratedImages(imageUrls.filter(url => !savedImages.has(url)));
+      }
       return res.status(409).json({ message: 'Booking already complained' });
     }
   

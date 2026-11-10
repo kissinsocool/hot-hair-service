@@ -42,6 +42,7 @@ module.exports = (app, ctx) => {
     Salon,
     Booking,
     BookingMessage,
+    reverseNoShowCount,
     mongoose,
     broadcastBookingEvent,
     buildAdminMerchantPayload,
@@ -721,6 +722,7 @@ module.exports = (app, ctx) => {
       completionSource: booking.completionSource,
       completedAt: booking.completedAt,
       reason: booking.complaint.reason || 'other',
+      ...(booking.complaint.decision ? { decision: booking.complaint.decision } : {}),
       handlingStatus: booking.complaint.status || 'submitted',
       response: booking.complaint.response || '',
       handledAt: booking.complaint.handledAt,
@@ -729,6 +731,10 @@ module.exports = (app, ctx) => {
 
   app.patch('/api/admin/complaints/:id', async (req, res) => {
     const response = typeof req.body.response === 'string' ? req.body.response.trim() : '';
+    const { decision } = req.body;
+    if (decision !== undefined && !['approved', 'rejected'].includes(decision)) {
+      return res.status(400).json({ message: '请选择撤销或维持爽约判定' });
+    }
     if (!response || response.length > 2000) {
       return res.status(400).json({ message: '请填写1至2000字的处理意见' });
     }
@@ -737,14 +743,31 @@ module.exports = (app, ctx) => {
     try {
       updated = await runBookingTransaction(mongoose, async session => {
         const booking = await Booking.findOneAndUpdate(
-          { id: req.params.id, complaint: { $exists: true, $ne: null }, 'complaint.status': { $ne: 'handled' } },
-          { $set: { 'complaint.status': 'handled', 'complaint.response': response, 'complaint.handledAt': now } },
+          {
+            id: req.params.id,
+            complaint: { $exists: true, $ne: null },
+            'complaint.status': { $ne: 'handled' },
+            ...(decision
+              ? { status: 'no_show', 'complaint.reason': 'no_show_dispute' }
+              : { 'complaint.reason': { $ne: 'no_show_dispute' } }),
+          },
+          { $set: {
+            'complaint.status': 'handled',
+            'complaint.response': response,
+            'complaint.handledAt': now,
+            ...(decision ? { 'complaint.decision': decision } : {}),
+          } },
           { new: true, session },
         );
-        if (!booking) throw transactionError(409, '投诉不存在或已处理，请刷新后重试');
+        if (!booking) throw transactionError(409, '反馈不存在、已处理或缺少对应的审核结果，请刷新后重试');
+        if (decision === 'approved' && !await reverseNoShowCount(booking.userId, session)) {
+          throw transactionError(409, '未找到可撤销的爽约计次，请核对用户记录');
+        }
         await BookingMessage.create([{
           ...bookingMessagePayload(booking, 'complaint_handled'),
-          userMessage: '您的订单问题已有处理结果，请进入订单详情查看。',
+          userMessage: decision === 'approved'
+            ? '本次爽约判定已撤销，已扣回一次爽约计次。请进入订单详情查看。'
+            : '您的订单问题已有处理结果，请进入订单详情查看。',
           createdAt: now,
         }], { session });
         return booking;
@@ -815,6 +838,10 @@ module.exports = (app, ctx) => {
     if (!booking[type]) return res.status(404).json({ message: 'Image review item not found' });
 
     const payload = booking[type] || {};
+    const noShowDispute = type === 'complaint' && payload.reason === 'no_show_dispute';
+    if (noShowDispute && action === 'delete') {
+      return res.status(409).json({ message: '爽约异议需保留审核记录，可选择驳回图片' });
+    }
     if (type === 'review' && action === 'approve') {
       payload.imageUrls = (await Promise.all(
         (payload.imageUrls || []).map(publishModeratedImage),
@@ -832,11 +859,11 @@ module.exports = (app, ctx) => {
       payload.reviewStatus = action === 'approve' ? 'approved' : 'rejected';
       if (type !== 'complaint') booking[type] = payload;
       if (type === 'review') booking.reviewed = action === 'approve';
-      if (type === 'complaint') booking.complained = action === 'approve' || payload.status === 'handled';
+      if (type === 'complaint' && !noShowDispute) booking.complained = action === 'approve' || payload.status === 'handled';
     }
 
     booking.markModified(type === 'complaint' && action !== 'delete' ? 'complaint.reviewStatus' : type);
-    booking.updatedAt = new Date().toISOString();
+    if (!noShowDispute) booking.updatedAt = new Date().toISOString();
     await booking.save();
     if (type === 'review') await refreshRatingsAfterModeration(booking);
     clearPublicSalonDetailCache?.();

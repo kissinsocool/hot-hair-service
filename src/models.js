@@ -117,13 +117,14 @@ const complaintSchema = new mongoose.Schema({
   staffName: String,
   serviceName: String,
   description: String,
-  reason: { type: String, enum: ['not_arrived', 'service_incomplete', 'other'] },
+  reason: { type: String, enum: ['not_arrived', 'service_incomplete', 'other', 'no_show_dispute'] },
   imageUrls: [String],
   reviewStatus: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
   date: String,
   createdAt: Date,
   status: { type: String, enum: ['submitted', 'handled'], default: 'submitted' },
   response: { type: String, maxlength: 2000 },
+  decision: { type: String, enum: ['approved', 'rejected'] },
   handledAt: Date,
 }, { _id: false });
 

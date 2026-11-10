@@ -694,6 +694,59 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     }
   });
 
+  test('no-show disputes restore booking eligibility only after one committed reversal', async () => {
+    const userId = 'no-show-dispute-user';
+    await createClient(userId);
+    const ids = ['disputed-no-show', 'upheld-no-show', 'third-no-show'];
+    for (const id of ids) {
+      await Booking.create({ id, userId, salonId: 'salon-1', serviceId: 'service-1',
+        status: 'completed', startTime: new Date('2028-01-01') });
+      expect((await request('merchant', `/merchant/bookings/${id}`, { action: 'no_show', reason: '用户未到店' }, 'PATCH')).status).toBe(200);
+    }
+    const policy = () => UserPolicy.findOne({ userId }).lean();
+    const newBooking = { salonId: 'salon-1', serviceId: 'service-1', staffId: '__no_preference__', startTime: '2030-10-11T11:00:00' };
+    const book = () => request(userId, '/bookings', newBooking, 'POST');
+    expect((await book()).status).toBe(403);
+    const [id, upheld] = ids;
+    const before = await Booking.findOne({ id }).lean();
+    const feedback = { description: '我已到店，请核实', imageObjects: [], reason: 'no_show_dispute' };
+    const submit = (bookingId, role = userId, input = feedback) =>
+      request(role, `/bookings/${bookingId}/complaint`, input, 'POST');
+    const resolve = (bookingId, input) => request('admin', `/admin/complaints/${bookingId}`, input, 'PATCH');
+    const approved = { response: '已核实到店记录', decision: 'approved' };
+    expect((await submit(id, 'client')).status).toBe(403);
+    expect((await submit(id, userId, { ...feedback, reason: 'other' })).status).toBe(400);
+    const submitted = await Promise.all([submit(id), submit(id)]);
+    expect(submitted.map(item => item.status).sort()).toEqual([201, 409]);
+    expect((await submit(upheld)).status).toBe(201);
+    expect(await policy()).toMatchObject({ noShowCount: 3, isBlacklisted: true });
+    expect((await resolve(id, { response: approved.response })).status).toBe(409);
+    expect((await resolve(upheld, { response: '已核实未到店', decision: 'rejected' })).status).toBe(200);
+    expect(await policy()).toMatchObject({ noShowCount: 3, isBlacklisted: true });
+
+    const failure = jest.spyOn(BookingMessage, 'create').mockRejectedValueOnce(new Error('Injected reversal notification failure'));
+    try {
+      expect((await resolve(id, approved)).status).toBe(500);
+    } finally { failure.mockRestore(); }
+    expect(await policy()).toMatchObject({ noShowCount: 3, isBlacklisted: true });
+    expect((await Booking.findOne({ id }).lean()).complaint.status).toBe('submitted');
+
+    const resolutions = await Promise.all([resolve(id, approved), resolve(id, approved)]);
+    expect(resolutions.map(item => item.status).sort()).toEqual([200, 409]);
+    expect(await policy()).toMatchObject({ noShowCount: 2, isBlacklisted: false });
+    const after = await Booking.findOne({ id }).lean();
+    expect(after.complaint).toMatchObject({ status: 'handled', ...approved });
+    expect(after).toEqual({ ...before, complained: true, complaint: after.complaint });
+    expect(await BookingMessage.countDocuments({ bookingId: id, type: 'complaint_handled' })).toBe(1);
+    expect((await request('admin', '/admin/user-images', { bookingId: id, type: 'complaint', action: 'delete' }, 'PATCH')).status).toBe(409);
+    expect((await submit(id)).status).toBe(409);
+    expect((await request(userId, `/bookings/${id}`)).body.complaint.decision).toBe('approved');
+    expect((await request('admin', '/admin/complaints?limit=100')).body.find(row => row.bookingId === id)).toMatchObject({
+      reason: 'no_show_dispute', decision: 'approved',
+    });
+    expect((await book()).status).toBe(201);
+  });
+
   test('feedback arriving after merchant precheck is preserved by the transaction predicate', async () => {
     const id = 'correct-feedback-race';
     await Booking.create({ id, userId: 'client-1', salonId: 'salon-1', serviceId: 'service-1',
