@@ -91,12 +91,17 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     }
   });
 
-  test('password rules apply to new credentials without invalidating existing logins', async () => {
+  test('merchant creation accepts the default password and later changes require a stronger password', async () => {
     const username = 'password-policy-merchant';
     const oldPassword = '123456';
     const { salt, hash } = await hashPassword(oldPassword);
     const credentials = { id: username, username, salonId: 'salon-1', passwordSalt: salt, passwordHash: hash };
-    await MerchantUser.create(credentials);
+    const salonId = 'password-policy-salon';
+    const created = await request('admin', '/admin/merchants', {
+      username, displayName: 'Test merchant', salonId, password: oldPassword,
+    }, 'POST');
+    expect(created.status).toBe(201);
+    const merchantId = created.body.user.id;
     await AdminUser.create(credentials);
     try {
       for (const role of ['merchant', 'admin']) {
@@ -107,18 +112,22 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       const account = '/merchant/account';
       for (const newPassword of ['abcd12345', 'letters-only', '1234567890']) {
         expect((await request('passwordPolicy', account, { currentPassword: oldPassword, newPassword }, 'PATCH')).status).toBe(400);
-        expect((await request('admin', `/admin/merchants/${username}`, { password: newPassword }, 'PATCH')).status).toBe(400);
+        expect((await request('admin', `/admin/merchants/${merchantId}`, { password: newPassword }, 'PATCH')).status).toBe(400);
         expect((await request('admin', '/admin/merchants', {
           username: 'another-merchant', displayName: 'Test', salonId: 'password-policy-salon', password: newPassword,
         }, 'POST')).status).toBe(400);
       }
-      expect((await request('admin', `/admin/merchants/${username}`, { displayName: 'Updated' }, 'PATCH')).status).toBe(200);
+      expect((await request('passwordPolicy', account, { currentPassword: oldPassword, newPassword: oldPassword }, 'PATCH')).status).toBe(400);
+      expect((await request('admin', `/admin/merchants/${merchantId}`, { password: oldPassword }, 'PATCH')).status).toBe(400);
+      expect((await request('admin', `/admin/merchants/${merchantId}`, { displayName: 'Updated' }, 'PATCH')).status).toBe(200);
       const newPassword = 'validpass7';
       expect((await request('passwordPolicy', account, { currentPassword: oldPassword, newPassword }, 'PATCH')).status).toBe(200);
       expect((await request('merchant', '/merchant/auth/login', { username, password: oldPassword }, 'POST')).status).toBe(401);
       expect((await request('merchant', '/merchant/auth/login', { username, password: newPassword }, 'POST')).status).toBe(200);
     } finally {
-      await Promise.all([MerchantUser.deleteOne({ id: username }), AdminUser.deleteOne({ id: username })]);
+      await Promise.all([
+        MerchantUser.deleteOne({ id: merchantId }), AdminUser.deleteOne({ id: username }), Salon.deleteOne({ id: salonId }),
+      ]);
     }
   });
 
