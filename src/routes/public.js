@@ -1,3 +1,10 @@
+const { createTtlCache } = require('../ttl-cache');
+const { BOOKING_SALON_PROJECTION } = require('../services/salon');
+
+// These responses are the same for every caller and already declare max-age=15, but the mini-program does not
+// cache requests itself, so the server keeps them for the same 15 seconds instead of querying on every home view.
+const PUBLIC_RESPONSE_CACHE_TTL_MS = 15_000;
+
 const PROMOTION_CATEGORY_TAG_IDS = Object.freeze({
   'men-cut': 'men',
   'women-cut': 'women',
@@ -42,21 +49,30 @@ module.exports = (app, ctx) => {
     salonPostPayload,
   } = ctx;
 
+  // Created per registration, so every app (and every test) starts with empty caches.
+  const adCache = createTtlCache({ ttlMs: PUBLIC_RESPONSE_CACHE_TTL_MS, max: 1 });
+  const couponCampaignCache = createTtlCache({ ttlMs: PUBLIC_RESPONSE_CACHE_TTL_MS, max: 1 });
+  const promotedServicesCache = createTtlCache({ ttlMs: PUBLIC_RESPONSE_CACHE_TTL_MS, max: 200 });
+
   app.get('/api/ad', async (_req, res) => {
-    res.json(buildAdPayload(await AdConfig.findOne({ key: 'main' }).lean()));
+    res.json(await adCache.get('main', async () =>
+      buildAdPayload(await AdConfig.findOne({ key: 'main' }).lean())));
   });
 
   app.get('/api/coupon-campaign', ...rateLimits.publicRead, async (_req, res) => {
-    const now = new Date();
-    const campaign = await CouponCampaign.findOne({
-      key: 'new-user-registration',
-      enabled: true,
-      registrationStartAt: { $lte: now },
-      registrationEndAt: { $gt: now },
-    }).select('promotionImageUrl').lean();
-    const promotionImageUrl = publicImageUrl(campaign?.promotionImageUrl || '');
+    const payload = await couponCampaignCache.get('new-user-registration', async () => {
+      const now = new Date();
+      const campaign = await CouponCampaign.findOne({
+        key: 'new-user-registration',
+        enabled: true,
+        registrationStartAt: { $lte: now },
+        registrationEndAt: { $gt: now },
+      }).select('promotionImageUrl').lean();
+      const promotionImageUrl = publicImageUrl(campaign?.promotionImageUrl || '');
+      return { enabled: Boolean(promotionImageUrl), promotionImageUrl };
+    });
     res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
-    res.json({ enabled: Boolean(promotionImageUrl), promotionImageUrl });
+    res.json(payload);
   });
 
   app.get('/api/salons/promoted-services', ...rateLimits.publicRead, async (req, res) => {
@@ -128,14 +144,23 @@ module.exports = (app, ctx) => {
         total: [{ $count: 'count' }],
       } },
     );
-    const [gallery] = await Salon.aggregate(pipeline).option({ maxTimeMS: 5000, allowDiskUse: true });
-    const images = (gallery?.items || []).map(image => ({
-      id: `${image.salonId}:${image.serviceId}:${image.imageIndex}`,
-      salonId: image.salonId,
-      serviceId: image.serviceId,
-      imageUrl: publicImageUrl(image.imageUrl),
-    }));
-    setPaginationHeaders(res, pagination, gallery?.total?.[0]?.count || 0);
+    const loadGallery = async () => {
+      const [gallery] = await Salon.aggregate(pipeline).option({ maxTimeMS: 5000, allowDiskUse: true });
+      return {
+        images: (gallery?.items || []).map(image => ({
+          id: `${image.salonId}:${image.serviceId}:${image.imageIndex}`,
+          salonId: image.salonId,
+          serviceId: image.serviceId,
+          imageUrl: publicImageUrl(image.imageUrl),
+        })),
+        total: gallery?.total?.[0]?.count || 0,
+      };
+    };
+    // Distance order depends on the caller's coordinates; only the shared latest order is cached.
+    const { images, total } = sort === 'latest'
+      ? await promotedServicesCache.get(`${category}:${pagination.page}:${pagination.limit}`, loadGallery)
+      : await loadGallery();
+    setPaginationHeaders(res, pagination, total);
     res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
     res.json(images);
   });
@@ -294,7 +319,8 @@ module.exports = (app, ctx) => {
       return res.status(400).json({ message: 'date must use YYYY-MM-DD format' });
     }
     if (staffId === '__no_preference__') {
-      const salon = await Salon.findOne({ id: String(req.query.salonId || '').trim() }).lean();
+      const salon = await Salon.findOne({ id: String(req.query.salonId || '').trim() })
+        .select(BOOKING_SALON_PROJECTION).lean();
       if (!salon) return res.status(404).json({ message: 'Salon not found' });
       const service = serviceId && salon.services?.find(item => item.id === serviceId);
       if (serviceId && !service) return res.status(404).json({ message: 'Service not found' });

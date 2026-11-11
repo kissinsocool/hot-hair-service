@@ -484,12 +484,14 @@ supportMessageSchema.index({ createdAt: -1 });
 
 const analyticsEventSchema = new mongoose.Schema({
   eventId: { type: String, required: true, unique: true },
-  name: { type: String, required: true, index: true },
+  // Written on every home view and read only by the admin funnel (a createdAt range grouped by name), so the
+  // per-field indexes on name, userId, salonId and bookingId were removed: nothing queried them.
+  name: { type: String, required: true },
   anonymousId: { type: String, default: '' },
-  userId: { type: String, default: '', index: true },
-  salonId: { type: String, default: '', index: true },
+  userId: { type: String, default: '' },
+  salonId: { type: String, default: '' },
   serviceId: { type: String, default: '' },
-  bookingId: { type: String, default: '', index: true },
+  bookingId: { type: String, default: '' },
   sourceBookingId: { type: String, default: '' },
   source: { type: String, enum: ['client', 'server'], required: true },
   createdAt: { type: Date, default: Date.now },

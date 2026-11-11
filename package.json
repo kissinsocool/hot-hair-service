@@ -14,6 +14,7 @@
     "migrate:booking-domain": "node scripts/migrate-booking-domain.js",
     "migrate:staff-role-ids": "node scripts/migrate-staff-role-ids.js",
     "ratings:rebuild": "node scripts/rebuild-staff-ratings.js",
+    "analytics:drop-unused-indexes": "node scripts/drop-unused-analytics-indexes.js",
     "test:performance": "k6 run scripts/k6-booking-flow.js"
   },
   "keywords": [],

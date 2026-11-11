@@ -2064,7 +2064,7 @@ test('staff slots load daily bookings and unavailability with fixed query count'
   let bookingQueries = 0;
   let staffQueries = 0;
 
-  Salon.findOne = () => ({ lean: async () => ({ openingHours: '10:00 - 11:00' }) });
+  Salon.findOne = () => ({ select() { return this; }, lean: async () => ({ openingHours: '10:00 - 11:00' }) });
   Booking.find = () => {
     bookingQueries += 1;
     return { select: () => ({ lean: async () => [{ startTime: new Date('2030-01-01T10:30:00+08:00') }] }) };
@@ -2091,7 +2091,7 @@ test('staff availability checks the full requested service against existing book
   const originalSalonFindOne = Salon.findOne;
   const originalBookingFind = Booking.find;
   const originalStaffFindOne = StaffProfile.findOne;
-  Salon.findOne = () => ({ lean: async () => ({ openingHours: '10:00 - 12:00' }) });
+  Salon.findOne = () => ({ select() { return this; }, lean: async () => ({ openingHours: '10:00 - 12:00' }) });
   Booking.find = () => ({ select: () => ({ lean: async () => [{
     startTime: new Date('2030-01-01T02:30:00.000Z'), serviceDurationMinutes: 60,
   }] }) });
@@ -2113,7 +2113,7 @@ test('staff weekly closed days block direct checks and every displayed slot', as
   const originalSalonFindOne = Salon.findOne;
   const originalBookingFind = Booking.find;
   const originalStaffFindOne = StaffProfile.findOne;
-  Salon.findOne = () => ({ lean: async () => ({ openingHours: '10:00 - 11:00' }) });
+  Salon.findOne = () => ({ select() { return this; }, lean: async () => ({ openingHours: '10:00 - 11:00' }) });
   Booking.find = () => ({ select: () => ({ lean: async () => [] }) });
   StaffProfile.findOne = () => ({
     select: () => ({ lean: async () => ({ weeklyClosedDays: [2], unavailableSlots: [] }) }),
@@ -2162,7 +2162,7 @@ test('slot endpoint uses the selected service duration for no-preference booking
   let requestedDuration;
   registerPublicRoutes(app, {
     rateLimits: { publicRead: [] },
-    Salon: { findOne: () => ({ lean: async () => ({
+    Salon: { findOne: () => ({ select() { return this; }, lean: async () => ({
       id: 'salon-1', services: [{ id: 'service-1', durationMinutes: 90 }],
     }) }) },
     async generateSlotsForNoPreferenceAndDate(_salon, _date, duration) {

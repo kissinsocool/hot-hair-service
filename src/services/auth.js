@@ -246,11 +246,13 @@ const createAuthService = ({ revokeSessionHash = async () => {} } = {}) => {
     };
   };
 
+  // Runs on every authenticated request: credentials are matched in the query and never loaded onto req.
+  const SESSION_USER_PROJECTION = '-passwordHash -passwordSalt -sessionTokenHash';
   const requireAuth = ({ Model, missing, expired, requestKey, query = activeSessionQuery }) =>
     async (req, res, next) => {
       const token = sessionTokenFromRequest(req);
       if (!token) return res.status(401).json({ message: missing });
-      const user = await Model.findOne(query(token)).lean();
+      const user = await Model.findOne(query(token)).select(SESSION_USER_PROJECTION).lean();
       if (!user) return res.status(401).json({ message: expired });
       req[requestKey] = user;
       next();

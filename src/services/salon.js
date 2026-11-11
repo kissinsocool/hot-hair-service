@@ -80,6 +80,12 @@ const REVIEW_TAGS = [
   '好沟通',
 ];
 const publicSalonDetailCache = new Map();
+// Slot, staff-detail and booking reads need a salon's schedule, services and stylist ids. They leave out the
+// merchant's unreviewed draft (a second copy of every service and stylist), qualification documents and gallery.
+const BOOKING_SALON_PROJECTION = [
+  'pendingContent', 'licenseUrl', 'legalPersonIdFrontUrl', 'legalPersonIdBackUrl', 'addressProofUrl',
+  'licenseRejectReason', 'contentRejectReason', 'description', 'fullDescription', 'image', 'images', 'promoImages',
+].map(field => `-${field}`).join(' ');
 
 const normalizeDocument = document => typeof document?.toObject === 'function'
   ? document.toObject()
@@ -405,6 +411,7 @@ const clearPublicSalonDetailCache = () => publicSalonDetailCache.clear();
 
 module.exports = {
   AFTER_SALES_POLICY_IDS,
+  BOOKING_SALON_PROJECTION,
   buildGeoLocation,
   buildPublicSalonDetail,
   buildPublicStaffSummary,

@@ -1,9 +1,11 @@
 const { isValidNewPassword, newPasswordRule } = require('../passwords');
 const { BUSINESS_DISTRICTS } = require('../services/business-districts');
-const { normalizeDocument } = require('../services/salon');
+const { normalizeDocument, servicePayload } = require('../services/salon');
 const { funnelMetrics } = require('../services/analytics');
 const { bookingDayRange, localDateKey, runBookingTransaction, transactionError } = require('../services/booking');
 const { bookingMessagePayload } = require('../services/booking-messages');
+
+const PROMOTION_REQUEST_STATUSES = ['pending', 'approved', 'rejected'];
 
 const isValidAdminImageUrl = (value) => {
   if (value == null) return true;
@@ -46,6 +48,10 @@ module.exports = (app, ctx) => {
     mongoose,
     broadcastBookingEvent,
     buildAdminMerchantPayload,
+    buildAdminMerchantSummary,
+    ADMIN_MERCHANT_SUMMARY_SALON_PROJECTION,
+    getStaffMapByIds,
+    getApprovedRatingSummariesByStaffIds,
     normalizeDeposit,
     normalizeSalonTags,
     ensureSalonForMerchant,
@@ -251,16 +257,75 @@ module.exports = (app, ctx) => {
       MerchantUser.countDocuments(),
     ]);
     setPaginationHeaders(res, pagination, total);
-    const salonsById = Object.fromEntries(
-      (await Salon.find({ id: { $in: merchants.map(user => user.salonId) } }).lean())
-        .map(salon => [salon.id, salon]),
-    );
-  
+    const salonQuery = Salon.find({ id: { $in: merchants.map(user => user.salonId) } });
+    // view=summary serves the list card only; clients read one merchant's full payload from /:id when needed.
+    if (req.query.view === 'summary') {
+      const summarySalons = await salonQuery.select(ADMIN_MERCHANT_SUMMARY_SALON_PROJECTION).lean();
+      const summarySalonsById = Object.fromEntries(summarySalons.map(salon => [salon.id, salon]));
+      return res.json(merchants.map(user => buildAdminMerchantSummary(user, summarySalonsById[user.salonId])));
+    }
+    const salons = await salonQuery.lean();
+    const salonsById = Object.fromEntries(salons.map(salon => [salon.id, salon]));
+    // Load the stylists and rating summaries of the whole page once instead of once per merchant.
+    const staffIds = [...new Set(salons.flatMap(salon => salon.staffIds || []))];
+    const [staffMap, ratingSummaries] = await Promise.all([
+      getStaffMapByIds(staffIds),
+      getApprovedRatingSummariesByStaffIds(staffIds),
+    ]);
+
     res.json(await Promise.all(
-      merchants.map(user => buildAdminMerchantPayload(user, salonsById[user.salonId]))
+      merchants.map(user => buildAdminMerchantPayload(user, salonsById[user.salonId], { staffMap, ratingSummaries }))
     ));
   });
   
+  // Order tables only need each salon's name, phone and address, so they read this instead of the merchant list.
+  app.get('/api/admin/salon-contacts', async (req, res) => {
+    const pagination = normalizePagination(req.query);
+    const [salons, total] = await Promise.all([
+      Salon.find({}).select('id name phone address -_id').sort({ _id: 1 })
+        .skip(pagination.skip).limit(pagination.limit).lean(),
+      Salon.countDocuments(),
+    ]);
+    setPaginationHeaders(res, pagination, total);
+    res.json(salons.map(salon => ({
+      salonId: salon.id,
+      name: salon.name || '',
+      phone: salon.phone || '',
+      address: salon.address || '',
+    })));
+  });
+
+  // One row per published service that has a promotion request, for the promotion review table. Rows describe
+  // the live service, which is what a review approves; services that exist only in an unreviewed draft are left out.
+  app.get('/api/admin/service-promotions', async (_req, res) => {
+    const salons = await Salon.find({ 'services.promotionReviewStatus': { $in: PROMOTION_REQUEST_STATUSES } })
+      .select('id name services -_id').lean();
+    const merchants = salons.length
+      ? await MerchantUser.find({ salonId: { $in: salons.map(salon => salon.id) } })
+        .select('id salonId -_id').sort({ createdAt: -1 }).lean()
+      : [];
+    const salonsById = new Map(salons.map(salon => [salon.id, salon]));
+    res.json(merchants.flatMap((merchant) => {
+      const salon = salonsById.get(merchant.salonId);
+      return (salon?.services || [])
+        .filter(service => PROMOTION_REQUEST_STATUSES.includes(service.promotionReviewStatus))
+        .map(service => ({
+          ...servicePayload(service),
+          merchantId: merchant.id,
+          salonId: salon.id,
+          salonName: salon.name || '',
+        }));
+    }));
+  });
+
+  app.get('/api/admin/merchants/:id', async (req, res) => {
+    const user = await MerchantUser.findOne({ id: req.params.id })
+      .select('id username displayName salonId deposit role createdAt updatedAt lastLoginAt').lean();
+    if (!user) return res.status(404).json({ message: 'Merchant user not found' });
+    const salon = await Salon.findOne({ id: user.salonId }).lean();
+    res.json({ merchant: await buildAdminMerchantPayload(user, salon || {}) });
+  });
+
   app.post('/api/admin/merchants', async (req, res) => {
     const username = String(req.body.username || '').trim();
     const password = String(req.body.password || '');

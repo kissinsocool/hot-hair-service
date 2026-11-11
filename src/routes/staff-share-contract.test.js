@@ -63,7 +63,7 @@ test('restricted package slots reject specified staff and use the salon pool for
   let poolReads = 0;
   registerPublicRoutes(app, {
     rateLimits: { publicRead: [] },
-    Salon: { findOne: () => ({ lean: async () => salon }) },
+    Salon: { findOne: () => ({ select() { return this; }, lean: async () => salon }) },
     getSalonByStaffId: () => ({ lean: async () => salon }),
     async generateSlotsForNoPreferenceAndDate(actualSalon, date, duration) {
       assert.equal(actualSalon, salon);

@@ -176,18 +176,20 @@ const buildAdPayload = (config) => ({
 
 const stripSensitiveSalonFields = salonDomain.stripSensitiveSalonFields;
 
-const buildAdminMerchantPayload = async (user, salonDocument = {}) => {
+// Review text is not part of this payload: the admin app reads reviews from the moderation endpoints, and loading
+// up to 150 reviews per merchant made the merchant list the heaviest request in the service. The reviews fields
+// stay as empty lists so the response shape is unchanged. The merchant list passes the stylists and rating
+// summaries of the whole page as `preloaded`, so a page costs two queries instead of several per merchant.
+const buildAdminMerchantPayload = async (user, salonDocument = {}, preloaded) => {
   const salon = normalizeDocument(salonDocument);
-  const staffMap = await getStaffMapByIds(salon.staffIds || []);
-  const [reviews, ratingSummaries] = await Promise.all([
-    getApprovedReviewsByStaffIds(salon.staffIds || [], PUBLIC_SALON_REVIEWS_LIMIT),
-    getApprovedRatingSummariesByStaffIds(salon.staffIds || []),
-  ]);
-  const reviewsByStaff = groupReviewsByStaff(reviews);
+  const staffIds = salon.staffIds || [];
+  const [staffMap, ratingSummaries] = preloaded
+    ? [preloaded.staffMap, preloaded.ratingSummaries]
+    : await Promise.all([getStaffMapByIds(staffIds), getApprovedRatingSummariesByStaffIds(staffIds)]);
   const publicSalon = {
     ...stripSensitiveSalonFields(salon),
-    staff: (salon.staffIds || []).map(id => staffMap[id]).filter(Boolean)
-      .map(person => buildStaffPayload(person, reviewsByStaff[person.id] || [], ratingSummaries[person.id])),
+    staff: staffIds.map(id => staffMap[id]).filter(Boolean)
+      .map(person => buildStaffPayload(person, [], ratingSummaries[person.id])),
   };
   const salonPayload = salon.pendingContent ? { ...publicSalon, ...salon.pendingContent } : publicSalon;
   const liveServices = new Map((publicSalon.services || []).map(service => [service.id, service]));
@@ -204,8 +206,8 @@ const buildAdminMerchantPayload = async (user, salonDocument = {}) => {
     } : {}),
   }));
   salonPayload.staff = (salonPayload.staff || [])
-    .map(person => buildStaffPayload(person, reviewsByStaff[person.id] || [], ratingSummaries[person.id]));
-  salonPayload.reviews = reviews;
+    .map(person => buildStaffPayload(person, [], ratingSummaries[person.id]));
+  salonPayload.reviews = [];
   return {
     ...buildMerchantUserPayload(user),
     salonName: salon.name || '',
@@ -223,6 +225,46 @@ const buildAdminMerchantPayload = async (user, salonDocument = {}) => {
     contentSubmittedAt: salon.contentSubmittedAt || (salon.pendingContent ? salon.updatedAt : undefined),
     contentReviewedAt: salon.contentReviewedAt,
     salon: salonPayload,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+    lastLoginAt: user.lastLoginAt,
+  };
+};
+
+// The merchant list row: account, review states and the few salon fields the list card shows. Like the full
+// payload, name, address and phone prefer the merchant's unreviewed draft. Everything else (services, stylists,
+// gallery, the draft itself) is served per merchant by GET /api/admin/merchants/:id.
+const ADMIN_MERCHANT_SUMMARY_SALON_PROJECTION = [
+  'id', 'name', 'address', 'phone', 'tags', 'businessDistrict', 'isFeatured', 'publishStatus',
+  'licenseUrl', 'licenseStatus', 'licenseRejectReason', 'licenseSubmittedAt', 'licenseReviewedAt',
+  'contentReviewStatus', 'contentRejectReason', 'contentSubmittedAt', 'contentReviewedAt', 'updatedAt',
+  'pendingContent.name', 'pendingContent.address', 'pendingContent.phone',
+].join(' ');
+const buildAdminMerchantSummary = (user, salonDocument = {}) => {
+  const salon = normalizeDocument(salonDocument) || {};
+  const draft = salon.pendingContent || {};
+  return {
+    ...buildMerchantUserPayload(user),
+    salonName: salon.name || '',
+    publishStatus: salon.publishStatus || 'offline',
+    licenseUrl: privateImageUrl(salon.licenseUrl || ''),
+    licenseStatus: salon.licenseStatus || 'unsubmitted',
+    licenseRejectReason: salon.licenseRejectReason || '',
+    licenseSubmittedAt: salon.licenseSubmittedAt,
+    licenseReviewedAt: salon.licenseReviewedAt,
+    contentReviewStatus: salon.contentReviewStatus || 'pending',
+    contentRejectReason: salon.contentRejectReason || '',
+    contentSubmittedAt: salon.contentSubmittedAt || (salon.pendingContent ? salon.updatedAt : undefined),
+    contentReviewedAt: salon.contentReviewedAt,
+    salon: {
+      id: salon.id,
+      name: draft.name ?? salon.name ?? '',
+      address: draft.address ?? salon.address ?? '',
+      phone: draft.phone ?? salon.phone ?? '',
+      tags: salon.tags || [],
+      businessDistrict: salon.businessDistrict || '',
+      isFeatured: salon.isFeatured === true,
+    },
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
     lastLoginAt: user.lastLoginAt,
@@ -548,7 +590,9 @@ const getServiceById = async (serviceId) => {
   return salon?.services?.find(item => item.id === serviceId) || null;
 };
 
-const getSalonByStaffId = (staffId) => Salon.findOne({ staffIds: staffId });
+// Every caller reads the salon for slots, staff details or booking checks and never saves it.
+const getSalonByStaffId = (staffId) => Salon.findOne({ staffIds: staffId })
+  .select(salonDomain.BOOKING_SALON_PROJECTION);
 
 const getStaffById = (staffId) => StaffProfile.findOne({ id: staffId });
 
@@ -1356,6 +1400,8 @@ const routeContext = {
   SlotOccupancy,
   broadcastBookingEvent,
   buildAdminMerchantPayload,
+  buildAdminMerchantSummary,
+  ADMIN_MERCHANT_SUMMARY_SALON_PROJECTION,
   addApprovedSalonRatings,
   buildAdminUserPayload,
   buildAdPayload,
@@ -1513,12 +1559,6 @@ const startServer = async () => {
   }
 
   await mongoose.connect(mongoUri);
-  // No live users yet: invalidate and remove legacy plaintext sessions instead of maintaining a dual-read migration.
-  await Promise.all([ClientUser, MerchantUser, AdminUser].map(Model =>
-    Model.collection.updateMany(
-      { sessionToken: { $exists: true } },
-      { $unset: { sessionToken: '' }, $set: { sessionTokenHash: '', sessionExpiresAt: null } },
-    )));
   const redisConnected = await connectRedis();
   if (redisConnected) {
     await subscribeSessionRevocations(closeSocketsBySessionHash);
@@ -1649,6 +1689,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+  buildAdminMerchantPayload,
+  buildAdminMerchantSummary,
   getUserPolicy,
   gracefulShutdown,
   activeSessionQuery,
