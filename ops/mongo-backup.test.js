@@ -7,6 +7,42 @@ const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 
 const script = path.join(__dirname, 'mongo-backup');
+
+test('mongo backup alert: check the latest scheduled window and send over TLS', () => {
+  const alert = path.join(__dirname, 'mongo-backup-alert');
+  const result = spawnSync('python3', ['-c', `
+import datetime, json, os, pathlib, runpy, sys, tempfile
+from unittest.mock import patch
+
+alert = runpy.run_path(sys.argv[1])
+now = datetime.datetime(2026, 11, 11, 5, tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+with tempfile.TemporaryDirectory() as root:
+    marker = pathlib.Path(root) / 'last-success.json'
+    assert alert['overdue'](marker, now)
+    marker.touch()
+    before = (now - datetime.timedelta(hours=2, seconds=1)).timestamp()
+    os.utime(str(marker), (before, before))
+    assert alert['overdue'](marker, now)
+    assert not alert['overdue'](marker, now - datetime.timedelta(minutes=1))
+    after = (now - datetime.timedelta(hours=2)).timestamp()
+    os.utime(str(marker), (after, after))
+    assert not alert['overdue'](marker, now)
+
+    config = pathlib.Path(root) / 'smtp.json'
+    config.write_text(json.dumps({'host': 'smtp.example.com', 'port': 587,
+                                  'from': 'ops@example.com', 'to': 'ops@example.com',
+                                  'password': 'dummy'}))
+    config.chmod(0o600)
+    with patch('smtplib.SMTP') as connect:
+        client = connect.return_value.__enter__.return_value
+        client.send_message.return_value = {}
+        alert['notify'](config, 'Backup failed')
+        assert [call[0] for call in client.method_calls] == ['starttls', 'login', 'send_message']
+        assert client.send_message.call_args[0][0]['To'] == 'ops@example.com'
+`, alert], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 for (const failure of ['dump', 'missing-oplog', 'upload', 'download', 'corrupt', 'none']) {
   test(`mongo backup: ${failure}`, () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mongo-backup-test-'));
