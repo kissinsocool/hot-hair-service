@@ -88,6 +88,14 @@ const stubStoredRatings = (rows) => {
   };
   return Object.assign(() => { StaffRatingSummary.find = original; }, { queries });
 };
+// A salon's review page query that finds no reviews.
+const emptyReviewQuery = () => {
+  const chain = {
+    sort: () => chain, skip: () => chain, limit: () => chain, select: () => chain, maxTimeMS: () => chain,
+    lean: async () => [],
+  };
+  return chain;
+};
 const registerAdminRoutes = require('./src/routes/admin');
 const registerAuthEntryRoutes = require('./src/routes/auth-entry');
 const registerClientBookingRoutes = require('./src/routes/client-bookings');
@@ -1822,17 +1830,18 @@ test('rating sort pages all nearby salons by approved ratings, then distance', a
     assert.deepEqual(first.map(salon => salon.id), ['high', 'near']);
     assert.deepEqual(second.map(salon => salon.id), ['unrated']);
     assert.equal(pipelines[1][0].$geoNear.maxDistance, 50000);
-    // Heavy detail fields are dropped before the rating lookup; staffIds must survive for it.
+    // Heavy detail fields are dropped first; the stored rating totals must survive for the sort.
     assert.ok(pipelines[1][1].$unset.includes('services'));
     assert.ok(pipelines[1][1].$unset.includes('fullDescription'));
-    assert.ok(!pipelines[1][1].$unset.includes('staffIds'));
-    assert.equal(pipelines[1][2].$lookup.localField, 'staffIds');
-    // Ratings come from stored stylist totals, not from scanning every booking review.
-    const lookup = pipelines[1].find(stage => stage.$lookup).$lookup;
-    assert.equal(lookup.from, StaffRatingSummary.collection.name);
-    assert.equal(lookup.foreignField, 'staffId');
-    assert.deepEqual(pipelines[1].find(stage => stage.$set?.ratingTotal).$set,
-      { reviewCount: { $sum: '$ratingRows.reviewCount' }, ratingTotal: { $sum: '$ratingRows.ratingTotal' } });
+    assert.ok(!pipelines[1][1].$unset.includes('ratingStats'));
+    // Ratings come from the totals stored on each salon: no lookup per salon, no scan of booking reviews.
+    assert.equal(pipelines[1].some(stage => stage.$lookup), false);
+    assert.deepEqual(pipelines[1].find(stage => stage.$set?.ratingTotal).$set, {
+      reviewCount: { $ifNull: ['$ratingStats.reviewCount', 0] },
+      ratingTotal: { $ifNull: ['$ratingStats.ratingTotal', 0] },
+    });
+    // The stored totals are internal and never returned.
+    assert.ok(pipelines[1].at(-1).$unset.includes('ratingStats'));
     assert.equal(pipelines[1].find(stage => stage.$set?.rating).$set.rating.$cond[1].$divide[1], 100);
     assert.deepEqual(pipelines[1].find(stage => stage.$sort).$sort, { rating: -1, distanceKm: 1, id: 1 });
     assert.deepEqual(pipelines[3].slice(-3, -1), [{ $skip: 2 }, { $limit: 2 }]);
@@ -1896,18 +1905,24 @@ test('favorite reads return ids or card summaries without building salon details
     salonQuery = query;
     return {
       select(value) { salonProjection = value; return this; },
-      async lean() { return [{ id: 'salon-1', name: '最新店名', description: '摘要', staffIds: ['staff-1'], image: '' }]; },
+      async lean() {
+        return [{
+          id: 'salon-1', name: '最新店名', description: '摘要', image: '',
+          ratingStats: { reviewCount: 2, ratingTotal: 9 },
+        }];
+      },
     };
   };
   Booking.aggregate = async () => [];
-  const restoreRatings = stubStoredRatings([{ staffId: 'staff-1', reviewCount: 2, ratingTotal: 9, techniqueCount: 0, techniqueTotal: 0 }]);
+  // The rating comes with the salon read: no stylist rating query.
+  const restoreRatings = stubStoredRatings([]);
 
   try {
     assert.deepEqual(await readFavoriteSalonIds('user-1'), ['salon-1']);
     const favorites = await readFavoriteSalons('user-1');
     assert.equal(FavoriteSalon.schema.path('salon'), undefined);
     assert.deepEqual(salonQuery, { id: { $in: ['salon-1'] }, publishStatus: 'online' });
-    assert.equal(salonProjection, 'id name description staffIds image images promoImages');
+    assert.equal(salonProjection, 'id name description image images promoImages +ratingStats');
     assert.deepEqual(favorites, [{
       id: 'salon-1',
       name: '最新店名',
@@ -1916,6 +1931,7 @@ test('favorite reads return ids or card summaries without building salon details
       reviewCount: 2,
       image: '',
     }]);
+    assert.equal(restoreRatings.queries.length, 0);
   } finally {
     FavoriteSalon.find = originalFavoriteFind;
     Salon.find = originalSalonFind;
@@ -2240,11 +2256,15 @@ test('merchant salon payload merges pending content from a real Mongoose documen
       fullDescription: '待审核详情',
     },
   });
-  Salon.findOne = async () => salon;
+  const originalBookingFind = Booking.find;
+  let salonProjection;
+  Salon.findOne = () => ({ async select(value) { salonProjection = value; return salon; } });
   StaffProfile.find = () => ({ lean: async () => [] });
+  Booking.find = () => emptyReviewQuery();
 
   try {
     const payload = await buildMerchantSalonPayload(salon.id);
+    assert.equal(salonProjection, '+ratingStats');
     assert.equal(payload.name, '待审核店名');
     assert.equal(payload.fullDescription, '待审核详情');
     assert.equal(Object.hasOwn(payload, '$__parent'), false);
@@ -2252,6 +2272,7 @@ test('merchant salon payload merges pending content from a real Mongoose documen
   } finally {
     Salon.findOne = originalSalonFindOne;
     StaffProfile.find = originalStaffFind;
+    Booking.find = originalBookingFind;
   }
 });
 
@@ -4281,7 +4302,9 @@ test('current mini-program detail request returns persisted featured state and c
   salon.save = async () => { await salon.validate(); return salon; };
   const originalFind = StaffProfile.find;
   const originalSalonFindOne = Salon.findOne;
+  const originalBookingFind = Booking.find;
   StaffProfile.find = () => ({ lean: async () => [] });
+  Booking.find = () => emptyReviewQuery();
   // The route reads only the cache key; the full salon is loaded only when the cached detail is missing.
   let fullLoads = 0;
   const salonFindOne = (query) => {
@@ -4335,6 +4358,7 @@ test('current mini-program detail request returns persisted featured state and c
   } finally {
     StaffProfile.find = originalFind;
     Salon.findOne = originalSalonFindOne;
+    Booking.find = originalBookingFind;
     clearPublicSalonDetailCache();
   }
 });

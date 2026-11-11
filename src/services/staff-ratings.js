@@ -12,21 +12,17 @@ const countWhen = condition => ({ $sum: { $cond: [condition, 1, 0] } });
 
 const STAT_FIELDS = 'staffId reviewCount ratingTotal techniqueCount techniqueTotal negativeCount neutralCount photoCount tagCounts';
 
-// Recomputes the stored review statistics of these stylists from their approved reviews: rating totals, the
-// review list filter counts and tag counts. Call it after any write that changes which reviews are approved or
-// what an approved review contains. Recomputing (rather than incrementing) makes it idempotent, so a retry or a
-// rebuild always converges on the bookings.
-async function refreshStaffRatingSummaries(staffIds = []) {
-  const ids = uniqueIds(staffIds);
-  if (!ids.length) return;
-  const computedAt = new Date();
+// Approved-review statistics grouped by one booking field ('staffId' or 'salonId'): rating totals, the review
+// list filter counts and tag counts. Returns a Map from id to its statistics; ids without approved reviews
+// are absent.
+async function aggregateReviewStats(field, ids) {
   const [result] = await Booking.aggregate([
-    { $match: { staffId: { $in: ids }, 'review.reviewStatus': 'approved' } },
+    { $match: { [field]: { $in: ids }, 'review.reviewStatus': 'approved' } },
     { $facet: {
       ratings: [
         { $match: { 'review.rating': { $gte: 1, $lte: 5 } } },
         { $group: {
-          _id: '$staffId',
+          _id: `$${field}`,
           reviewCount: { $sum: 1 },
           ratingTotal: { $sum: '$review.rating' },
           techniqueCount: countWhen(validTechnique),
@@ -39,35 +35,53 @@ async function refreshStaffRatingSummaries(staffIds = []) {
       tags: [
         { $unwind: '$review.tags' },
         { $match: { 'review.tags': { $in: REVIEW_TAGS } } },
-        { $group: { _id: { staffId: '$staffId', name: '$review.tags' }, count: { $sum: 1 } } },
+        { $group: { _id: { [field]: `$${field}`, name: '$review.tags' }, count: { $sum: 1 } } },
       ],
     } },
   ]);
-  const totals = new Map((result?.ratings || []).map(row => [String(row._id), row]));
-  const tagsByStaff = new Map();
+  const tagsById = new Map();
   for (const row of result?.tags || []) {
-    const staffId = String(row._id.staffId);
-    if (!tagsByStaff.has(staffId)) tagsByStaff.set(staffId, new Map());
-    tagsByStaff.get(staffId).set(row._id.name, row.count);
+    const id = String(row._id[field]);
+    if (!tagsById.has(id)) tagsById.set(id, new Map());
+    tagsById.get(id).set(row._id.name, row.count);
   }
+  const totals = new Map((result?.ratings || []).map(row => [String(row._id), row]));
+  return new Map([...new Set([...totals.keys(), ...tagsById.keys()])].map((id) => {
+    const row = totals.get(id) || {};
+    const tags = tagsById.get(id) || new Map();
+    return [id, {
+      reviewCount: row.reviewCount || 0,
+      ratingTotal: row.ratingTotal || 0,
+      techniqueCount: row.techniqueCount || 0,
+      techniqueTotal: row.techniqueTotal || 0,
+      negativeCount: row.negativeCount || 0,
+      neutralCount: row.neutralCount || 0,
+      photoCount: row.photoCount || 0,
+      tagCounts: REVIEW_TAGS.filter(name => tags.get(name)).map(name => ({ name, count: tags.get(name) })),
+    }];
+  }));
+}
+
+const EMPTY_REVIEW_STATS = Object.freeze({
+  reviewCount: 0, ratingTotal: 0, techniqueCount: 0, techniqueTotal: 0,
+  negativeCount: 0, neutralCount: 0, photoCount: 0, tagCounts: [],
+});
+
+// Recomputes the stored review statistics of these stylists from their approved reviews: rating totals, the
+// review list filter counts and tag counts. Call it after any write that changes which reviews are approved or
+// what an approved review contains. Recomputing (rather than incrementing) makes it idempotent, so a retry or a
+// rebuild always converges on the bookings.
+async function refreshStaffRatingSummaries(staffIds = []) {
+  const ids = uniqueIds(staffIds);
+  if (!ids.length) return;
+  const computedAt = new Date();
+  const statsById = await aggregateReviewStats('staffId', ids);
   await Promise.all(ids.map(async (staffId) => {
-    const row = totals.get(staffId) || {};
-    const tags = tagsByStaff.get(staffId) || new Map();
     try {
       await StaffRatingSummary.updateOne(
         // Only replace statistics computed from an older snapshot; a concurrent, newer refresh wins.
         { staffId, computedAt: { $lt: computedAt } },
-        { $set: {
-          reviewCount: row.reviewCount || 0,
-          ratingTotal: row.ratingTotal || 0,
-          techniqueCount: row.techniqueCount || 0,
-          techniqueTotal: row.techniqueTotal || 0,
-          negativeCount: row.negativeCount || 0,
-          neutralCount: row.neutralCount || 0,
-          photoCount: row.photoCount || 0,
-          tagCounts: REVIEW_TAGS.filter(name => tags.get(name)).map(name => ({ name, count: tags.get(name) })),
-          computedAt,
-        } },
+        { $set: { ...(statsById.get(staffId) || EMPTY_REVIEW_STATS), computedAt } },
         { upsert: true },
       );
     } catch (error) {
@@ -94,7 +108,11 @@ async function readStaffRatingSummaries(staffIds = []) {
 
 // Review list counts and tag counts for a group of stylists (a salon, or one stylist).
 async function readReviewListStats(staffIds = []) {
-  const rows = await readStaffReviewStats(staffIds);
+  return reviewListStats(await readStaffReviewStats(staffIds));
+}
+
+// Review list counts and tag counts summed over stored statistics rows (stylists, or one salon).
+const reviewListStats = (rows = []) => {
   const counts = { all: 0, negative: 0, neutral: 0, photos: 0 };
   const tags = new Map();
   for (const row of rows) {
@@ -105,6 +123,13 @@ async function readReviewListStats(staffIds = []) {
     for (const tag of row.tagCounts || []) tags.set(tag.name, (tags.get(tag.name) || 0) + tag.count);
   }
   return { counts, reviewTags: REVIEW_TAGS.filter(name => tags.get(name)).map(name => ({ name, count: tags.get(name) })) };
-}
+};
 
-module.exports = { refreshStaffRatingSummaries, readStaffRatingSummaries, readReviewListStats };
+module.exports = {
+  EMPTY_REVIEW_STATS,
+  aggregateReviewStats,
+  refreshStaffRatingSummaries,
+  readStaffRatingSummaries,
+  readReviewListStats,
+  reviewListStats,
+};

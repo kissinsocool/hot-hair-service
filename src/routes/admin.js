@@ -71,6 +71,7 @@ module.exports = (app, ctx) => {
     revokeSessionHash,
     clearPublicSalonDetailCache,
     refreshStaffRatingSummaries,
+    refreshSalonRatingSummaries,
     SupportMessage,
     CouponCampaign,
     UserCoupon,
@@ -863,12 +864,18 @@ module.exports = (app, ctx) => {
     res.json(bookings.flatMap(booking => userImageReviewItems(booking, privateImageUrl)));
   });
 
-  // Approval, rejection, deletion and edit moderation change which reviews count towards a stylist's rating.
+  // Approval, rejection, deletion and edit moderation change which reviews count towards the stylist's and the
+  // salon's rating.
   const refreshRatingsAfterModeration = async (booking) => {
-    try {
-      await refreshStaffRatingSummaries([booking.staffId]);
-    } catch (error) {
-      console.error(`Staff rating refresh failed after review moderation for ${booking.id}:`, error.message);
+    for (const refresh of [
+      () => refreshStaffRatingSummaries([booking.staffId]),
+      () => refreshSalonRatingSummaries([booking.salonId]),
+    ]) {
+      try {
+        await refresh();
+      } catch (error) {
+        console.error(`Rating refresh failed after review moderation for ${booking.id}:`, error.message);
+      }
     }
   };
 

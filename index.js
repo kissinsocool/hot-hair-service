@@ -75,6 +75,11 @@ const salonDomain = require('./src/services/salon');
 const salonPosts = require('./src/services/salon-posts');
 const { getSalonReviewsPage, getApprovedReviewTagCountsByStaffIds } = require('./src/services/salon-reviews');
 const { refreshStaffRatingSummaries, readStaffRatingSummaries } = require('./src/services/staff-ratings');
+const {
+  SALON_RATING_STATS_SELECTION,
+  refreshSalonRatingSummaries,
+  salonRatingSummary,
+} = require('./src/services/salon-ratings');
 const { addReviewHelpfulState, recordReviewHelpful } = require('./src/services/review-helpful');
 const {
   activeSessionQuery,
@@ -516,7 +521,7 @@ const findNearbySalons = async (userLocation, radiusKm, limit, skip = 0, keyword
     },
   };
   const salonList = await Salon.find(query)
-    .select(SALON_LIST_PROJECTION)
+    .select(`${SALON_LIST_PROJECTION} ${SALON_RATING_STATS_SELECTION}`)
     .skip(skip).limit(limit).lean();
   return salonList
     .map((salon) => {
@@ -545,17 +550,10 @@ const getNearbySalons = async (userLocation, _radiusKm, limit, minResults = 10, 
     return Salon.aggregate([
       geoNear(radiusKm),
       { $unset: [...SALON_LIST_EXCLUDED_FIELDS] },
-      // Salon ratings sum the stored totals of the salon's current stylists (one indexed row each).
-      { $lookup: {
-        from: StaffRatingSummary.collection.name,
-        localField: 'staffIds',
-        foreignField: 'staffId',
-        pipeline: [{ $project: { _id: 0, reviewCount: 1, ratingTotal: 1 } }],
-        as: 'ratingRows',
-      } },
+      // Salon ratings are stored on the salon (see services/salon-ratings.js), so sorting needs no lookup.
       { $set: {
-        reviewCount: { $sum: '$ratingRows.reviewCount' },
-        ratingTotal: { $sum: '$ratingRows.ratingTotal' },
+        reviewCount: { $ifNull: ['$ratingStats.reviewCount', 0] },
+        ratingTotal: { $ifNull: ['$ratingStats.ratingTotal', 0] },
       } },
       { $set: {
         rating: { $cond: [
@@ -574,7 +572,7 @@ const getNearbySalons = async (userLocation, _radiusKm, limit, minResults = 10, 
       { $sort: { rating: -1, distanceKm: 1, id: 1 } },
       { $skip: skip },
       { $limit: limit },
-      { $unset: ['ratingRows', 'ratingTotal', 'distanceMeters'] },
+      { $unset: ['ratingStats', 'ratingTotal', 'distanceMeters'] },
     ]).option({ maxTimeMS: 5000, allowDiskUse: true });
   }
   const probeLimit = skip ? minResults : limit;
@@ -773,27 +771,12 @@ const getApprovedReviewsByStaffIds = async (staffIds = [], limit = PUBLIC_SALON_
 // Reads the stored per-stylist totals maintained by refreshStaffRatingSummaries.
 const getApprovedRatingSummariesByStaffIds = staffIds => readStaffRatingSummaries(staffIds);
 
-const approvedSalonRatingSummary = (salon, summariesByStaffId) => {
-  const totals = (salon.staffIds || []).reduce((totals, staffId) => {
-    const summary = summariesByStaffId[String(staffId)];
-    if (summary) {
-      totals.reviewCount += summary.reviewCount;
-      totals.ratingTotal += summary.ratingTotal;
-    }
-    return totals;
-  }, { reviewCount: 0, ratingTotal: 0 });
-  return salonDomain.ratingSummary(totals.reviewCount, totals.ratingTotal);
-};
-
-const addApprovedSalonRatings = async (salons = []) => {
-  const summaries = await getApprovedRatingSummariesByStaffIds(
-    salons.flatMap(salon => salon.staffIds || []),
-  );
-  return salons.map((salon) => {
-    const { rating, reviewCount } = approvedSalonRatingSummary(salon, summaries);
-    return { ...salon, rating, reviewCount };
-  });
-};
+// Turns the stored totals each salon was read with (SALON_RATING_STATS_SELECTION) into its public rating.
+// Async because callers await it; it runs no query.
+const addApprovedSalonRatings = async (salons = []) => salons.map(({ ratingStats, ...salon }) => ({
+  ...salon,
+  ...salonRatingSummary({ ratingStats }),
+}));
 
 const groupReviewsByStaff = salonDomain.groupReviewsByStaff;
 const buildSalonImageList = salonDomain.buildSalonImageList;
@@ -820,7 +803,7 @@ const buildSalonDetail = async (salonDocument) => {
     ratingSummaries[person.id],
   ));
   const publicSalon = stripSensitiveSalonFields(salon);
-  const { rating, reviewCount } = approvedSalonRatingSummary(salon, ratingSummaries);
+  const { rating, reviewCount } = salonRatingSummary(salon);
   return {
     ...publicSalon,
     rating,
@@ -840,7 +823,8 @@ const PUBLIC_SALON_DETAIL_PROJECTION = '-licenseUrl -legalPersonIdFrontUrl -lega
 // The detail cache is keyed by salon id and updatedAt, so the route reads only those two fields and the full
 // salon document is loaded only when the cached detail is missing or stale. Null when it went offline meanwhile.
 const buildSalonDetailFromVersion = async (current) => {
-  const salon = await Salon.findOne({ id: current.id, publishStatus: 'online' }).select(PUBLIC_SALON_DETAIL_PROJECTION);
+  const salon = await Salon.findOne({ id: current.id, publishStatus: 'online' })
+    .select(`${PUBLIC_SALON_DETAIL_PROJECTION} ${SALON_RATING_STATS_SELECTION}`);
   return salon ? buildSalonDetail(salon) : null;
 };
 
@@ -1160,7 +1144,7 @@ const applyPendingContent = async (salon) => {
 };
 
 const buildMerchantSalonPayload = async (salonId) => {
-  const salon = await Salon.findOne({ id: salonId });
+  const salon = await Salon.findOne({ id: salonId }).select(SALON_RATING_STATS_SELECTION);
   if (!salon) return null;
   const payload = await buildSalonDetail(salon);
   const merged = {
@@ -1246,7 +1230,7 @@ const readFavoriteSalons = async (userId) => {
   const salons = await Salon.find({
     id: { $in: favoriteSalonIds },
     publishStatus: 'online',
-  }).select('id name description staffIds image images promoImages').lean();
+  }).select(`id name description image images promoImages ${SALON_RATING_STATS_SELECTION}`).lean();
   const ratedSalons = await addApprovedSalonRatings(salons);
   const salonsById = new Map(ratedSalons.map(salon => [salon.id, salon]));
   return Promise.all(
@@ -1441,6 +1425,7 @@ const routeContext = {
   getApprovedReviewsByStaffIds,
   getApprovedRatingSummariesByStaffIds,
   refreshStaffRatingSummaries,
+  refreshSalonRatingSummaries,
   getCoordinates,
   getSalonByStaffId,
   getServiceById,
@@ -1488,6 +1473,7 @@ const routeContext = {
   salonPostPayload: salonPosts.postPayload,
   validateSalonPostInput: salonPosts.validatePostInput,
   salonCoverImage,
+  SALON_RATING_STATS_SELECTION,
   setPaginationHeaders,
   privateImageUrl,
   SupportMessage,
@@ -1715,6 +1701,7 @@ module.exports = {
   getApprovedReviewsByStaffIds,
   getApprovedRatingSummariesByStaffIds,
   refreshStaffRatingSummaries,
+  refreshSalonRatingSummaries,
   getApprovedReviewTagCountsByStaffIds,
   getNearbySalons,
   getCoordinates,

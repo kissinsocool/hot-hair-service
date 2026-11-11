@@ -1,5 +1,7 @@
 const crypto = require('node:crypto');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env'), quiet: true });
 const mongoose = require('mongoose');
 const WebSocket = require('ws');
@@ -10,6 +12,7 @@ const { occupiedSlotStarts } = require('../services/booking');
 const { completeDueBookings, expirePendingBookings } = require('../services/auto-complete-bookings');
 // Fixtures insert approved reviews directly, so they refresh stored ratings the way moderation routes do.
 const { refreshStaffRatingSummaries } = require('../services/staff-ratings');
+const { refreshSalonRatingSummaries, SALON_RATING_STATS_SELECTION } = require('../services/salon-ratings');
 // This in-process test server exercises many writes without waiting for production rate windows.
 const rateLimitToken = crypto.randomBytes(32).toString('hex');
 process.env.LOAD_TEST_BYPASS_ENABLED = 'true';
@@ -287,6 +290,7 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       },
     })));
     await refreshStaffRatingSummaries([staffId]);
+    await refreshSalonRatingSummaries([salonId]);
     const staff = await request('client', `/staff/${staffId}`);
     expect(staff.status).toBe(200);
     expect(staff.body).toMatchObject({ rating: 3.5, reviewCount: 3 });
@@ -338,6 +342,7 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       review: { id: status, rating: 1, reviewStatus: status, imageUrls: ['https://example.com/unapproved.jpg'], tags: ['善于沟通'] },
     })));
     await refreshStaffRatingSummaries([staffId]);
+    await refreshSalonRatingSummaries(['review-pages-salon']);
     const counts = { all: 165,
       negative: documents.filter(doc => doc.review.rating < 3).length,
       neutral: documents.filter(doc => doc.review.rating >= 3 && doc.review.rating < 4).length,
@@ -411,11 +416,41 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect(bounded.body.page).toBe(1); expect(bounded.body.limit).toBe(50); expect(bounded.body.items).toHaveLength(50);
   });
 
+  test('salon review pagination uses the salon indexes for chronological and selective rating queries', async () => {
+    const salonId = 'review-index-salon';
+    const createdAt = new Date('2030-01-01');
+    await Booking.insertMany(Array.from({ length: 600 }, (_, index) => ({
+      id: `review-index-booking-${index}`, salonId, serviceId: 'service', startTime: createdAt,
+      review: {
+        id: `review-index-${index}`, reviewStatus: 'approved', rating: index < 24 ? 1 : 5,
+        createdAt: new Date(createdAt.getTime() + index * 1000),
+      },
+    })));
+    try {
+      for (const [rating, indexName] of [
+        [{ $gte: 1, $lte: 5 }, 'salonId_1_review.reviewStatus_1_review.createdAt_-1__id_-1'],
+        [{ $gte: 1, $lt: 3 }, 'salonId_1_review.reviewStatus_1_review.rating_1_review.createdAt_-1__id_-1'],
+      ]) {
+        const plan = await Booking.find({
+          salonId, 'review.reviewStatus': 'approved', 'review.rating': rating,
+        }).sort({ 'review.createdAt': -1, _id: -1 }).skip(10).limit(10)
+          .select('id userId staffId staffName review').maxTimeMS(5000).lean().explain('executionStats');
+        const winner = JSON.stringify(plan.queryPlanner.winningPlan);
+        expect(winner).not.toContain('"stage":"COLLSCAN"');
+        expect(winner).toContain(`"indexName":"${indexName}"`);
+        expect(plan.executionStats.nReturned).toBe(10);
+      }
+    } finally {
+      await Booking.deleteMany({ salonId });
+    }
+  });
+
   test('helpful feedback persists once per user, is private to the viewer and survives concurrent retries', async () => {
     await StaffProfile.create({ id: 'helpful-staff', name: 'Helpful stylist', roleId: 'designer' });
     await Salon.create({ id: 'helpful-salon', name: 'Helpful salon', publishStatus: 'online', staffIds: ['helpful-staff'] });
-    await Booking.create({ id: 'helpful-booking', staffId: 'helpful-staff', serviceId: 'helpful-service', startTime: new Date('2030-01-01'),
+    await Booking.create({ id: 'helpful-booking', salonId: 'helpful-salon', staffId: 'helpful-staff', serviceId: 'helpful-service', startTime: new Date('2030-01-01'),
       review: { id: 'helpful-review', rating: 5, reviewStatus: 'approved', createdAt: new Date() } });
+    await refreshSalonRatingSummaries(['helpful-salon']);
     sessions.reviewer = createSession();
     await ClientUser.create({ id: 'reviewer-2', account: '13800000002', authProvider: 'wechat', displayName: 'Second reviewer',
       sessionTokenHash: sessions.reviewer.tokenHash, sessionExpiresAt: sessions.reviewer.expiresAt });
@@ -476,6 +511,7 @@ describeWithMongo('three-client booking contracts against a real replica set', (
         ratings: { environment: rating, technique: rating, service: rating, price: rating } },
     })));
     await refreshStaffRatingSummaries(['precision-staff']);
+    await refreshSalonRatingSummaries(['precision-salon']);
     for (const sort of ['', '&sort=rating']) {
       const result = await request('client', `/salons?latitude=39.9042&longitude=116.4074&page=1&limit=10${sort}`);
       expect(result.status).toBe(200);
@@ -491,6 +527,7 @@ describeWithMongo('three-client booking contracts against a real replica set', (
         ratings: { environment: rating, technique: rating, service: rating, price: rating } },
     })));
     await refreshStaffRatingSummaries(['precision-staff']);
+    await refreshSalonRatingSummaries(['precision-salon']);
     for (const sort of ['', '&sort=rating']) {
       const result = await request('client', `/salons?latitude=39.9042&longitude=116.4074&page=1&limit=10${sort}`);
       expect(result.status).toBe(200);
@@ -996,6 +1033,133 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     expect(await models.StaffRatingSummary.countDocuments({ staffId })).toBe(1);
     await expectRatings([5, 1], [5, 1]);
   });
+
+  test('salon ratings and reviews keep the reviews of a stylist who has left, and sort by the stored rating', async () => {
+    const coordinates = [103.8198, 1.3521];
+    const geo = { location: { latitude: coordinates[1], longitude: coordinates[0] }, geoLocation: { type: 'Point', coordinates } };
+    await StaffProfile.create([
+      { id: 'departed-staff', name: 'Departed stylist', roleId: 'designer' },
+      { id: 'remaining-staff', name: 'Remaining stylist', roleId: 'designer' },
+    ]);
+    await Salon.create([
+      { id: 'departed-salon', name: 'Departed salon', publishStatus: 'online', staffIds: ['departed-staff', 'remaining-staff'], ...geo },
+      { id: 'departed-rival', name: 'Rival salon', publishStatus: 'online', staffIds: [], ...geo },
+    ]);
+    const review = (id, salonId, staffId, rating) => ({
+      id, userId: 'client-1', salonId, staffId, staffName: staffId, serviceId: 'service', status: 'completed',
+      startTime: new Date('2030-04-01T02:00:00Z'),
+      review: { id: `${id}-review`, rating, reviewStatus: 'approved', createdAt: new Date(), tags: ['服务周到'] },
+    });
+    await Booking.create([
+      review('departed-low', 'departed-salon', 'departed-staff', 1),
+      review('departed-high', 'departed-salon', 'remaining-staff', 5),
+      review('departed-rival-booking', 'departed-rival', 'someone-else', 4),
+    ]);
+    await refreshStaffRatingSummaries(['departed-staff', 'remaining-staff']);
+    const salonQuery = { id: 'departed-salon' };
+    const { updatedAt } = await Salon.findOne(salonQuery).lean();
+    await refreshSalonRatingSummaries(['departed-salon', 'departed-rival']);
+    const defaultRead = await Salon.findOne(salonQuery).lean();
+    expect(defaultRead.updatedAt).toEqual(updatedAt);
+    expect(defaultRead.ratingStats).toBeUndefined();
+    expect((await Salon.findOne(salonQuery).select('-services').lean()).ratingStats).toBeUndefined();
+    const stored = { reviewCount: 2, ratingTotal: 6 };
+    for (const fields of ['id name', '-services']) {
+      const selected = await Salon.findOne(salonQuery).select(`${fields} ${SALON_RATING_STATS_SELECTION}`).lean();
+      expect(selected.ratingStats).toMatchObject(stored);
+      expect(selected.services).toBeUndefined();
+    }
+    const { clearPublicSalonDetailCache } = require('../../index');
+    const read = async () => {
+      clearPublicSalonDetailCache();
+      const [detail, reviews, byDistance, byRating] = await Promise.all([
+        request('client', '/salons/departed-salon'),
+        request('client', '/salons/departed-salon/reviews'),
+        request('client', `/salons?latitude=${coordinates[1]}&longitude=${coordinates[0]}&radiusKm=1&page=1&limit=10`),
+        request('client', `/salons?latitude=${coordinates[1]}&longitude=${coordinates[0]}&radiusKm=1&sort=rating&page=1&limit=10`),
+      ]);
+      expect([detail.status, reviews.status, byDistance.status, byRating.status]).toEqual([200, 200, 200, 200]);
+      return { detail: detail.body, reviews: reviews.body, byDistance: byDistance.body, byRating: byRating.body };
+    };
+    const expectSalonUnchanged = ({ detail, reviews, byDistance, byRating }) => {
+      expect(detail).toMatchObject({ rating: 3, reviewCount: 2 });
+      expect(reviews.total).toBe(2);
+      expect(reviews.counts).toMatchObject({ all: 2, negative: 1 });
+      expect(reviews.reviewTags).toEqual([{ name: '服务周到', count: 2 }]);
+      expect(reviews.items.map(item => item.bookingId).sort()).toEqual(['departed-high', 'departed-low']);
+      for (const list of [byDistance, byRating]) {
+        expect(list.find(salon => salon.id === 'departed-salon')).toMatchObject({ rating: 3, reviewCount: 2 });
+        // The stored totals are internal.
+        expect(list.every(salon => salon.ratingStats === undefined)).toBe(true);
+      }
+      expect(detail.ratingStats).toBeUndefined();
+      // The rival's 4 outranks this salon's 3 whether or not the low-rated stylist is still listed.
+      const order = byRating.map(salon => salon.id).filter(id => id.startsWith('departed-'));
+      expect(order).toEqual(['departed-rival', 'departed-salon']);
+    };
+
+    const beforeDeparture = await read();
+    expectSalonUnchanged(beforeDeparture);
+    // The low-rated stylist leaves: the salon keeps the review and its rating.
+    await Salon.updateOne({ id: 'departed-salon' }, { $set: { staffIds: ['remaining-staff'] } });
+    await StaffProfile.deleteOne({ id: 'departed-staff' });
+    await refreshSalonRatingSummaries(['departed-salon']);
+    const afterwards = await read();
+    expectSalonUnchanged(afterwards);
+    expect(afterwards.reviews).toEqual(beforeDeparture.reviews);
+    expect(afterwards.reviews.items.find(item => item.bookingId === 'departed-low')).toMatchObject({ staffId: 'departed-staff' });
+    expect(afterwards.detail.staff.map(person => person.id)).toEqual(['remaining-staff']);
+    const merchantSession = createSession();
+    sessions.ratingMerchant = merchantSession;
+    await MerchantUser.create({ id: 'rating-merchant', username: 'rating-merchant', salonId: 'departed-salon',
+      passwordHash: 'fixture', passwordSalt: 'fixture',
+      sessionTokenHash: merchantSession.tokenHash, sessionExpiresAt: merchantSession.expiresAt });
+    const saved = await request('ratingMerchant', '/merchant/salon', { openingHours: '09:00-20:00' }, 'PATCH');
+    expect(saved.status).toBe(200);
+    expect(saved.body).toMatchObject({ rating: 3, reviewCount: 2, openingHours: '09:00-20:00' });
+    expect(saved.body.ratingStats).toBeUndefined();
+    expect((await Salon.findOne(salonQuery).select(SALON_RATING_STATS_SELECTION).lean()).ratingStats).toMatchObject(stored);
+    expectSalonUnchanged(await read());
+  });
+
+  test('rating rebuild reproduces totals and reports approved reviews without an existing salon', async () => {
+    const db = mongoose.connection.getClient().db(`${mongoose.connection.name}_rebuild`);
+    const rebuildUri = new URL(uri);
+    rebuildUri.pathname = `/${db.databaseName}`;
+    const salons = db.collection(Salon.collection.name);
+    const summaries = db.collection(models.StaffRatingSummary.collection.name);
+    try {
+      await salons.insertOne({ id: 'rebuild-salon', name: 'Rebuild salon', updatedAt: new Date('2020-01-01') });
+      await db.collection(Booking.collection.name).insertMany([
+        { salonId: 'rebuild-salon' }, {}, { salonId: null }, { salonId: '' }, { salonId: 'deleted-salon' },
+        { reviewStatus: 'pending' }, { salonId: 'deleted-salon', reviewStatus: 'rejected' },
+      ].map(({ reviewStatus = 'approved', ...booking }, index) => ({
+        id: `rebuild-${index}`, staffId: 'rebuild-staff',
+        review: { rating: 4, reviewStatus, tags: ['服务周到'] }, ...booking,
+      })));
+      const run = async () => {
+        const output = await promisify(execFile)(process.execPath, [
+          path.join(__dirname, '../../scripts/rebuild-staff-ratings.js'),
+        ], { env: { ...process.env, MONGODB_URI: rebuildUri.href } });
+        expect(output.stdout).toContain('Rebuilt stored ratings for 1 stylists.');
+        expect(output.stdout).toContain('Rebuilt stored ratings for 1 salons.');
+        expect(output.stderr).toMatch(/^4 approved reviews belong to bookings without an existing salon/m);
+        const { ratingStats, updatedAt } = await salons.findOne({ id: 'rebuild-salon' });
+        const { computedAt, ...salonTotals } = ratingStats;
+        const { _id, computedAt: staffComputedAt, ...staffTotals } = await summaries.findOne({ staffId: 'rebuild-staff' });
+        expect(computedAt).toBeInstanceOf(Date);
+        expect(staffComputedAt).toBeInstanceOf(Date);
+        expect(updatedAt).toEqual(new Date('2020-01-01'));
+        return { salonTotals, staffTotals };
+      };
+      const first = await run();
+      expect(first.salonTotals).toMatchObject({ reviewCount: 1, ratingTotal: 4 });
+      expect(first.staffTotals).toMatchObject({ reviewCount: 5, ratingTotal: 20 });
+      expect(await run()).toEqual(first);
+    } finally {
+      await db.dropDatabase();
+    }
+  }, 15000);
 
   test('admin today bookings snapshot and per-account viewed state persist through actual HTTP and MongoDB', async () => {
     const { bookingDayRange } = require('../services/booking');

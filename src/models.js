@@ -234,6 +234,10 @@ bookingSchema.index({ staffId: 1, 'review.reviewStatus': 1, updatedAt: -1 });
 // serves the negative and neutral filters, which match few reviews and would otherwise walk all of them.
 bookingSchema.index({ staffId: 1, 'review.reviewStatus': 1, 'review.createdAt': -1, _id: -1 });
 bookingSchema.index({ staffId: 1, 'review.reviewStatus': 1, 'review.rating': 1, 'review.createdAt': -1, _id: -1 });
+// The same two indexes by salon: a salon's rating and review list cover every booking made at the salon,
+// whichever stylist served it and whether or not that stylist still works there.
+bookingSchema.index({ salonId: 1, 'review.reviewStatus': 1, 'review.createdAt': -1, _id: -1 });
+bookingSchema.index({ salonId: 1, 'review.reviewStatus': 1, 'review.rating': 1, 'review.createdAt': -1, _id: -1 });
 bookingSchema.index({ 'complaint.reviewStatus': 1, updatedAt: -1 });
 bookingSchema.index({ 'merchantAppeal.submittedAt': -1, id: 1 }, {
   partialFilterExpression: { 'merchantAppeal.submittedAt': { $exists: true } },
@@ -317,6 +321,22 @@ const salonSchema = new mongoose.Schema({
   services: [serviceSchema],
   publishStatus: { type: String, default: 'online', index: true },
   bookingCreationFence: { type: Number, default: 0, select: false },
+  // Derived from the approved reviews of this salon's bookings by services/salon-ratings.js; never edited
+  // directly. Not selected by default, so salon payloads and merchant saves can neither expose nor overwrite it.
+  ratingStats: {
+    type: new mongoose.Schema({
+      reviewCount: { type: Number, default: 0 },
+      ratingTotal: { type: Number, default: 0 },
+      negativeCount: { type: Number, default: 0 },
+      neutralCount: { type: Number, default: 0 },
+      photoCount: { type: Number, default: 0 },
+      tagCounts: { type: [{ _id: false, name: String, count: Number }], default: [] },
+      // Start time of the aggregation that produced these totals; an older aggregation never replaces a newer one.
+      computedAt: { type: Date, required: true },
+    }, { _id: false }),
+    default: undefined,
+    select: false,
+  },
   licenseUrl: { type: String, default: '' },
   legalPersonIdFrontUrl: { type: String, default: '' },
   legalPersonIdBackUrl: { type: String, default: '' },

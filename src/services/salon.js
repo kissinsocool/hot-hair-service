@@ -379,6 +379,7 @@ const stripSensitiveSalonFields = (salon = {}) => {
     contentRejectReason,
     contentReviewedAt,
     bookingCreationFence,
+    ratingStats,
     ...publicSalon
   } = salon || {};
   return { ...publicSalon, isFeatured: publicSalon.isFeatured === true };

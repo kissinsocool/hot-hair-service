@@ -1,5 +1,6 @@
 const { createTtlCache } = require('../ttl-cache');
 const { BOOKING_SALON_PROJECTION } = require('../services/salon');
+const { SALON_RATING_STATS_SELECTION } = require('../services/salon-ratings');
 
 // These responses are the same for every caller and already declare max-age=15, but the mini-program does not
 // cache requests itself, so the server keeps them for the same 15 seconds instead of querying on every home view.
@@ -212,7 +213,7 @@ module.exports = (app, ctx) => {
     const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const salons = await Salon
       .find({ publishStatus: 'online', name: { $regex: escaped, $options: 'i' } })
-      .select('id name address location geoLocation staffIds image images promoImages description tags businessDistrict publishStatus')
+      .select(`id name address location geoLocation image images promoImages description tags businessDistrict publishStatus ${SALON_RATING_STATS_SELECTION}`)
       .limit(8)
       .lean();
     const userLocation = getCoordinates(req.query);
@@ -260,7 +261,8 @@ module.exports = (app, ctx) => {
     if (!['latest', 'negative', 'neutral', 'photos'].includes(filter)) {
       return res.status(400).json({ message: '评价筛选类型无效' });
     }
-    const salon = await Salon.findOne({ id: req.params.id, publishStatus: 'online' }).select('id staffIds').lean();
+    const salon = await Salon.findOne({ id: req.params.id, publishStatus: 'online' })
+      .select(`id ${SALON_RATING_STATS_SELECTION}`).lean();
     if (!salon) return res.status(404).json({ message: 'Salon not found' });
     const pagination = normalizePagination(req.query, 10, 50);
     const result = await getSalonReviewsPage(salon, pagination, filter);

@@ -19,8 +19,9 @@ test('public review endpoint validates filters and restricts reads to online sal
     Salon: { findOne(filter) {
       assert.deepEqual(filter, { id: 'salon-1', publishStatus: 'online' });
       return { select(fields) {
-        assert.equal(fields, 'id staffIds');
-        return { lean: async () => exists ? { id: 'salon-1', staffIds: ['staff-1'] } : null };
+        // The salon's stored statistics supply the review counts and tags.
+        assert.equal(fields, 'id +ratingStats');
+        return { lean: async () => exists ? { id: 'salon-1', ratingStats: { reviewCount: 0 } } : null };
       } };
     } },
     normalizePagination(query, fallback, max) {

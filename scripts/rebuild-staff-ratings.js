@@ -1,10 +1,13 @@
-// Recomputes every stylist's stored rating totals from approved booking reviews.
+// Recomputes every stylist's and every salon's stored rating totals from approved booking reviews.
 // Run once after deploying stored ratings, or any time the totals need to be re-derived. Safe to repeat.
+// Salon totals are grouped by the booking's salonId; approved reviews on bookings without one are reported,
+// because they cannot count towards any salon.
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true });
 const mongoose = require('mongoose');
-const { Booking, StaffProfile, StaffRatingSummary } = require('../src/models');
+const { Booking, Salon, StaffProfile, StaffRatingSummary } = require('../src/models');
 const { refreshStaffRatingSummaries } = require('../src/services/staff-ratings');
+const { refreshSalonRatingSummaries } = require('../src/services/salon-ratings');
 
 const BATCH_SIZE = 200;
 
@@ -21,6 +24,18 @@ async function rebuildStaffRatings() {
   return ids.length;
 }
 
+async function rebuildSalonRatings() {
+  const ids = (await Salon.distinct('id')).map(String).filter(Boolean);
+  for (let index = 0; index < ids.length; index += BATCH_SIZE) {
+    await refreshSalonRatingSummaries(ids.slice(index, index + BATCH_SIZE));
+  }
+  const unattributed = await Booking.countDocuments({
+    'review.reviewStatus': 'approved',
+    $or: [{ salonId: { $exists: false } }, { salonId: null }, { salonId: '' }, { salonId: { $nin: ids } }],
+  });
+  return { count: ids.length, unattributed };
+}
+
 async function run() {
   const uri = String(process.env.MONGODB_URI || '').trim();
   if (!uri) throw new Error('MONGODB_URI is required');
@@ -29,6 +44,11 @@ async function run() {
     await StaffRatingSummary.createIndexes();
     const count = await rebuildStaffRatings();
     console.log(`Rebuilt stored ratings for ${count} stylists.`);
+    const salons = await rebuildSalonRatings();
+    console.log(`Rebuilt stored ratings for ${salons.count} salons.`);
+    if (salons.unattributed) {
+      console.warn(`${salons.unattributed} approved reviews belong to bookings without an existing salon and count towards no salon rating.`);
+    }
   } finally {
     await mongoose.disconnect();
   }
@@ -41,4 +61,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { rebuildStaffRatings };
+module.exports = { rebuildStaffRatings, rebuildSalonRatings };
