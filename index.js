@@ -69,6 +69,7 @@ const {
   subscribeSessionRevocations,
 } = require('./src/redis');
 const { errorLogger, requestLogger } = require('./src/observability');
+const { createPublicResponseCaches } = require('./src/ttl-cache');
 const authDomain = require('./src/services/auth');
 const bookingDomain = require('./src/services/booking');
 const salonDomain = require('./src/services/salon');
@@ -841,6 +842,14 @@ const buildPublicSalonDetail = (salonDocument, builder = buildSalonDetailFromVer
   }, now);
 const clearPublicSalonDetailCache = salonDomain.clearPublicSalonDetailCache;
 
+// ponytail: process-local, like the salon detail cache; several backend instances would need to broadcast these.
+const publicResponseCaches = createPublicResponseCaches();
+const clearAdCache = () => publicResponseCaches.ad.clear();
+const clearCouponCampaignCache = () => publicResponseCaches.couponCampaign.clear();
+// The promoted gallery is built from every online salon's services, images, promotion review state and publish
+// state. Rather than track which salon fields matter, every route that saves a salon clears it.
+const clearPromotedServicesCache = () => publicResponseCaches.promotedServices.clear();
+
 const contentFields = [
   'name',
   'address',
@@ -1401,6 +1410,10 @@ const routeContext = {
   buildPublicStaffSummary,
   calculateDistanceKm,
   clearPublicSalonDetailCache,
+  publicResponseCaches,
+  clearAdCache,
+  clearCouponCampaignCache,
+  clearPromotedServicesCache,
   ClientUser,
   CouponCampaign,
   UserCoupon,
@@ -1676,6 +1689,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  publicResponseCaches,
   buildAdminMerchantPayload,
   buildAdminMerchantSummary,
   getUserPolicy,

@@ -69,6 +69,7 @@ module.exports = (app, ctx) => {
     logoutSession,
     sessionTokenFromRequest,
     clearPublicSalonDetailCache,
+    clearPromotedServicesCache,
     ClientUser,
     UserCoupon,
     couponDiscountForOrder,
@@ -297,6 +298,7 @@ module.exports = (app, ctx) => {
     salon.licenseRejectReason = '';
     salon.licenseSubmittedAt = new Date();
     await salon.save();
+    clearPromotedServicesCache?.();
   
     res.json({
       salonId: salon.id,
@@ -376,6 +378,7 @@ module.exports = (app, ctx) => {
     }
     salon.contentSubmittedAt = new Date();
     await salon.save();
+    clearPromotedServicesCache?.();
     res.json(await buildMerchantSalonPayload(req.merchantUser.salonId));
   });
 

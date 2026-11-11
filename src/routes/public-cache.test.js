@@ -111,3 +111,108 @@ test('booking salon reads exclude the unreviewed draft and qualification documen
     assert.ok(!excluded.includes(`-${field}`), field);
   }
 });
+
+test('admin and merchant writes clear the shared public caches so changes show at once', async () => {
+  const { createPublicResponseCaches } = require('../ttl-cache');
+  const registerAdminRoutes = require('./admin');
+  const { Salon } = require('../models');
+  const publicResponseCaches = createPublicResponseCaches();
+  let ad = { imageUrl: 'https://media.hothaircc.cn/uploads/old.jpg' };
+  let adReads = 0;
+  let galleryReads = 0;
+  const salon = new Salon({
+    id: 'cache-salon', name: '门店', publishStatus: 'online',
+    services: [{ id: 'service-1', name: '剪发', priceFen: 100, durationMinutes: 30, promotionReviewStatus: 'pending' }],
+  });
+  salon.save = async () => {};
+
+  const routes = new Map();
+  const app = new Proxy({}, { get: (_target, method) => (path, ...handlers) => {
+    routes.set(`${String(method)}:${path}`, handlers.at(-1));
+  } });
+  const shared = {
+    rateLimits: { publicRead: [], upload: [], login: [], merchantBooking: [] },
+    publicResponseCaches,
+    clearAdCache: () => publicResponseCaches.ad.clear(),
+    clearCouponCampaignCache: () => publicResponseCaches.couponCampaign.clear(),
+    clearPromotedServicesCache: () => publicResponseCaches.promotedServices.clear(),
+    publicImageUrl: value => value,
+    buildAdPayload: config => ({ imageUrl: config.imageUrl }),
+    normalizeAdLink: value => value,
+    AdConfig: {
+      findOne: () => ({ async lean() { adReads += 1; return ad; } }),
+      findOneAndUpdate: (_filter, update) => ({ async lean() { ad = { imageUrl: update.imageUrl }; return ad; } }),
+    },
+    Salon: {
+      aggregate: () => ({ async option() {
+        galleryReads += 1;
+        return [{ items: [{ salonId: 'cache-salon', serviceId: `read-${galleryReads}`, imageIndex: 0, imageUrl: 'a.jpg' }], total: [{ count: 1 }] }];
+      } }),
+      findOne: async () => salon,
+    },
+    MerchantUser: { findOne: () => ({ async lean() { return { id: 'merchant-1', salonId: salon.id }; } }) },
+    normalizePagination: () => ({ page: 1, limit: 30, skip: 0 }),
+    setPaginationHeaders() {},
+    buildAdminMerchantPayload: async () => ({}),
+  };
+  registerPublicRoutes(app, shared);
+  registerAdminRoutes(app, shared);
+  const call = async (route, req = {}) => {
+    const res = respond();
+    await routes.get(route)({ query: {}, params: {}, body: {}, adminUser: { id: 'admin' }, ...req }, res);
+    return res.body;
+  };
+  const gallery = async () => (await call('get:/api/salons/promoted-services', { query: { category: 'men-cut' } }))[0].serviceId;
+
+  assert.equal((await call('get:/api/ad')).imageUrl, 'https://media.hothaircc.cn/uploads/old.jpg');
+  await call('get:/api/ad');
+  assert.equal(adReads, 1);
+  await call('patch:/api/admin/ad', { body: { imageUrl: 'https://media.hothaircc.cn/uploads/new.jpg', link: '/pages/home/home', enabled: true } });
+  assert.equal((await call('get:/api/ad')).imageUrl, 'https://media.hothaircc.cn/uploads/new.jpg');
+  assert.equal(adReads, 2);
+
+  assert.equal(await gallery(), 'read-1');
+  assert.equal(await gallery(), 'read-1');
+  await call('patch:/api/admin/merchants/:id/services/:serviceId/promotion', {
+    params: { id: 'merchant-1', serviceId: 'service-1' }, body: { action: 'approve' },
+  });
+  assert.equal(await gallery(), 'read-2');
+});
+
+test('every route that saves a salon clears the promoted gallery cache', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  for (const file of ['admin.js', 'merchant.js']) {
+    const lines = fs.readFileSync(path.join(__dirname, file), 'utf8').split('\n');
+    const saves = lines.flatMap((line, index) => (/salon\.save\(/.test(line) ? [index] : []));
+    assert.ok(saves.length > 0, file);
+    for (const index of saves) {
+      assert.match(lines[index + 1], /clearPromotedServicesCache\?\.\(\);/, `${file}:${index + 1}`);
+    }
+  }
+});
+
+test('public response lifetimes: long where a write clears them, short where the clock decides', async () => {
+  const { createPublicResponseCaches } = require('../ttl-cache');
+  let time = 0;
+  const caches = createPublicResponseCaches(() => time);
+  const loads = { ad: 0, couponCampaign: 0, promotedServices: 0 };
+  const read = () => Promise.all(Object.keys(loads).map(name => caches[name].get('key', async () => { loads[name] += 1; })));
+
+  await read();
+  time = 14_999;
+  await read();
+  assert.deepEqual(loads, { ad: 1, couponCampaign: 1, promotedServices: 1 });
+  // A campaign starts and ends by the clock, so it is re-read after 15 seconds; the others wait for a write.
+  time = 15_000;
+  await read();
+  assert.deepEqual(loads, { ad: 1, couponCampaign: 2, promotedServices: 1 });
+  time = 299_999;
+  await read();
+  assert.equal(loads.ad, 1);
+  assert.equal(loads.promotedServices, 1);
+  time = 300_000;
+  await read();
+  assert.equal(loads.ad, 2);
+  assert.equal(loads.promotedServices, 2);
+});

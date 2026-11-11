@@ -70,6 +70,9 @@ module.exports = (app, ctx) => {
     logoutSession,
     revokeSessionHash,
     clearPublicSalonDetailCache,
+    clearAdCache,
+    clearCouponCampaignCache,
+    clearPromotedServicesCache,
     refreshStaffRatingSummaries,
     refreshSalonRatingSummaries,
     SupportMessage,
@@ -219,6 +222,7 @@ module.exports = (app, ctx) => {
       { ...parsed.value, updatedBy: req.adminUser.id },
       { upsert: true, new: true, runValidators: true },
     ).lean();
+    clearCouponCampaignCache?.();
     res.json(await buildCampaignResponse(campaign));
   });
 
@@ -238,6 +242,7 @@ module.exports = (app, ctx) => {
       { imageUrl, link, enabled: req.body.enabled },
       { upsert: true, new: true },
     ).lean();
+    clearAdCache?.();
     res.json(buildAdPayload(config));
   });
   
@@ -364,6 +369,7 @@ module.exports = (app, ctx) => {
       if (req.body.tags !== undefined) salon.tags = normalizeSalonTags(req.body.tags);
       if (req.body.businessDistrict !== undefined) salon.businessDistrict = req.body.businessDistrict;
       await salon.save();
+      clearPromotedServicesCache?.();
       clearPublicSalonDetailCache();
     }
     const { salt, hash } = await hashPassword(password);
@@ -429,6 +435,7 @@ module.exports = (app, ctx) => {
       if (req.body.tags !== undefined) salon.tags = normalizeSalonTags(req.body.tags);
       if (req.body.businessDistrict !== undefined) salon.businessDistrict = req.body.businessDistrict;
       await salon.save();
+      clearPromotedServicesCache?.();
       clearPublicSalonDetailCache();
     }
     let revokedSessionHash = '';
@@ -472,6 +479,7 @@ module.exports = (app, ctx) => {
     salon.licenseRejectReason = action === 'reject' ? reason : '';
     salon.licenseReviewedAt = new Date();
     await salon.save();
+    clearPromotedServicesCache?.();
   
     res.json({ merchant: await buildAdminMerchantPayload(user, salon) });
   });
@@ -500,6 +508,7 @@ module.exports = (app, ctx) => {
     salon.contentRejectReason = action === 'reject' ? reason : '';
     salon.contentReviewedAt = new Date();
     await salon.save();
+    clearPromotedServicesCache?.();
     res.json({ merchant: await buildAdminMerchantPayload(user, salon) });
   });
 
@@ -523,6 +532,7 @@ module.exports = (app, ctx) => {
     service.promotionReviewedAt = new Date();
     salon.markModified('services');
     await salon.save();
+    clearPromotedServicesCache?.();
     res.json({ merchant: await buildAdminMerchantPayload(user, salon) });
   });
 
@@ -537,6 +547,7 @@ module.exports = (app, ctx) => {
 
     salon.isFeatured = req.body.isFeatured;
     await salon.save();
+    clearPromotedServicesCache?.();
     clearPublicSalonDetailCache();
     res.json({ merchant: await buildAdminMerchantPayload(user, salon) });
   });
@@ -564,6 +575,7 @@ module.exports = (app, ctx) => {
   
     salon.publishStatus = action;
     await salon.save();
+    clearPromotedServicesCache?.();
   
     res.json({ merchant: await buildAdminMerchantPayload(user, salon) });
   });

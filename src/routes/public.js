@@ -1,10 +1,6 @@
-const { createTtlCache } = require('../ttl-cache');
+const { createPublicResponseCaches } = require('../ttl-cache');
 const { BOOKING_SALON_PROJECTION } = require('../services/salon');
 const { SALON_RATING_STATS_SELECTION } = require('../services/salon-ratings');
-
-// These responses are the same for every caller and already declare max-age=15, but the mini-program does not
-// cache requests itself, so the server keeps them for the same 15 seconds instead of querying on every home view.
-const PUBLIC_RESPONSE_CACHE_TTL_MS = 15_000;
 
 const PROMOTION_CATEGORY_TAG_IDS = Object.freeze({
   'men-cut': 'men',
@@ -50,10 +46,15 @@ module.exports = (app, ctx) => {
     salonPostPayload,
   } = ctx;
 
-  // Created per registration, so every app (and every test) starts with empty caches.
-  const adCache = createTtlCache({ ttlMs: PUBLIC_RESPONSE_CACHE_TTL_MS, max: 1 });
-  const couponCampaignCache = createTtlCache({ ttlMs: PUBLIC_RESPONSE_CACHE_TTL_MS, max: 1 });
-  const promotedServicesCache = createTtlCache({ ttlMs: PUBLIC_RESPONSE_CACHE_TTL_MS, max: 200 });
+  // These responses are the same for every caller, and the mini-program does not cache requests itself, so the
+  // server reuses them instead of querying on every home view. The app shares one set with the admin and
+  // merchant routes, which clear a cache when they change what it holds; a registration without one (tests)
+  // gets its own empty set.
+  const {
+    ad: adCache,
+    couponCampaign: couponCampaignCache,
+    promotedServices: promotedServicesCache,
+  } = ctx.publicResponseCaches || createPublicResponseCaches();
 
   app.get('/api/ad', async (_req, res) => {
     res.json(await adCache.get('main', async () =>
