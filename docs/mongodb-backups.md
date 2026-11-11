@@ -8,7 +8,7 @@
 - 使用 `mongodump --oplog` 全量备份，恢复时必须使用 `--oplogReplay`。备份账号需要读取 oplog 的权限；权限不足时失败退出，不降级为不一致备份。
 - 文件保存在 `/data/backup/mongodb/` 下独立的私有工作目录。文件锁阻止重叠运行；导出、压缩、上传或下载校验失败时退出非零，保留本地工作目录。
 - 使用现有 `/usr/local/bin/ossutil-v2` 上传私有对象，再下载并比较 SHA-256。只有一致时才更新 `last-success.json` 并清理本次本地文件。
-- 不自动删除 OSS 历史备份。失败目录需在问题解决后人工检查清理，防止长期积累占满磁盘。
+- 不自动删除 OSS 历史备份。失败目录需在问题解决后人工检查清理，防止长期积累占满磁盘。现有日志仅记录任务结果；本次不新增通知服务。
 
 旧 `/root/mongo_backup.sh` 退出调度但保留，避免任何旧版本误报成功逻辑继续运行。旧 `.tar.gz` 内以时间命名目录，新文件内以 `dump/` 为根目录；人工恢复须先确认布局。两者均为 mongodump 目录格式，旧备份未包含 oplog。
 
@@ -21,26 +21,6 @@
 ```
 
 立即执行一次新备份并从 OSS 下载进行隔离恢复，检查集合、索引及数据校验。无需重启生产应用或 MongoDB。回滚调度应先暂停新任务、保留所有备份与配置，再指向经过验证的脚本 Git 版本；旧脚本缺少失败保护，不应作为日常回滚目标。
-
-## 备份告警
-
-沿用现有邮箱的 SMTP 服务，发件和收件可以是同一个邮箱。使用 465（TLS）或 587（STARTTLS），需要邮箱服务允许 SMTP 登录。
-
-1. 通过 Git 部署后，用服务器上的编辑器将以下模板填入 `/root/.config/hot-hair/mongo-backup-alert.json`。先以 root 执行 `umask 077` 再创建文件，并确认文件权限为 `0600`。用邮箱服务生成的 SMTP 授权码或应用专用密码填写 `password`。若 SMTP 登录名与发件地址不同，另填 `username`。
-
-   ```json
-   {"host":"smtp.example.com","port":465,"from":"ops@example.com","to":"ops@example.com","password":"<SMTP 授权码>"}
-   ```
-
-2. 执行 `/usr/bin/python3 /opt/hot-hair-service/ops/mongo-backup-alert test` 并确认收件箱收到测试邮件。
-3. 保存当前 root crontab，只将备份任务改为以下一行。备份退出非零时会发邮件，退出状态仍为失败。
-
-   ```cron
-   0 3 * * * { /usr/bin/python3 /opt/hot-hair-service/ops/mongo-backup || { /usr/bin/python3 /opt/hot-hair-service/ops/mongo-backup-alert failed; exit 1; }; } >> /root/mongo_backup.log 2>&1
-   ```
-
-4. 将仓库 `ops/systemd/` 下的 `hot-hair-mongo-backup-check.service` 和同名 `.timer` 安装到 `/etc/systemd/system/`（root 所有、权限 `0644`）。执行 `systemctl daemon-reload` 和 `systemctl enable --now hot-hair-mongo-backup-check.timer`，用 `systemctl list-timers hot-hair-mongo-backup-check.timer` 确认下次检查时间。每天北京时间 05:00 检查当天 03:00 起是否更新过成功标记；停机错过检查时会在开机后补查最近一轮。通知失败的诊断见备份日志或 `journalctl -u hot-hair-mongo-backup-check.service`。主机完全不可用时，主机上的告警要等恢复后才能发出。
-5. 回滚时恢复原 cron 行，执行 `systemctl disable --now hot-hair-mongo-backup-check.timer`，移除新增的两个 unit 文件并执行 `systemctl daemon-reload`。
 
 ## 隔离恢复要求
 

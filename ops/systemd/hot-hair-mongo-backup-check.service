@@ -1,8 +1,0 @@
-[Unit]
-Description=Check for an overdue Hot Hair MongoDB backup
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/python3 /opt/hot-hair-service/ops/mongo-backup-alert overdue
