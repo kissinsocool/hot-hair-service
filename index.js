@@ -1121,7 +1121,8 @@ const applyPendingContent = async (salon) => {
 
   if (Array.isArray(draft.staff)) {
     const owned = new Set((salon.staffIds || []).map(String));
-    const approvedStaff = draft.staff.map(profile => ({
+    // A draft can wait for review; slots that passed in the meantime are not published.
+    const approvedStaff = bookingDomain.withoutExpiredStaffUnavailableSlots(draft.staff).map(profile => ({
       ...profile,
       id: owned.has(String(profile.id)) ? profile.id : `merchant-staff-${crypto.randomUUID()}`,
     }));

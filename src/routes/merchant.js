@@ -331,6 +331,10 @@ module.exports = (app, ctx) => {
     if (!salon) return res.status(404).json({ message: 'Merchant salon not found' });
   
     const payload = req.body || {};
+    // Before validation, so slots that have already passed never count towards the per-stylist limit.
+    if (Array.isArray(payload.staff)) {
+      payload.staff = bookingService.withoutExpiredStaffUnavailableSlots(payload.staff);
+    }
     const validationError = validateSalonContent(payload, INPUT_LIMITS, salon);
     if (validationError) return res.status(400).json({ message: validationError });
     if (Array.isArray(payload.services)) {

@@ -110,6 +110,25 @@ const normalizeUnavailableSlots = (slots, max = 500) => {
   )].sort().slice(0, max);
 };
 
+// Clients only ever add and remove unavailable slots and send the whole list back, so past dates would pile up
+// until the list hits its limit and the salon can no longer be saved. Slots dated before today (business time
+// zone) no longer affect any booking and are dropped before a list is validated or stored. Entries that are not
+// 'YYYY-MM-DD HH:mm' strings are left for validation and normalization to deal with.
+const withoutExpiredUnavailableSlots = (slots, now = new Date()) => {
+  if (!Array.isArray(slots)) return slots;
+  const today = localDateKey(now);
+  return slots.filter(slot => !(typeof slot === 'string'
+    && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(slot.trim())
+    && slot.trim().slice(0, 10) < today));
+};
+
+// The staff list of a salon save or a stored draft, with each stylist's expired unavailable slots dropped.
+const withoutExpiredStaffUnavailableSlots = (staff, now = new Date()) => (Array.isArray(staff)
+  ? staff.map(profile => (Array.isArray(profile?.unavailableSlots)
+    ? { ...profile, unavailableSlots: withoutExpiredUnavailableSlots(profile.unavailableSlots, now) }
+    : profile))
+  : staff);
+
 const normalizeClosedDates = (dates, max = 500) => {
   if (!Array.isArray(dates)) return [];
   return [...new Set(dates
@@ -297,6 +316,8 @@ module.exports = {
   normalizeClosedDates,
   normalizeWeeklyClosedDays,
   normalizeUnavailableSlots,
+  withoutExpiredUnavailableSlots,
+  withoutExpiredStaffUnavailableSlots,
   occupiedSlotStarts,
   parseBookingTime,
   parseMerchantRescheduleTime,
