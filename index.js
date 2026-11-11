@@ -779,6 +779,16 @@ const addApprovedSalonRatings = async (salons = []) => salons.map(({ ratingStats
   ...salonRatingSummary({ ratingStats }),
 }));
 
+// Salon lists are read without services (SALON_LIST_EXCLUDED_FIELDS), so the "from" price of a page of salons
+// comes from one extra read of only the fields that decide it.
+const getCutPriceFromFenBySalonIds = async (salonIds = []) => {
+  if (!salonIds.length) return new Map();
+  const salons = await Salon.find({ id: { $in: salonIds } })
+    .select('id services.priceFen services.tagIds services.tags')
+    .lean();
+  return new Map(salons.map(salon => [salon.id, salonDomain.cutPriceFromFen(salon.services)]));
+};
+
 const groupReviewsByStaff = salonDomain.groupReviewsByStaff;
 const buildSalonImageList = salonDomain.buildSalonImageList;
 
@@ -1434,6 +1444,7 @@ const routeContext = {
   findActiveBookingAtTimeExcluding,
   generateSlotsForNoPreferenceAndDate,
   generateSlotsForStaffAndDate,
+  getCutPriceFromFenBySalonIds,
   getNearbySalons,
   getSalonReviewsPage,
   getApprovedReviewsByStaffIds,

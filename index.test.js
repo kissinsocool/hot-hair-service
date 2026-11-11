@@ -1093,6 +1093,7 @@ test('current mini-program salon-list request returns an explicit unrated contra
       }];
     },
     addApprovedSalonRatings,
+    getCutPriceFromFenBySalonIds: async salonIds => new Map(salonIds.map(id => [id, 6800])),
     stripSensitiveSalonFields,
     existingSalonImages: async () => [],
     salonCoverImage: async () => '',
@@ -1105,6 +1106,8 @@ test('current mini-program salon-list request returns an explicit unrated contra
       { set() {}, json(value) { payload = value; } },
     );
     assert.equal(payload[0].businessDistrict, '龙湖天街');
+    assert.equal(payload[0].cutPriceFromFen, 6800);
+    assert.equal(Object.hasOwn(payload[0], 'services'), false);
     assert.equal(payload[0].rating, null);
     assert.equal(payload[0].reviewCount, 0);
     assert.equal(Object.hasOwn(payload[0], 'staffIds'), false);

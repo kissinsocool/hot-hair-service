@@ -158,6 +158,20 @@ const resolveServiceTagIds = (service = {}, previous = {}) => {
   return previousTagIds.length ? previousTagIds : serviceTagIdsFromLegacy(previous.tags);
 };
 
+// The clients file a service under 染烫 or 头皮护理 by these tags and under 剪发 otherwise
+// (hot_hair_mp utils/serviceCategories.js); the list price below has to agree with that tab.
+const NON_CUT_SERVICE_TAG_IDS = new Set(['color', 'perm', 'scalp_care', 'care', 'nutrition']);
+
+// Lowest price among a salon's haircut services, or undefined when it offers none.
+const cutPriceFromFen = (services = []) => {
+  const prices = (Array.isArray(services) ? services : [])
+    .filter(service => service
+      && Number.isSafeInteger(service.priceFen) && service.priceFen > 0
+      && !resolveServiceTagIds(service).some(id => NON_CUT_SERVICE_TAG_IDS.has(id)))
+    .map(service => service.priceFen);
+  return prices.length ? Math.min(...prices) : undefined;
+};
+
 // Released clients echo unknown tagIds while editing tags; new clients do the inverse.
 const incomingServiceTagIds = (service = {}, previous = {}) => {
   const current = resolveServiceTagIds(previous);
@@ -440,6 +454,7 @@ module.exports = {
   serviceTagIdsFromLegacy,
   serviceTagLabels,
   resolveServiceTagIds,
+  cutPriceFromFen,
   incomingServiceTagIds,
   incomingServiceImages,
   discountedServicePriceFen,

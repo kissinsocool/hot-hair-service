@@ -13,6 +13,7 @@ const PROMOTION_CATEGORY_TAG_IDS = Object.freeze({
 
 module.exports = (app, ctx) => {
   const {
+    getCutPriceFromFenBySalonIds,
     getNearbySalons,
     getSalonReviewsPage,
     addReviewHelpfulState,
@@ -196,14 +197,18 @@ module.exports = (app, ctx) => {
       'X-Page-Size': String(pagination.limit),
       'X-Has-More': String(hasMore),
     });
+    const cutPrices = await getCutPriceFromFenBySalonIds(salonList.map(s => s.id));
     res.json(await Promise.all(salonList.map(async (s) => {
       const { fullDescription, openingHours, weeklyClosedDays, afterSalesPolicyIds, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(s);
       const images = await existingSalonImages(s);
+      const cutPriceFromFen = cutPrices.get(s.id);
       return {
         ...basic,
         image: await salonCoverImage(s),
         images,
         promoImages: images,
+        // Optional: absent for a salon without a haircut service.
+        ...(cutPriceFromFen === undefined ? {} : { cutPriceFromFen }),
       };
     })));
   });
