@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import smtplib
+import socket
 import ssl
 import sys
 
@@ -37,8 +38,14 @@ def notify(config, message):
     email.set_content(message + '\n备份日志：/root/mongo_backup.log')
 
     tls = ssl.create_default_context()
-    smtp = (smtplib.SMTP_SSL(host, port, timeout=10, context=tls)
-            if port == 465 else smtplib.SMTP(host, port, timeout=10))
+    for attempt in range(3):
+        try:
+            smtp = (smtplib.SMTP_SSL(host, port, timeout=10, context=tls)
+                    if port == 465 else smtplib.SMTP(host, port, timeout=10))
+            break
+        except (socket.timeout, smtplib.SMTPServerDisconnected):
+            if attempt == 2:
+                raise
     with smtp as client:
         if port == 587:
             client.starttls(context=tls)

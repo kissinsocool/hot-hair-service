@@ -11,7 +11,7 @@ const script = path.join(__dirname, 'mongo-backup');
 test('mongo backup alert: check the latest scheduled window and send over TLS', () => {
   const alert = path.join(__dirname, 'mongo-backup-alert');
   const result = spawnSync('python3', ['-c', `
-import datetime, json, os, pathlib, runpy, sys, tempfile
+import datetime, json, os, pathlib, runpy, socket, sys, tempfile
 from unittest.mock import patch
 
 alert = runpy.run_path(sys.argv[1])
@@ -34,9 +34,11 @@ with tempfile.TemporaryDirectory() as root:
                                   'password': 'dummy'}))
     config.chmod(0o600)
     with patch('smtplib.SMTP') as connect:
+        connect.side_effect = [socket.timeout(), connect.return_value]
         client = connect.return_value.__enter__.return_value
         client.send_message.return_value = {}
         alert['notify'](config, 'Backup failed')
+        assert connect.call_count == 2
         assert [call[0] for call in client.method_calls] == ['starttls', 'login', 'send_message']
         assert client.send_message.call_args[0][0]['To'] == 'ops@example.com'
 `, alert], { encoding: 'utf8' });
