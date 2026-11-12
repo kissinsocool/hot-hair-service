@@ -40,7 +40,7 @@ test('favorite posts carry salon name and the current related service', async (t
     { id: 'post-2', salonId: 'salon-1', authorStaffId: 's', authorName: 'A', authorRoleId: 'stylist', content: 'two', serviceId: 'svc-gone', serviceName: '旧套餐', imageUrls: [] },
     { id: 'post-3', salonId: 'salon-offline', authorStaffId: 's', authorName: 'A', authorRoleId: 'stylist', content: 'three', imageUrls: [] },
   ]) }));
-  t.after(patch(Salon, { find: () => query([{ id: 'salon-1', name: '店一', description: '简介', images: ['https://cdn.example.com/cover.jpg'], services: [{ id: 'svc-1', name: '剪发', priceFen: 8800 }] }]) }));
+  t.after(patch(Salon, { find: () => query([{ id: 'salon-1', name: '店一', description: '简介', tags: ['近地铁', ' ', '近地铁', '安静'], images: ['https://cdn.example.com/cover.jpg'], services: [{ id: 'svc-1', name: '剪发', priceFen: 8800 }] }]) }));
 
   const list = await favorites.readFavoritePosts('user-1');
   assert.deepEqual(list.map(item => item.id), ['post-2', 'post-1']);
@@ -48,6 +48,7 @@ test('favorite posts carry salon name and the current related service', async (t
   assert.equal(list[0].serviceName, '旧套餐');
   assert.equal(list[1].salonName, '店一');
   assert.equal(list[1].salonDescription, '简介');
+  assert.deepEqual(list[1].salonTags, ['近地铁', '安静']);
   assert.match(list[1].salonImageUrl, /cover\.jpg/);
   assert.equal(list[1].relatedService.id, 'svc-1');
   assert.equal(list[1].relatedService.priceFen, 8800);
