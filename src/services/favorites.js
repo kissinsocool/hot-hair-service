@@ -1,6 +1,6 @@
 const { FavoriteStaff, FavoritePost, StaffProfile, SalonPost, Salon } = require('../models');
 const { publicImageUrl } = require('../images');
-const { normalizeStaffRoleId, servicePayload } = require('./salon');
+const { normalizeStaffRoleId, salonCoverImageUrl, servicePayload } = require('./salon');
 const { postPayload } = require('./salon-posts');
 
 // 理发师、店铺动态的收藏只按规范化后的 userId 写入，不存在历史别名，读写都直接用 userId。
@@ -81,14 +81,14 @@ async function readFavoriteStaff(userId) {
     .map(staffId => favoriteStaffPayload(peopleById.get(staffId), salonsByStaffId.get(staffId)));
 }
 
-// 每条动态带上店铺名和关联套餐的当前信息；套餐已下架时 relatedService 为 null，客户端只展示名称。
+// 每条动态带上店铺名、简介、封面和关联套餐的当前信息；套餐已下架时 relatedService 为 null，客户端只展示名称。
 async function readFavoritePosts(userId) {
   const postIds = await readFavoriteTargetIds('posts', userId);
   if (!postIds.length) return [];
   const posts = await SalonPost.find({ id: { $in: postIds }, reviewStatus: 'approved' }).lean();
   const salonIds = [...new Set(posts.map(post => post.salonId))];
   const salons = salonIds.length
-    ? await Salon.find({ id: { $in: salonIds }, publishStatus: 'online' }).select('id name services').lean()
+    ? await Salon.find({ id: { $in: salonIds }, publishStatus: 'online' }).select('id name description image images promoImages services').lean()
     : [];
   const postsById = new Map(posts.map(post => [post.id, post]));
   const salonsById = new Map(salons.map(salon => [salon.id, salon]));
@@ -101,6 +101,8 @@ async function readFavoritePosts(userId) {
       return {
         ...postPayload(post, publicImageUrl),
         salonName: salon.name || '',
+        salonDescription: salon.description || '',
+        salonImageUrl: salonCoverImageUrl(salon),
         relatedService: service ? servicePayload(service) : null,
       };
     });

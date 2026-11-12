@@ -378,6 +378,13 @@ const buildSalonImageList = (salon) => {
   return [...new Set(images.filter(image => typeof image === 'string' && image.trim()))].slice(0, 20);
 };
 
+// 店铺封面：优先 image，其次宣传图和店铺图里的第一张。
+const salonCoverImageUrl = (salon) => {
+  const cover = [salon?.image, ...buildSalonImageList(salon)]
+    .find(image => typeof image === 'string' && image.trim());
+  return publicImageUrl(cover || '');
+};
+
 const stripSensitiveSalonFields = (salon = {}) => {
   const {
     licenseUrl,
@@ -431,6 +438,7 @@ module.exports = {
   buildPublicSalonDetail,
   buildPublicStaffSummary,
   buildSalonImageList,
+  salonCoverImageUrl,
   buildStaffPayload,
   calculateDistanceKm,
   clearPublicSalonDetailCache,

@@ -797,11 +797,7 @@ const buildSalonImageList = salonDomain.buildSalonImageList;
 
 const existingSalonImages = async salon => buildSalonImageList(salon).map(publicImageUrl);
 
-const salonCoverImage = async (salon) => {
-  const cover = [salon?.image, ...buildSalonImageList(salon)]
-    .find(image => typeof image === 'string' && image.trim());
-  return publicImageUrl(cover || '');
-};
+const salonCoverImage = async salon => salonDomain.salonCoverImageUrl(salon);
 
 const buildSalonDetail = async (salonDocument) => {
   const salon = normalizeDocument(salonDocument);
