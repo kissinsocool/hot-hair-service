@@ -32,6 +32,10 @@ for (const salon of [
       buildPublicStaffSummary,
       servicePayload,
       expandedSalonClosedDates: () => [],
+      countStaffFavorites: async (id) => {
+        assert.equal(id, person.id);
+        return 3;
+      },
     });
     const server = app.listen(0, '127.0.0.1');
     t.after(() => new Promise(resolve => server.close(resolve)));
@@ -51,6 +55,7 @@ for (const salon of [
     assert.deepEqual(payload.salonServices, []);
     assert.deepEqual(payload.salonClosedDates, []);
     assert.equal(payload.salonAcceptsSameDayBooking, true);
+    assert.equal(payload.favoriteCount, 3);
     assert.equal(staffReads, 1);
     assert.equal(salonReads, 1);
   });

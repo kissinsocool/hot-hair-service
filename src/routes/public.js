@@ -45,6 +45,7 @@ module.exports = (app, ctx) => {
     setPaginationHeaders,
     SalonPost,
     salonPostPayload,
+    countStaffFavorites,
   } = ctx;
 
   // These responses are the same for every caller, and the mini-program does not cache requests itself, so the
@@ -295,9 +296,10 @@ module.exports = (app, ctx) => {
   app.get('/api/staff/:id', ...rateLimits.publicRead, async (req, res) => {
     const person = await getStaffById(req.params.id).lean();
     if (!person) return res.status(404).json({ message: 'Staff not found' });
-    const [salon, ratingSummaries] = await Promise.all([
+    const [salon, ratingSummaries, favoriteCount] = await Promise.all([
       getSalonByStaffId(req.params.id).lean(),
       getApprovedRatingSummariesByStaffIds([person.id]),
+      countStaffFavorites(person.id),
     ]);
     res.json({
       ...buildPublicStaffSummary(person, ratingSummaries[person.id]),
@@ -306,6 +308,7 @@ module.exports = (app, ctx) => {
       salonServices: (salon?.services || []).map(servicePayload),
       salonClosedDates: expandedSalonClosedDates(salon),
       salonAcceptsSameDayBooking: salon?.acceptsSameDayBooking !== false,
+      favoriteCount,
     });
   });
 

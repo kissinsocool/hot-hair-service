@@ -292,6 +292,22 @@ const favoriteSalonSchema = new mongoose.Schema({
 
 favoriteSalonSchema.index({ userId: 1, salonId: 1 }, { unique: true });
 
+// 用户收藏的理发师；staffId 单独建索引用于统计理发师被收藏数。
+const favoriteStaffSchema = new mongoose.Schema({
+  userId: { type: String, required: true, index: true },
+  staffId: { type: String, required: true, index: true },
+}, { timestamps: true });
+
+favoriteStaffSchema.index({ userId: 1, staffId: 1 }, { unique: true });
+
+// 用户收藏的店铺动态（小程序收藏页“套餐”分类）。
+const favoritePostSchema = new mongoose.Schema({
+  userId: { type: String, required: true, index: true },
+  postId: { type: String, required: true, index: true },
+}, { timestamps: true });
+
+favoritePostSchema.index({ userId: 1, postId: 1 }, { unique: true });
+
 const salonSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
   name: String,
@@ -551,6 +567,8 @@ module.exports = {
   SlotOccupancy: mongoose.model('SlotOccupancy', slotOccupancySchema),
   UserPolicy: mongoose.model('UserPolicy', userPolicySchema),
   FavoriteSalon: mongoose.model('FavoriteSalon', favoriteSalonSchema),
+  FavoriteStaff: mongoose.model('FavoriteStaff', favoriteStaffSchema),
+  FavoritePost: mongoose.model('FavoritePost', favoritePostSchema),
   Salon: mongoose.model('Salon', salonSchema),
   StaffProfile: mongoose.model('StaffProfile', staffProfileSchema),
   SalonPost: mongoose.model('SalonPost', salonPostSchema),

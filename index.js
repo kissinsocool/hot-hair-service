@@ -29,6 +29,8 @@ const {
   SlotOccupancy,
   UserPolicy,
   FavoriteSalon,
+  FavoriteStaff,
+  FavoritePost,
   Salon,
   StaffProfile,
   SalonPost,
@@ -74,6 +76,7 @@ const authDomain = require('./src/services/auth');
 const bookingDomain = require('./src/services/booking');
 const salonDomain = require('./src/services/salon');
 const salonPosts = require('./src/services/salon-posts');
+const favoritesDomain = require('./src/services/favorites');
 const { getSalonReviewsPage, getApprovedReviewTagCountsByStaffIds } = require('./src/services/salon-reviews');
 const { refreshStaffRatingSummaries, readStaffRatingSummaries } = require('./src/services/staff-ratings');
 const {
@@ -1488,6 +1491,12 @@ const routeContext = {
   publishModeratedImage,
   readFavoriteSalonIds,
   readFavoriteSalons,
+  readFavoriteTargetIds: favoritesDomain.readFavoriteTargetIds,
+  setFavoriteTarget: favoritesDomain.setFavoriteTarget,
+  favoriteTargetExists: favoritesDomain.favoriteTargetExists,
+  readFavoriteStaff: favoritesDomain.readFavoriteStaff,
+  readFavoritePosts: favoritesDomain.readFavoritePosts,
+  countStaffFavorites: favoritesDomain.countStaffFavorites,
   rateLimits,
   revokeSessionHash,
   rotateSession,
@@ -1533,6 +1542,7 @@ app.use([
   '/api/booking-messages',
 ], requireClientAuth);
 require('./src/routes/client')(app, routeContext);
+require('./src/routes/client-favorites')(app, routeContext);
 require('./src/routes/client-bookings')(app, routeContext);
 require('./src/routes/review-helpful')(app, routeContext);
 require('./src/routes/client-messages')(app, routeContext);
@@ -1592,6 +1602,9 @@ const startServer = async () => {
     AnalyticsEvent.createIndexes(),
     // Its unique staffId index is what stops an older rating refresh from replacing a newer one.
     StaffRatingSummary.createIndexes(),
+    // Unique (userId, target) indexes keep favorite writes idempotent and stylist favorite counts exact.
+    FavoriteStaff.createIndexes(),
+    FavoritePost.createIndexes(),
   ]);
   console.log('MongoDB connected');
 
