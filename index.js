@@ -708,7 +708,7 @@ const normalizeBookingPayload = bookingDomain.normalizeBookingPayload;
 const normalizeBooking = booking => normalizeBookingPayload(booking);
 const normalizeMerchantBooking = booking => normalizeBookingPayload(booking, true);
 
-const USER_CANCEL_WINDOW_MS = 3 * 60 * 60 * 1000;
+const USER_CANCEL_WINDOW_MS = 24 * 60 * 60 * 1000;
 const BLACKLIST_NO_SHOW_LIMIT = 3;
 
 // Called inside the booking-creation transaction. The fence write makes parallel submissions by one client

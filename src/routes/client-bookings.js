@@ -112,7 +112,8 @@ module.exports = (app, ctx) => {
           current.status === 'accepted' &&
           new Date(current.startTime).getTime() - Date.now() < USER_CANCEL_WINDOW_MS
         ) {
-          throw transactionError(409, '预约开始前3小时内不能直接取消，请电话联系商家协商取消。直接爽约3次账号将被拉黑。');
+          const hours = USER_CANCEL_WINDOW_MS / (60 * 60 * 1000);
+          throw transactionError(409, `距离到店时间不足${hours}小时，请电话联系商家协商取消。直接爽约3次账号将被拉黑。`);
         }
 
         const couponReset = current.couponId ? {

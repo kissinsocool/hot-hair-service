@@ -1302,6 +1302,49 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       validFrom: new Date('2020-01-01'), validUntil: new Date('2035-01-01') });
   }
 
+  test.each([
+    ['accepted', 6, 409],
+    ['accepted', 25, 200],
+    ['pending', 6, 200],
+  ])('client cancellation of a %s booking %i hours ahead returns %i', async (status, hours, expectedStatus) => {
+    const id = `cancel-window-${status}-${hours}`;
+    const userId = `${id}-client`;
+    const couponId = `${id}-coupon`;
+    const staffId = `${id}-staff`;
+    const startTime = new Date(Date.now() + hours * 60 * 60 * 1000);
+    await createClient(userId);
+    await createBookingCoupon(userId, couponId);
+    await Booking.create({
+      id, userId, staffId, serviceId: 'service-1', status, startTime, couponId,
+      servicePriceFen: 8000, originalAmountFen: 8000, couponDiscountFen: 1000, payableAmountFen: 7000,
+    });
+    const couponLink = status === 'accepted'
+      ? { redeemedBookingId: id, redeemedAt: new Date() }
+      : { reservedBookingId: id, reservedAt: new Date() };
+    await UserCoupon.updateOne({ id: couponId }, { $set: couponLink });
+    await SlotOccupancy.create({ bookingId: id, staffId, startTime, slots: occupiedSlotStarts(startTime, 60) });
+
+    const result = await request(userId, `/bookings/${id}/cancel`, {}, 'PATCH');
+    expect(result.status).toBe(expectedStatus);
+    const booking = await Booking.findOne({ id }).lean();
+    const coupon = await UserCoupon.findOne({ id: couponId }).lean();
+    const occupied = await SlotOccupancy.exists({ bookingId: id });
+    const canceledMessages = await BookingMessage.countDocuments({ bookingId: id, type: 'canceled' });
+    if (expectedStatus === 409) {
+      expect(result.body.message).toContain('不足24小时');
+      expect(booking).toMatchObject({ status, couponId, payableAmountFen: 7000 });
+      expect(coupon).toMatchObject(couponLink);
+      expect(occupied).not.toBeNull();
+      expect(canceledMessages).toBe(0);
+    } else {
+      expect(booking).toMatchObject({ status: 'canceled', canceledBy: 'user', couponId: '', payableAmountFen: 8000 });
+      expect(coupon).not.toHaveProperty('reservedBookingId');
+      expect(coupon).not.toHaveProperty('redeemedBookingId');
+      expect(occupied).toBeNull();
+      expect(canceledMessages).toBe(1);
+    }
+  });
+
   test('concurrent retries of an unassigned booking create one order and one message', async () => {
     const userId = 'idempotency-client';
     const otherUserId = 'idempotency-other-client';

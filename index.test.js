@@ -3672,7 +3672,7 @@ for (const receptionTag of ['好沟通', '接待热情', '守时商家']) test(`
   assert.deepEqual(complaintStatuses.sort(), [201, 409]);
 });
 
-test('booking cancellation atomically checks state and releases its slot in one transaction', async () => {
+test('booking cancellation enforces the 24-hour boundary and atomically releases its slot', async (t) => {
   const routes = new Map();
   const app = {
     get() {},
@@ -3692,7 +3692,7 @@ test('booking cancellation atomically checks state and releases its slot in one 
     id: 'BK-1',
     userId: 'user-1',
     status: 'pending',
-    startTime: new Date('2030-01-01'),
+    startTime: new Date('2030-01-01T10:00:00+08:00'),
     couponId: 'coupon-1',
     originalAmountFen: 9900,
   };
@@ -3724,15 +3724,37 @@ test('booking cancellation atomically checks state and releases its slot in one 
     userIdAliases: id => [id],
     normalizeBooking: value => value,
     broadcastBookingEvent() {},
-    USER_CANCEL_WINDOW_MS: 3 * 60 * 60 * 1000,
+    USER_CANCEL_WINDOW_MS: 24 * 60 * 60 * 1000,
     rateLimits: { login: [], booking: [], merchantBooking: [], publicRead: [], upload: [] },
   });
 
-  let response;
-  await routes.get('/api/bookings/:id/cancel')(
-    { clientUser: { id: 'user-1' }, params: { id: 'BK-1' } },
-    { json(value) { response = value; } },
-  );
+  let now;
+  t.mock.method(Date, 'now', () => now);
+  const cancel = async (status, leadMs) => {
+    current.status = status;
+    now = current.startTime.getTime() - leadMs;
+    const result = { status: 200 };
+    await routes.get('/api/bookings/:id/cancel')(
+      { clientUser: { id: 'user-1' }, params: { id: 'BK-1' }, body: {} },
+      {
+        status(code) { result.status = code; return this; },
+        json(value) { result.body = value; }
+      },
+    );
+    return result;
+  };
+  const day = 24 * 60 * 60 * 1000;
+  const blocked = await cancel('accepted', day - 1);
+  assert.equal(blocked.status, 409);
+  assert.match(blocked.body.message, /不足24小时/);
+  assert.equal(updateCall, undefined);
+  assert.equal(deleteCall, undefined);
+  assert.equal(couponReleaseCall, undefined);
+  assert.equal((await cancel('accepted', day)).status, 200);
+  assert.equal(updateCall[0].status, 'accepted');
+  assert.equal((await cancel('accepted', day + 1)).status, 200);
+  const pending = await cancel('pending', 60 * 60 * 1000);
+  assert.equal(pending.status, 200);
 
   assert.equal(updateCall[0].status, 'pending');
   assert.equal(updateCall[1].$set.canceledBy, 'user');
@@ -3751,7 +3773,7 @@ test('booking cancellation atomically checks state and releases its slot in one 
     readConcern: { level: 'snapshot' },
     writeConcern: { w: 'majority' },
   });
-  assert.equal(response.booking.status, 'canceled');
+  assert.equal(pending.body.booking.status, 'canceled');
   assert.equal(ended, true);
 });
 
