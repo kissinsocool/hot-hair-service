@@ -23,7 +23,8 @@ test('GET /api/salons returns ten-item pages and a has-more header', async () =>
       calls.push({ limit, skip });
       return Array.from({ length: limit }, (_, index) => ({
         id: `salon-${skip + index}`,
-        name: `店铺 ${skip + index}`
+        name: `店铺 ${skip + index}`,
+        ...(index === 0 ? { afterSalesPolicyIds: ['no_active_sales'] } : {})
       }));
     },
     addApprovedSalonRatings: async (salons) => salons,
@@ -53,6 +54,8 @@ test('GET /api/salons returns ten-item pages and a has-more header', async () =>
   assert.equal(payload.length, 10);
   assert.deepEqual(priceLookups, [Array.from({ length: 10 }, (_, index) => `salon-${10 + index}`)]);
   assert.equal(payload[0].cutPriceFromFen, 6800);
+  assert.deepEqual(payload[0].afterSalesPolicyIds, ['no_active_sales']);
+  assert.equal(payload[1].afterSalesPolicyIds, undefined);
   assert.equal('cutPriceFromFen' in payload[1], false);
   assert.equal('cutPriceFromFen' in payload[2], false);
   assert.equal(headers['X-Has-More'], 'true');

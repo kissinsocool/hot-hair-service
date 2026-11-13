@@ -506,7 +506,7 @@ const SALON_LIST_EXCLUDED_FIELDS = Object.freeze([
   'licenseUrl', 'legalPersonIdFrontUrl', 'legalPersonIdBackUrl', 'addressProofUrl', 'licenseStatus',
   'licenseRejectReason', 'licenseSubmittedAt', 'licenseReviewedAt', 'pendingContent', 'contentReviewStatus',
   'contentRejectReason', 'contentReviewedAt', 'bookingCreationFence',
-  'services', 'fullDescription', 'openingHours', 'weeklyClosedDays', 'afterSalesPolicyIds', 'phone', 'staff', 'reviews',
+  'services', 'fullDescription', 'openingHours', 'weeklyClosedDays', 'phone', 'staff', 'reviews',
 ]);
 const SALON_LIST_PROJECTION = SALON_LIST_EXCLUDED_FIELDS.map(field => `-${field}`).join(' ');
 

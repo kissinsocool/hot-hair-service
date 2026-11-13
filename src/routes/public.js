@@ -200,7 +200,7 @@ module.exports = (app, ctx) => {
     });
     const cutPrices = await getCutPriceFromFenBySalonIds(salonList.map(s => s.id));
     res.json(await Promise.all(salonList.map(async (s) => {
-      const { fullDescription, openingHours, weeklyClosedDays, afterSalesPolicyIds, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(s);
+      const { fullDescription, openingHours, weeklyClosedDays, phone, staffIds, services, staff, reviews, geoLocation, _id, __v, createdAt, updatedAt, ...basic } = stripSensitiveSalonFields(s);
       const images = await existingSalonImages(s);
       const cutPriceFromFen = cutPrices.get(s.id);
       return {
