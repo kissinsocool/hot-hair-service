@@ -1,6 +1,7 @@
 const { createPublicResponseCaches } = require('../ttl-cache');
 const { BOOKING_SALON_PROJECTION } = require('../services/salon');
 const { SALON_RATING_STATS_SELECTION } = require('../services/salon-ratings');
+const { serviceAreaStatus } = require('../services/service-area');
 
 const PROMOTION_CATEGORY_TAG_IDS = Object.freeze({
   'men-cut': 'men',
@@ -57,6 +58,18 @@ module.exports = (app, ctx) => {
     couponCampaign: couponCampaignCache,
     promotedServices: promotedServicesCache,
   } = ctx.publicResponseCaches || createPublicResponseCaches();
+
+  app.get('/api/service-area', ...rateLimits.publicRead, async (req, res) => {
+    res.set('Cache-Control', 'private, no-store');
+    let status;
+    try {
+      status = await serviceAreaStatus(req.ip);
+    } catch (error) {
+      console.warn('[service-area] lookup failed:', error.code || error.name);
+      status = 'unknown';
+    }
+    res.json({ status });
+  });
 
   app.get('/api/ad', async (_req, res) => {
     res.json(await adCache.get('main', async () =>

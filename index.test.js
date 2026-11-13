@@ -278,7 +278,7 @@ test('route modules stay inside their trust boundaries', () => {
   assert.ok(clientBookings.every(path => path.startsWith('/api/bookings')));
   assert.ok(merchant.every(path => path.startsWith('/api/merchant')));
   assert.ok(admin.every(path => path.startsWith('/api/admin')));
-  assert.ok(publicPaths.every(path => /^\/api\/(ad|coupon-campaign|salons|staff)/.test(path)));
+  assert.ok(publicPaths.every(path => /^\/api\/(ad|coupon-campaign|salons|staff|service-area$)/.test(path)));
   assert.ok(publicPaths.some(path => path === '/api/coupon-campaign'));
   assert.ok(publicPaths.some(path => path === '/api/salons'));
   assert.ok(publicPaths.some(path => path === '/api/staff/:id/slots'));
