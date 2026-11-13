@@ -176,6 +176,7 @@ const merchantAppealSchema = new mongoose.Schema({
 const bookingSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
   userId: { type: String, default: DEMO_USER_ID },
+  clientRequestId: String,
   userName: { type: String, default: 'Demo 用户' },
   salonId: String,
   salonName: String,
@@ -226,6 +227,10 @@ bookingSchema.index({ salonId: 1, createdAt: -1 });
 bookingSchema.index({ salonId: 1, status: 1, createdAt: -1 });
 bookingSchema.index({ salonId: 1, startTime: 1, status: 1 });
 bookingSchema.index({ userId: 1, createdAt: -1 });
+bookingSchema.index({ userId: 1, clientRequestId: 1 }, {
+  unique: true,
+  partialFilterExpression: { clientRequestId: { $type: 'string' } },
+});
 bookingSchema.index({ userId: 1, status: 1, createdAt: -1 });
 bookingSchema.index({ createdAt: -1 });
 bookingSchema.index({ 'review.reviewStatus': 1, updatedAt: -1 });

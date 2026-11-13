@@ -1302,6 +1302,30 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       validFrom: new Date('2020-01-01'), validUntil: new Date('2035-01-01') });
   }
 
+  test('concurrent retries of an unassigned booking create one order and one message', async () => {
+    const userId = 'idempotency-client';
+    const otherUserId = 'idempotency-other-client';
+    await createClient(userId);
+    await createClient(otherUserId);
+    const input = {
+      salonId: 'salon-1', staffId: '__no_preference__', serviceId: 'service-1',
+      startTime: '2030-02-02T12:00:00+08:00', clientRequestId: 'same-confirm-page',
+    };
+    const submit = id => request(id, '/bookings', input, 'POST');
+    const responses = await Promise.all([submit(userId), submit(userId), submit(userId)]);
+    expect(responses.map(result => result.status).sort()).toEqual([200, 200, 201]);
+    const id = responses[0].body.booking.id;
+    for (const response of responses) {
+      expect(response.body.booking.id).toBe(id);
+      expect(response.body.booking).not.toHaveProperty('clientRequestId');
+    }
+    expect(await Booking.countDocuments({ userId })).toBe(1);
+    expect(await BookingMessage.countDocuments({ userId })).toBe(1);
+    const other = await submit(otherUserId);
+    expect(other.status).toBe(201);
+    expect(other.body.booking.id).not.toBe(id);
+  });
+
   test('eight concurrent bookings across salons hold at most five slots and coupons, and cancellation restores capacity', async () => {
     const userId = 'capacity-client';
     await createClient(userId);

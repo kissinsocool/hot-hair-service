@@ -471,10 +471,25 @@ module.exports = (app, ctx) => {
       startTime,
       note = '',
       couponId = '',
+      clientRequestId,
     } = req.body;
     const userId = normalizeUserId(req.clientUser.id);
     const userName = req.clientUser.displayName || req.clientUser.account;
     const bookingServiceId = String(serviceId || '').trim();
+    if (clientRequestId !== undefined && (
+      typeof clientRequestId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(clientRequestId)
+    )) {
+      return res.status(400).json({ message: 'clientRequestId must contain 1 to 64 letters, digits, underscores or hyphens' });
+    }
+    const replayQuery = clientRequestId === undefined ? null : { userId, clientRequestId };
+    const respondWithBooking = (booking, status) => res.status(status).json({
+      message: 'Booking request submitted and waiting for merchant confirmation.',
+      booking: normalizeBooking(booking),
+    });
+    if (replayQuery) {
+      const existing = await Booking.findOne(replayQuery).lean();
+      if (existing) return respondWithBooking(existing, 200);
+    }
   
     if (!staffId || !bookingServiceId || !startTime) {
       return res.status(400).json({ message: 'staffId, serviceId and startTime are required' });
@@ -540,6 +555,11 @@ module.exports = (app, ctx) => {
     if (!isNoPreference) {
       const hasConflict = await findActiveBookingAtTime(bookingStaffId, requestedStartTime);
       if (hasConflict) {
+        // The original request may have committed between the replay lookup and the slot check.
+        if (replayQuery) {
+          const existing = await Booking.findOne(replayQuery).lean();
+          if (existing) return respondWithBooking(existing, 200);
+        }
         return slotUnavailable(res, '该时间段已被预约，请重新选择');
       }
       if (await isStaffUnavailable(bookingStaffId, startTime, service.durationMinutes)) {
@@ -572,17 +592,21 @@ module.exports = (app, ctx) => {
     if (!bookingId) {
       return res.status(503).json({ message: '订单号生成失败，请重试' });
     }
-    let booking;
+    let result;
     try {
-      booking = await runBookingTransaction(async (session) => {
+      result = await runBookingTransaction(async (session) => {
         // Writing the salon serializes booking creation with an admin unpublish.
         const onlineSalon = await Salon.updateOne(
           { id: salon.id, publishStatus: 'online' },
           { $inc: { bookingCreationFence: 1 } },
           { session, timestamps: false },
         );
-        if (!onlineSalon.matchedCount) throw transactionError(409, '该店铺已下架，暂不可预约');
         const userPolicy = await getUserPolicy(userId, session);
+        if (replayQuery) {
+          const existing = await Booking.findOne(replayQuery).session(session).lean();
+          if (existing) return { booking: existing, replayed: true };
+        }
+        if (!onlineSalon.matchedCount) throw transactionError(409, '该店铺已下架，暂不可预约');
         if (userPolicy.isBlacklisted) {
           throw transactionError(403, '该账号已因爽约次数过多被拉黑，无法继续预约。');
         }
@@ -658,6 +682,7 @@ module.exports = (app, ctx) => {
           id: bookingId,
           userId,
           userName,
+          ...(replayQuery ? { clientRequestId } : {}),
           salonId: salon.id,
           salonName: salon.name,
           staffId: bookingStaffId,
@@ -685,9 +710,14 @@ module.exports = (app, ctx) => {
         });
         await created.save({ session });
         await bookingMessages.appendBookingMessage(BookingMessage, created, 'created', session);
-        return created;
+        return { booking: created, replayed: false };
       });
     } catch (error) {
+      // An upsert or unique index race can abort the transaction after another request commits.
+      if (replayQuery && error.code === 11000) {
+        const existing = await Booking.findOne(replayQuery).lean();
+        if (existing) return respondWithBooking(existing, 200);
+      }
       if (error.code === BOOKING_SLOT_UNAVAILABLE) return slotUnavailable(res, error.message);
       if (error.httpStatus) return res.status(error.httpStatus).json({
         message: error.message,
@@ -696,13 +726,12 @@ module.exports = (app, ctx) => {
       throw error;
     }
   
+    const { booking, replayed } = result;
+    if (replayed) return respondWithBooking(booking, 200);
     broadcastBookingEvent('booking.created', booking);
     await recordAnalyticsEvent(AnalyticsEvent, bookingEvent('booking_submitted', booking))
       .catch(error => console.error('Booking analytics failed:', error.message));
-    res.status(201).json({
-      message: 'Booking request submitted and waiting for merchant confirmation.',
-      booking: normalizeBooking(booking),
-    });
+    return respondWithBooking(booking, 201);
   });
 
 };

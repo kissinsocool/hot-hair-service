@@ -15,9 +15,22 @@ function createRoute(overrides = {}) {
     salonStatus: 'online', closed: false, sameDayBlocked: false, outsideHours: false,
     conflict: false, staffUnavailable: false, duplicateOnReserve: false, duplicateOnSave: false, ...overrides,
   };
+  const bookings = [];
   class Booking {
     constructor(value) { Object.assign(this, value); }
-    async save() { if (state.duplicateOnSave) throw Object.assign(new Error('E11000 duplicate key'), { code: 11000 }); }
+    async save() {
+      if (state.duplicateOnSave) throw Object.assign(new Error('E11000 duplicate key'), { code: 11000 });
+      bookings.push(this);
+    }
+    static findOne({ userId, clientRequestId }) {
+      const query = {
+        session: () => query,
+        async lean() {
+          return bookings.find(booking => booking.userId === userId && booking.clientRequestId === clientRequestId);
+        },
+      };
+      return query;
+    }
     static async exists() { return false; }
     static countDocuments() { return { async session() { return 0; } }; }
   }
@@ -64,15 +77,15 @@ function createRoute(overrides = {}) {
   return routes.get('/api/bookings');
 }
 
-async function submit(route, startTime = '2030-01-01T10:00:00.000+08:00') {
+async function submit(route, startTime = '2030-01-01T10:00:00.000+08:00', overrides = {}, userId = 'user-1') {
   let status = 200;
   let body;
   await route(
     {
-      clientUser: { id: 'user-1', displayName: 'User' },
+      clientUser: { id: userId, displayName: 'User' },
       body: {
         salonId: 'salon-1', staffId: 'staff-1', serviceId: 'service-1', startTime,
-        expectedOriginalAmountFen: 12000, expectedPayableAmountFen: 12000,
+        expectedOriginalAmountFen: 12000, expectedPayableAmountFen: 12000, ...overrides,
       },
     },
     { status(value) { status = value; return this; }, json(value) { body = value; } },
@@ -114,4 +127,31 @@ test('an available slot is still booked', async () => {
 
 test('a duplicate booking ID is propagated instead of asking the user to select another time', async () => {
   await assert.rejects(submit(createRoute({ duplicateOnSave: true })), { code: 11000 });
+});
+
+
+test('a successful booking is replayed for its owner before rechecking availability', async () => {
+  const route = createRoute();
+  const data = { clientRequestId: 'confirm-1' };
+  const first = await submit(route, undefined, data);
+  assert.equal(first.status, 201);
+  const replay = await submit(route, '2020-01-01T10:00:00+08:00', data);
+  assert.equal(replay.status, 200);
+  assert.deepEqual(replay.body, first.body);
+  assert.equal((await submit(route, undefined, data, 'user-2')).status, 201);
+});
+
+test('a rejected price or slot does not consume the request ID', async () => {
+  const route = createRoute();
+  const data = { clientRequestId: 'confirm-2' };
+  assert.equal((await submit(route, undefined, { ...data, expectedPayableAmountFen: 1 })).body.code, 'BOOKING_PRICE_CHANGED');
+  assert.equal((await submit(route, '2020-01-01T10:00:00+08:00', data)).body.code, 'BOOKING_SLOT_UNAVAILABLE');
+  assert.equal((await submit(route, undefined, data)).status, 201);
+});
+
+test('legacy clients can omit the ID, but an invalid ID is rejected', async () => {
+  const route = createRoute();
+  assert.equal((await submit(route, undefined, { clientRequestId: { $ne: '' } })).status, 400);
+  assert.equal((await submit(route)).status, 201);
+  assert.equal((await submit(route)).status, 201);
 });
