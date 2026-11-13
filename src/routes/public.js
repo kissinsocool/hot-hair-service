@@ -218,8 +218,13 @@ module.exports = (app, ctx) => {
     const keyword = String(req.query.keyword || '').trim();
     if (!keyword) return res.json([]);
     const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const query = { publishStatus: 'online', name: { $regex: escaped, $options: 'i' } };
+    if (req.query.view === 'compact') {
+      const salons = await Salon.find(query).select('id name address -_id').limit(5).lean();
+      return res.json(salons);
+    }
     const salons = await Salon
-      .find({ publishStatus: 'online', name: { $regex: escaped, $options: 'i' } })
+      .find(query)
       .select(`id name address location geoLocation image images promoImages description tags businessDistrict publishStatus ${SALON_RATING_STATS_SELECTION}`)
       .limit(8)
       .lean();

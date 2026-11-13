@@ -2,6 +2,51 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const registerPublicRoutes = require('./routes/public');
 
+test('salon suggestions retain the deployed client contract and support a compact view', async () => {
+  const routes = new Map();
+  const calls = [];
+  let enrichment = 0;
+  registerPublicRoutes({ get(path, ...handlers) { routes.set(path, handlers.at(-1)); } }, {
+    rateLimits: { publicRead: [] },
+    Salon: {
+      find(query) {
+        const call = { query };
+        calls.push(call);
+        return {
+          select(fields) { call.fields = fields; return this; },
+          limit(limit) { call.limit = limit; return this; },
+          async lean() { return [{ id: 's1', name: 'A+B', address: '上海市' }]; }
+        };
+      }
+    },
+    getCoordinates: value => value.latitude && value.longitude ? value : null,
+    calculateDistanceKm: () => 1.5,
+    async addApprovedSalonRatings(salons) {
+      enrichment++;
+      return salons.map(salon => ({ ...salon, rating: 5, location: { latitude: 31, longitude: 121 } }));
+    },
+    stripSensitiveSalonFields: salon => salon,
+    existingSalonImages: async () => ['image'],
+    salonCoverImage: async () => 'image'
+  });
+  const handler = routes.get('/api/salons/suggestions');
+  let payload;
+  const res = { json(value) { payload = value; } };
+  await handler({ query: { keyword: 'A+B', latitude: '31', longitude: '121' } }, res);
+  assert.equal(calls[0].limit, 8);
+  assert.equal(payload[0].rating, 5);
+  assert.equal(payload[0].distanceKm, 1.5);
+  assert.deepEqual(payload[0].promoImages, ['image']);
+  await handler({ query: { keyword: 'A+B', view: 'compact' } }, res);
+  assert.deepEqual(calls[1], {
+    query: calls[0].query,
+    fields: 'id name address -_id',
+    limit: 5
+  });
+  assert.deepEqual(payload, [{ id: 's1', name: 'A+B', address: '上海市' }]);
+  assert.equal(enrichment, 1);
+});
+
 test('GET /api/salons returns ten-item pages and a has-more header', async () => {
   const routes = new Map();
   const app = {
