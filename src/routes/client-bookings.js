@@ -10,6 +10,11 @@ const {
   transactionError,
 } = bookingService;
 
+// 与所选时间有关的下单拒绝统一带上这个代码，客户端据此引导用户回到预约页重新选择时间；
+// message 是给用户看的中文说明。没有这个代码的旧客户端仍按 409 和 message 处理。
+const BOOKING_SLOT_UNAVAILABLE = 'BOOKING_SLOT_UNAVAILABLE';
+const slotUnavailable = (res, message) => res.status(409).json({ code: BOOKING_SLOT_UNAVAILABLE, message });
+
 module.exports = (app, ctx) => {
   const {
     mongoose,
@@ -492,7 +497,7 @@ module.exports = (app, ctx) => {
       return res.status(400).json({ message: 'startTime must use a 30-minute interval' });
     }
     if (requestedStartTime.getTime() <= Date.now()) {
-      return res.status(409).json({ message: 'Only future time slots can be booked' });
+      return slotUnavailable(res, '该时间已过，请重新选择预约时间');
     }
   
     const isNoPreference = staffId === '__no_preference__';
@@ -518,10 +523,10 @@ module.exports = (app, ctx) => {
       return res.status(409).json({ message: '该店铺已下架，暂不可预约' });
     }
     if (isSalonClosedOnDate(salon, startTime)) {
-      return res.status(409).json({ message: '该日期为店铺休息日' });
+      return slotUnavailable(res, '该日期为店铺休息日');
     }
     if (isSameDayBookingBlocked(salon, startTime)) {
-      return res.status(409).json({ message: '该店铺不接受当天预约' });
+      return slotUnavailable(res, '该店铺不接受当天预约');
     }
     if (isNoPreference && !(salon.staffIds || []).length) {
       return res.status(409).json({ message: 'This salon has no staff available for assignment' });
@@ -529,16 +534,16 @@ module.exports = (app, ctx) => {
     const { start: openingStart, end: openingEnd } = parseOpeningHours(salon.openingHours);
     const requestedMinutes = bookingService.localTimeMinutes(requestedStartTime);
     if (requestedMinutes < openingStart || requestedMinutes > openingEnd) {
-      return res.status(409).json({ message: 'This time is outside salon opening hours' });
+      return slotUnavailable(res, '该时间不在店铺营业时间内，请重新选择');
     }
   
     if (!isNoPreference) {
       const hasConflict = await findActiveBookingAtTime(bookingStaffId, requestedStartTime);
       if (hasConflict) {
-        return res.status(409).json({ message: 'This slot already has a pending or accepted booking' });
+        return slotUnavailable(res, '该时间段已被预约，请重新选择');
       }
       if (await isStaffUnavailable(bookingStaffId, startTime, service.durationMinutes)) {
-        return res.status(409).json({ message: 'This staff member is unavailable at the selected time' });
+        return slotUnavailable(res, '该理发师在所选时间不可预约，请重新选择');
       }
     }
   
@@ -593,7 +598,14 @@ module.exports = (app, ctx) => {
           );
         }
         if (!isNoPreference) {
-          await reserveBookingSlot(bookingId, bookingStaffId, requestedStartTime, serviceDurationMinutes, session);
+          try {
+            await reserveBookingSlot(bookingId, bookingStaffId, requestedStartTime, serviceDurationMinutes, session);
+          } catch (error) {
+            if (!isDuplicateSlotError(error)) throw error;
+            throw Object.assign(transactionError(409, '该时间段刚刚被其他用户预约，请重新选择'), {
+              code: BOOKING_SLOT_UNAVAILABLE,
+            });
+          }
         }
         let reservedCoupon = null;
         let couponDiscountFen = 0;
@@ -676,13 +688,11 @@ module.exports = (app, ctx) => {
         return created;
       });
     } catch (error) {
+      if (error.code === BOOKING_SLOT_UNAVAILABLE) return slotUnavailable(res, error.message);
       if (error.httpStatus) return res.status(error.httpStatus).json({
         message: error.message,
         ...(error.code === 'BOOKING_PRICE_CHANGED' ? { code: error.code, quote: error.quote } : {}),
       });
-      if (isDuplicateSlotError(error)) {
-        return res.status(409).json({ message: 'This time slot was just booked by another user' });
-      }
       throw error;
     }
   
