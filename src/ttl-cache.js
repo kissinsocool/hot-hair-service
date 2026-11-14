@@ -1,6 +1,5 @@
 // Process-local, short-lived cache for public responses that are identical for every caller.
 // Concurrent callers of one key share a single load; a failed load is not cached.
-// ponytail: process-local like the salon detail cache; use Redis only when several backend instances need to share it.
 const createTtlCache = ({ ttlMs, max = 100, now = Date.now }) => {
   const entries = new Map();
   return {

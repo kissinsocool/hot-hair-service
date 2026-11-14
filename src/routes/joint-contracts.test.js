@@ -41,6 +41,7 @@ function creationHarness(servicePricing = {}) {
     BookingMessage: { async create(rows, options) { assert.equal(options.session, session); messages.push(...rows); return rows; } },
     getStaffById: () => chain({ id: 'staff-1', name: 'Stylist', extraServiceFeeFen: 2000 }),
     getSalonByStaffId: () => ctx.Salon.findOne(),
+    findActiveBookingAtTime: async () => null,
     normalizeUserId: id => id, userIdAliases: id => [id], normalizeBooking: doc => doc.toObject(),
     getUserPolicy: async () => ({ isBlacklisted: false }), parseOpeningHours: booking.parseOpeningHours,
     isSalonClosedOnDate: () => false, isSameDayBookingBlocked: () => false,

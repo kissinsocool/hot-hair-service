@@ -679,7 +679,7 @@ module.exports = (app, ctx) => {
         ? 'visit_completed'
         : '';
     if (eventName) {
-      await recordAnalyticsEvent(AnalyticsEvent, bookingEvent(eventName, booking))
+      void recordAnalyticsEvent(AnalyticsEvent, bookingEvent(eventName, booking))
         .catch(error => console.error('Booking status analytics failed:', error.message));
     }
     if (action === 'accept') {

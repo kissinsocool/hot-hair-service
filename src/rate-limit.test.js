@@ -55,7 +55,7 @@ test('short-window cleanup cannot reset another limiter bucket', () => {
   assert.deepEqual(responses, [429, 429]);
 });
 
-test('public read limit is 50 requests per IP and route', () => {
+test('public read limit is 120 requests per IP and route', () => {
   const limit = rateLimits.publicRead[0];
   const statuses = [];
   const response = () => ({
@@ -69,11 +69,11 @@ test('public read limit is 50 requests per IP and route', () => {
     () => statuses.push(200),
   );
 
-  for (let index = 0; index < 50; index += 1) request('/api/salons');
+  for (let index = 0; index < 120; index += 1) request('/api/salons');
   request('/api/salons');
   request('/api/salons/:id');
 
-  assert.equal(statuses[49], 200);
-  assert.equal(statuses[50], 429);
-  assert.equal(statuses[51], 200);
+  assert.equal(statuses[119], 200);
+  assert.equal(statuses[120], 429);
+  assert.equal(statuses[121], 200);
 });

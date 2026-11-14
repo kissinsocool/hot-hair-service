@@ -1,7 +1,10 @@
+const { randomUUID } = require('node:crypto');
 const { createClient } = require('redis');
 
 const redisUrl = String(process.env.REDIS_URL || '').trim();
 const SESSION_REVOCATION_CHANNEL = 'hot-hair:session-revoked';
+const INSTANCE_EVENT_CHANNEL = 'hot-hair:instance-events';
+const instanceId = randomUUID();
 let client;
 let subscriber;
 
@@ -17,6 +20,7 @@ const connectRedis = async () => {
 };
 
 const getRedisClient = () => client?.isReady ? client : null;
+const isRedisReady = () => Boolean(client?.isReady && subscriber?.isReady);
 
 const disconnectRedis = async () => {
   await Promise.allSettled([subscriber, client]
@@ -36,10 +40,31 @@ const subscribeSessionRevocations = async (handler) => {
   return true;
 };
 
+const publishInstanceEvent = async (type, payload) => {
+  if (!redisUrl) return;
+  if (!client?.isReady) throw new Error('Redis publisher is unavailable');
+  await client.publish(INSTANCE_EVENT_CHANNEL, JSON.stringify({ instanceId, type, payload }));
+};
+
+const subscribeInstanceEvents = async (handler, onReconnect) => {
+  await subscriber.subscribe(INSTANCE_EVENT_CHANNEL, message => {
+    try {
+      const event = JSON.parse(message);
+      if (event.instanceId !== instanceId) handler(event.type, event.payload);
+    } catch (error) {
+      console.error('Redis instance event failed:', error.message);
+    }
+  });
+  subscriber.on('ready', onReconnect);
+};
+
 module.exports = {
+  publishInstanceEvent,
+  subscribeInstanceEvents,
   connectRedis,
   disconnectRedis,
   getRedisClient,
+  isRedisReady,
   publishSessionRevocation,
   subscribeSessionRevocations,
 };

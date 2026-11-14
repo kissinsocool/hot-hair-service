@@ -16,8 +16,12 @@ test('admin overview separates total clients from clients created yesterday', as
     rateLimits: { upload: [] },
     MerchantUser: counts,
     ClientUser: {
-      async countDocuments(query) {
-        if (!query) return 20;
+      async countDocuments(query, options) {
+        if (options?.hint) {
+          assert.deepEqual(query, {});
+          assert.deepEqual(options.hint, { _id: 1 });
+          return 20;
+        }
         yesterdayQuery = query;
         return 3;
       },

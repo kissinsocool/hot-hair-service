@@ -787,6 +787,32 @@ test('health, readiness and centralized auth boundaries work without database ac
   }
 });
 
+test('analytics rejects an oversized body after checking the IP rate limit', async () => {
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/api/analytics/events`;
+    const request = body => fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.121' },
+      body,
+    });
+    const first = await request(JSON.stringify({ padding: 'x'.repeat(100 * 1024) }));
+    assert.equal(first.status, 413);
+    await first.arrayBuffer();
+
+    for (let index = 1; index < 120; index += 1) {
+      const response = await request('{}');
+      assert.equal(response.status, 400);
+      await response.arrayBuffer();
+    }
+    const limited = await request('{invalid JSON');
+    assert.equal(limited.status, 429);
+    await limited.arrayBuffer();
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test('buildGeoLocation stores MongoDB GeoJSON coordinates', () => {
   assert.deepEqual(buildGeoLocation({ latitude: 31.2304, longitude: 121.4737 }), {
     type: 'Point',

@@ -10,7 +10,15 @@ function createRoute(overrides = {}) {
     get() {}, patch() {}, delete() {}, use() {},
     post(path, ...handlers) { routes.set(path, handlers.at(-1)); },
   };
-  const session = { async withTransaction(work) { await work(); }, async endSession() {} };
+  const session = {
+    async withTransaction(work) {
+      if (state.retryTransaction) {
+        await assert.rejects(work(), { message: 'simulated write conflict' });
+      }
+      await work();
+    },
+    async endSession() {},
+  };
   const state = {
     salonStatus: 'online', closed: false, sameDayBlocked: false, outsideHours: false,
     conflict: false, staffUnavailable: false, duplicateOnReserve: false, duplicateOnSave: false, ...overrides,
@@ -44,7 +52,15 @@ function createRoute(overrides = {}) {
         if (state.duplicateOnReserve) throw Object.assign(new Error('E11000 duplicate key'), { code: 11000 });
       },
     },
-    Salon: { async updateOne() { return { matchedCount: 1 }; } },
+    Salon: {
+      async updateOne() {
+        if (state.retryTransaction && !state.hasRetried) {
+          state.hasRetried = true;
+          throw new Error('simulated write conflict');
+        }
+        return { matchedCount: 1 };
+      },
+    },
     mongoose: { async startSession() { return session; } },
     crypto: { randomInt() { return 12345678; } },
     normalizeUserId: (value) => value,
@@ -80,17 +96,15 @@ function createRoute(overrides = {}) {
 async function submit(route, startTime = '2030-01-01T10:00:00.000+08:00', overrides = {}, userId = 'user-1') {
   let status = 200;
   let body;
-  await route(
-    {
-      clientUser: { id: userId, displayName: 'User' },
-      body: {
-        salonId: 'salon-1', staffId: 'staff-1', serviceId: 'service-1', startTime,
-        expectedOriginalAmountFen: 12000, expectedPayableAmountFen: 12000, ...overrides,
-      },
+  const req = {
+    clientUser: { id: userId, displayName: 'User' },
+    body: {
+      salonId: 'salon-1', staffId: 'staff-1', serviceId: 'service-1', startTime,
+      expectedOriginalAmountFen: 12000, expectedPayableAmountFen: 12000, ...overrides,
     },
-    { status(value) { status = value; return this; }, json(value) { body = value; } },
-  );
-  return { status, body };
+  };
+  await route(req, { status(value) { status = value; return this; }, json(value) { body = value; } });
+  return { status, body, transactionAttempts: req.bookingTransactionAttempts };
 }
 
 const slotCases = [
@@ -123,6 +137,12 @@ test('an available slot is still booked', async () => {
   const { status, body } = await submit(createRoute());
   assert.equal(status, 201);
   assert.equal(body.code, undefined);
+});
+
+test('booking creation records both attempts after a transaction retry', async () => {
+  const { status, transactionAttempts } = await submit(createRoute({ retryTransaction: true }));
+  assert.equal(status, 201);
+  assert.equal(transactionAttempts, 2);
 });
 
 test('a duplicate booking ID is propagated instead of asking the user to select another time', async () => {

@@ -143,11 +143,11 @@ module.exports = (app, ctx) => {
       end: today.start,
     };
     const [merchantCount, clientCount, yesterdayNewClientCount, salonCount, bookingCount, pendingCount, acceptedCount, funnelRows, todayBookingCount, unviewedBookingCount] = await Promise.all([
-      MerchantUser.countDocuments(),
-      ClientUser.countDocuments(),
+      MerchantUser.countDocuments({}, { hint: { _id: 1 } }),
+      ClientUser.countDocuments({}, { hint: { _id: 1 } }),
       ClientUser.countDocuments({ createdAt: { $gte: yesterday.start, $lt: yesterday.end } }),
-      Salon.countDocuments(),
-      Booking.countDocuments(),
+      Salon.countDocuments({}, { hint: { _id: 1 } }),
+      Booking.countDocuments({}, { hint: { _id: 1 } }),
       Booking.countDocuments({ status: 'pending' }),
       Booking.countDocuments({ status: 'accepted' }),
       AnalyticsEvent.aggregate([
@@ -182,7 +182,7 @@ module.exports = (app, ctx) => {
         .skip(pagination.skip)
         .limit(pagination.limit)
         .lean(),
-      SupportMessage.countDocuments(),
+      SupportMessage.countDocuments({}, { hint: { _id: 1 } }),
     ]);
     setPaginationHeaders(res, pagination, total);
     res.json(messages);
@@ -260,7 +260,7 @@ module.exports = (app, ctx) => {
         .skip(pagination.skip)
         .limit(pagination.limit)
         .lean(),
-      MerchantUser.countDocuments(),
+      MerchantUser.countDocuments({}, { hint: { _id: 1 } }),
     ]);
     setPaginationHeaders(res, pagination, total);
     const salonQuery = Salon.find({ id: { $in: merchants.map(user => user.salonId) } });
@@ -290,7 +290,7 @@ module.exports = (app, ctx) => {
     const [salons, total] = await Promise.all([
       Salon.find({}).select('id name phone address -_id').sort({ _id: 1 })
         .skip(pagination.skip).limit(pagination.limit).lean(),
-      Salon.countDocuments(),
+      Salon.countDocuments({}, { hint: { _id: 1 } }),
     ]);
     setPaginationHeaders(res, pagination, total);
     res.json(salons.map(salon => ({
@@ -672,7 +672,7 @@ module.exports = (app, ctx) => {
     const pagination = normalizePagination(req.query);
     const [bookings, total] = await Promise.all([
       Booking.find({}).select('-_id -__v').sort({ createdAt: -1 }).skip(pagination.skip).limit(pagination.limit).lean(),
-      Booking.countDocuments(),
+      Booking.countDocuments({}, { hint: { _id: 1 } }),
     ]);
     setPaginationHeaders(res, pagination, total);
     res.json(bookings.map(normalizeBooking));
@@ -708,7 +708,7 @@ module.exports = (app, ctx) => {
     const [posts, total] = await Promise.all([
       SalonPost.find({}).sort({ createdAt: -1, _id: -1 })
         .skip(pagination.skip).limit(pagination.limit).lean(),
-      SalonPost.countDocuments(),
+      SalonPost.countDocuments({}, { hint: { _id: 1 } }),
     ]);
     const salonIds = [...new Set(posts.map(post => post.salonId).filter(Boolean))];
     const salons = salonIds.length

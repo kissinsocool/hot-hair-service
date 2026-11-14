@@ -66,9 +66,11 @@ const { hashPassword, verifyPassword } = require('./src/passwords');
 const {
   connectRedis,
   disconnectRedis,
-  getRedisClient,
+  isRedisReady,
   publishSessionRevocation,
   subscribeSessionRevocations,
+  publishInstanceEvent,
+  subscribeInstanceEvents,
 } = require('./src/redis');
 const { errorLogger, requestLogger } = require('./src/observability');
 const { createPublicResponseCaches } = require('./src/ttl-cache');
@@ -156,7 +158,7 @@ app.get('/ready', (_req, res) => {
   }
   const mongoReady = mongoose.connection.readyState === 1;
   const redisRequired = Boolean(String(process.env.REDIS_URL || '').trim());
-  const redisReady = !redisRequired || Boolean(getRedisClient());
+  const redisReady = !redisRequired || isRedisReady();
   res.status(mongoReady && redisReady ? 200 : 503).set('Cache-Control', 'no-store').json({
     status: mongoReady && redisReady ? 'ready' : 'not_ready',
     mongodb: mongoReady ? 'up' : 'down',
@@ -312,12 +314,7 @@ const {
 const MERCHANT_SALON_JSON_PATH = '/api/merchant/salon';
 const jsonDefault = express.json({ limit: process.env.JSON_LIMIT || '1mb' });
 const jsonMerchantSalon = express.json({ limit: '1mb' });
-app.use((req, res, next) => (
-  req.path === MERCHANT_SALON_JSON_PATH
-    ? jsonMerchantSalon(req, res, next)
-    : jsonDefault(req, res, next)
-));
-
+const jsonAnalytics = express.json({ limit: process.env.JSON_LIMIT || '100kb' });
 const sendSocketMessage = (socket, payload) => {
   if (socket.readyState !== WebSocket.OPEN) return;
   if (socket.bufferedAmount > 1024 * 1024) {
@@ -335,18 +332,23 @@ const socketCanReceiveBooking = (subscription, booking) => {
     && normalizeUserId(subscription.userId) === normalizeUserId(booking.userId);
 };
 
-const broadcastBookingEvent = (event, booking) => {
-  const normalized = normalizeBooking(booking);
-  const payload = {
-    event,
-    booking: normalized,
-  };
-
+const deliverBookingEvent = (payload) => {
   wss.clients.forEach((client) => {
-    if (socketCanReceiveBooking(socketSubscriptions.get(client), normalized)) {
+    if (socketCanReceiveBooking(socketSubscriptions.get(client), payload.booking)) {
       sendSocketMessage(client, payload);
     }
   });
+};
+
+const publishBackendEvent = (type, payload) => {
+  void publishInstanceEvent(type, payload)
+    .catch(error => console.error('Redis instance event publish failed:', error.message));
+};
+
+const broadcastBookingEvent = (event, booking) => {
+  const payload = { event, booking: normalizeBooking(booking) };
+  deliverBookingEvent(payload);
+  publishBackendEvent('booking', payload);
 };
 
 const authenticateSocket = async (role, token) => {
@@ -673,8 +675,8 @@ const isSalonClosedOnDate = bookingDomain.isSalonClosedOnDate;
 
 const isSameDayBookingBlocked = bookingDomain.isSameDayBookingBlocked;
 
-const isStaffUnavailable = async (staffId, startTime, duration = 30) => {
-  const person = await getStaffById(staffId).lean();
+const isStaffUnavailable = async (staffId, startTime, duration = 30, staffMember) => {
+  const person = staffMember ?? await getStaffById(staffId).lean();
   if (!person) return false;
   if (isSalonClosedOnDate({ weeklyClosedDays: person.weeklyClosedDays }, startTime)) return true;
   const unavailable = new Set(normalizeUnavailableSlots(person.unavailableSlots));
@@ -683,7 +685,7 @@ const isStaffUnavailable = async (staffId, startTime, duration = 30) => {
 };
 
 const findActiveBookingAtTime = (staffId, startTime) =>
-  Booking.findOne({
+  Booking.exists({
     staffId,
     startTime: bookingDomain.parseBookingTime(startTime),
     status: { $in: ['pending', 'accepted'] },
@@ -849,15 +851,19 @@ const buildPublicSalonDetail = (salonDocument, builder = buildSalonDetailFromVer
       closedDates: expandedSalonClosedDates(detail, new Date(now)),
     };
   }, now);
-const clearPublicSalonDetailCache = salonDomain.clearPublicSalonDetailCache;
-
-// ponytail: process-local, like the salon detail cache; several backend instances would need to broadcast these.
 const publicResponseCaches = createPublicResponseCaches();
-const clearAdCache = () => publicResponseCaches.ad.clear();
-const clearCouponCampaignCache = () => publicResponseCaches.couponCampaign.clear();
-// The promoted gallery is built from every online salon's services, images, promotion review state and publish
-// state. Rather than track which salon fields matter, every route that saves a salon clears it.
-const clearPromotedServicesCache = () => publicResponseCaches.promotedServices.clear();
+const cacheInvalidators = new Map([
+  ['salonDetail', salonDomain.clearPublicSalonDetailCache],
+  ...Object.entries(publicResponseCaches).map(([name, cache]) => [name, () => cache.clear()]),
+]);
+const invalidatePublicCache = name => {
+  cacheInvalidators.get(name)();
+  publishBackendEvent('cache', name);
+};
+const clearPublicSalonDetailCache = () => invalidatePublicCache('salonDetail');
+const clearAdCache = () => invalidatePublicCache('ad');
+const clearCouponCampaignCache = () => invalidatePublicCache('couponCampaign');
+const clearPromotedServicesCache = () => invalidatePublicCache('promotedServices');
 
 const contentFields = [
   'name',
@@ -1526,9 +1532,14 @@ const routeContext = {
   requireQualificationForPublishing,
 };
 
+require('./src/routes/analytics')(app, routeContext, jsonAnalytics);
+app.use((req, res, next) => (
+  req.path === MERCHANT_SALON_JSON_PATH
+    ? jsonMerchantSalon(req, res, next)
+    : jsonDefault(req, res, next)
+));
 require('./src/routes/public')(app, routeContext);
 require('./src/routes/auth-entry')(app, routeContext);
-require('./src/routes/analytics')(app, routeContext);
 app.use([
   '/api/support-messages',
   '/api/uploads',
@@ -1575,10 +1586,20 @@ const startServer = async () => {
     throw new Error('MONGODB_URI is missing. Add it to .env before starting the backend.');
   }
 
-  await mongoose.connect(mongoUri);
+  await mongoose.connect(mongoUri, {
+    maxPoolSize: 50,
+    serverSelectionTimeoutMS: 5000,
+    waitQueueTimeoutMS: 2000,
+  });
   const redisConnected = await connectRedis();
   if (redisConnected) {
     await subscribeSessionRevocations(closeSocketsBySessionHash);
+    await subscribeInstanceEvents((type, payload) => {
+      if (type === 'booking') deliverBookingEvent(payload);
+      if (type === 'cache') cacheInvalidators.get(payload)?.();
+    }, () => {
+      for (const clear of cacheInvalidators.values()) clear();
+    });
     console.log('Redis connected');
   } else {
     console.warn('REDIS_URL is missing; using process-local rate limits');

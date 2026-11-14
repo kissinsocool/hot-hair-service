@@ -1,6 +1,6 @@
 const analytics = require('../services/analytics');
 
-module.exports = (app, ctx) => {
+module.exports = (app, ctx, parseBody) => {
   const {
     AnalyticsEvent,
     ClientUser,
@@ -9,7 +9,7 @@ module.exports = (app, ctx) => {
     sessionTokenFromRequest,
   } = ctx;
 
-  app.post('/api/analytics/events', ...(rateLimits.analytics || []), async (req, res) => {
+  app.post('/api/analytics/events', ...(rateLimits.analytics || []), ...(parseBody ? [parseBody] : []), async (req, res) => {
     const token = sessionTokenFromRequest(req);
     const user = token
       ? await ClientUser.findOne(activeSessionQuery(token)).select('id').lean()

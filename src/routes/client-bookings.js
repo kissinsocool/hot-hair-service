@@ -522,10 +522,13 @@ module.exports = (app, ctx) => {
       return res.status(400).json({ message: 'salonId is required when staff is not specified' });
     }
   
-    const staffMember = isNoPreference ? null : await getStaffById(bookingStaffId).lean();
-    const salon = isNoPreference
-      ? await Salon.findOne({ id: String(salonId).trim() }).lean()
-      : await getSalonByStaffId(bookingStaffId).lean();
+    const [staffMember, salon, hasConflict] = isNoPreference
+      ? [null, await Salon.findOne({ id: String(salonId).trim() }).lean(), false]
+      : await Promise.all([
+        getStaffById(bookingStaffId).lean(),
+        getSalonByStaffId(bookingStaffId).lean(),
+        findActiveBookingAtTime(bookingStaffId, requestedStartTime),
+      ]);
     const service = salon?.services?.find(item => String(item.id).trim() === bookingServiceId);
   
     if ((!isNoPreference && !staffMember) || !service || !salon) {
@@ -554,7 +557,6 @@ module.exports = (app, ctx) => {
     }
   
     if (!isNoPreference) {
-      const hasConflict = await findActiveBookingAtTime(bookingStaffId, requestedStartTime);
       if (hasConflict) {
         // The original request may have committed between the replay lookup and the slot check.
         if (replayQuery) {
@@ -563,7 +565,7 @@ module.exports = (app, ctx) => {
         }
         return slotUnavailable(res, '该时间段已被预约，请重新选择');
       }
-      if (await isStaffUnavailable(bookingStaffId, startTime, service.durationMinutes)) {
+      if (await isStaffUnavailable(bookingStaffId, startTime, service.durationMinutes, staffMember)) {
         return slotUnavailable(res, '该理发师在所选时间不可预约，请重新选择');
       }
     }
@@ -594,8 +596,10 @@ module.exports = (app, ctx) => {
       return res.status(503).json({ message: '订单号生成失败，请重试' });
     }
     let result;
+    req.bookingTransactionAttempts = 0;
     try {
       result = await runBookingTransaction(async (session) => {
+        req.bookingTransactionAttempts += 1;
         // Writing the salon serializes booking creation with an admin unpublish.
         const onlineSalon = await Salon.updateOne(
           { id: salon.id, publishStatus: 'online' },
@@ -730,7 +734,7 @@ module.exports = (app, ctx) => {
     const { booking, replayed } = result;
     if (replayed) return respondWithBooking(booking, 200);
     broadcastBookingEvent('booking.created', booking);
-    await recordAnalyticsEvent(AnalyticsEvent, bookingEvent('booking_submitted', booking))
+    void recordAnalyticsEvent(AnalyticsEvent, bookingEvent('booking_submitted', booking))
       .catch(error => console.error('Booking analytics failed:', error.message));
     return respondWithBooking(booking, 201);
   });

@@ -138,6 +138,8 @@ const runFlow = () => {
 
   const service = salonDetail.services[(__VU + __ITER) % salonDetail.services.length];
   const slot = availableSlots[(__VU + __ITER) % availableSlots.length];
+  const bookingParams = requestParams(token);
+  bookingParams.headers['X-Request-ID'] = `k6.${runId}.${__VU}.${__ITER}`;
   const bookingResponse = http.post(`${baseUrl}/api/bookings`, JSON.stringify({
     staffId: '__no_preference__',
     salonId,
@@ -145,7 +147,7 @@ const runFlow = () => {
     startTime: slot.startTime,
     note: `k6:${runId}`,
   }), {
-    ...requestParams(token),
+    ...bookingParams,
     tags: { name: 'POST /api/bookings' },
   });
   const booking = json(bookingResponse)?.booking;

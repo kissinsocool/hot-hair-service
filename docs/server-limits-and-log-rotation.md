@@ -73,3 +73,17 @@
 ### 回滚
 
 删除 `/etc/logrotate.d/hot-hair-pm2`。已轮转的日志文件保留。
+
+## 建单事务重试
+
+建单请求的 `http_request` 日志包含 `bookingTransactionRetries`，表示 MongoDB 事务回调额外执行的次数。未进入事务的请求没有该字段，单独重试 commit 也不会增加该值。k6 写入模式发出的请求 ID 为 `k6.<K6_RUN_ID>.<VU>.<ITER>`。在压测环境中将服务端本次运行各实例的 JSON 请求日志汇总到同一文件，再按运行 ID 统计。
+
+```bash
+jq -s --arg runId "$K6_RUN_ID" '
+  map(select(.event == "http_request"
+    and (.requestId | startswith("k6." + $runId + "."))
+    and has("bookingTransactionRetries")))
+  | {requests: length, retried: (map(select(.bookingTransactionRetries > 0)) | length),
+     retries: (map(.bookingTransactionRetries) | add // 0)}
+' requests.jsonl
+```

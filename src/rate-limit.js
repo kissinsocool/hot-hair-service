@@ -95,7 +95,7 @@ function createRateLimiter({ name, limit, windowMs, key = ipKey, now = Date.now 
 // ponytail: local buckets keep development usable without Redis; production multi-instance deployments set REDIS_URL.
 const rateLimits = {
   publicRead: [
-    createRateLimiter({ name: 'public-read', limit: 50, windowMs: MINUTE, key: routeIpKey }),
+    createRateLimiter({ name: 'public-read', limit: 120, windowMs: MINUTE, key: routeIpKey }),
   ],
   login: [
     createRateLimiter({ name: 'login-ip', limit: 30, windowMs: 5 * MINUTE }),

@@ -406,7 +406,7 @@ const stripSensitiveSalonFields = (salon = {}) => {
   return { ...publicSalon, isFeatured: publicSalon.isFeatured === true };
 };
 
-// ponytail: process-local and short-lived; use Redis only when multiple backend instances need a shared cache.
+// Each process holds its own short-lived entries. Index.js propagates explicit invalidations.
 const buildPublicSalonDetail = async (salonDocument, builder, now = Date.now()) => {
   const salon = normalizeDocument(salonDocument);
   const id = String(salon?.id || salon?._id || '');

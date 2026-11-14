@@ -15,6 +15,9 @@ const requestLogger = (req, res, next) => {
       method: req.method,
       route,
       status: res.statusCode,
+      bookingTransactionRetries: req.bookingTransactionAttempts === undefined
+        ? undefined
+        : Math.max(0, req.bookingTransactionAttempts - 1),
       durationMs: Number((durationSeconds * 1000).toFixed(2)),
       ip: req.ip,
     }));
