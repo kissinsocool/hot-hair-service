@@ -115,3 +115,47 @@ test('a pending booking rescheduled after discovery is reconsidered on the next 
   assert.equal(bookings[0].startTime, rescheduledTime);
   assert.deepEqual(calls, []);
 });
+
+test('expiry includes the exact timeout and prefers the start-time reason when both apply', async () => {
+  const threshold = now.getTime() - 24 * HOUR;
+  const bookings = [
+    pending(1, 48, 24, { createdAt: new Date(threshold) }),
+    pending(2, 48, 24, { createdAt: new Date(threshold + 1) }),
+    pending(3, 0, 24),
+  ];
+  const { result } = await runExpiry(bookings, { timeoutMs: 24 * HOUR });
+
+  assert.equal(result, 2);
+  assert.deepEqual(bookings.map(booking => booking.status), ['rejected', 'pending', 'rejected']);
+  assert.equal(bookings[0].rejectReason, '商家长时间未确认，系统已自动取消');
+  assert.equal(bookings[2].rejectReason, '预约时间已到，商家未确认，系统已自动取消');
+});
+
+test('expiry leaves coupon fields and prices untouched when there is no coupon ID', async () => {
+  const booking = pending(1, -1, 2, { originalAmountFen: 10000, payableAmountFen: 10000 });
+  const before = { ...booking };
+  const { result, calls } = await runExpiry([booking], { timeoutMs: 0 });
+
+  assert.equal(result, 1);
+  for (const field of ['couponId', 'couponCode', 'couponTitle', 'couponDiscountFen',
+    'couponRedeemedAt', 'originalAmountFen', 'payableAmountFen']) {
+    assert.equal(Object.hasOwn(booking, field), Object.hasOwn(before, field), field);
+    assert.equal(booking[field], before[field], field);
+  }
+  assert.deepEqual(calls, ['booking:1', 'slot:1', 'message:reject:rejected', 'booking.updated:1']);
+});
+
+test('a non-conflict expiry error is logged and the next booking still expires', async (t) => {
+  const bookings = [pending(1, -1, 2), pending(2, -1, 2)];
+  const error = new Error('Booking update failed');
+  const log = t.mock.method(console, 'error', () => {});
+  const { result, calls } = await runExpiry(bookings, { timeoutMs: 0 }, booking => {
+    if (booking.id === '1') throw error;
+  });
+
+  assert.equal(result, 1);
+  assert.deepEqual(bookings.map(booking => booking.status), ['pending', 'rejected']);
+  assert.deepEqual(calls, ['booking:2', 'slot:2', 'message:reject:rejected', 'booking.updated:2']);
+  assert.equal(log.mock.callCount(), 1);
+  assert.deepEqual(log.mock.calls[0].arguments, ['Pending booking expiry failed for 1:', error]);
+});
