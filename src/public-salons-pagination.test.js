@@ -2,6 +2,23 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const registerPublicRoutes = require('./routes/public');
 
+test('legacy region checks allow all network addresses', () => {
+  const routes = new Map();
+  registerPublicRoutes({ get(path, ...handlers) { routes.set(path, handlers.at(-1)); } }, {
+    rateLimits: { publicRead: [] }
+  });
+  for (const ip of ['202.106.0.20', '114.114.114.114', undefined]) {
+    const headers = {};
+    let payload;
+    routes.get('/api/service-area')({ ip }, {
+      set(name, value) { headers[name] = value; },
+      json(value) { payload = value; }
+    });
+    assert.deepEqual(payload, { status: 'open' });
+    assert.equal(headers['Cache-Control'], 'private, no-store');
+  }
+});
+
 test('salon suggestions retain the deployed client contract and support a compact view', async () => {
   const routes = new Map();
   const calls = [];
