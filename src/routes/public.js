@@ -11,6 +11,9 @@ const PROMOTION_CATEGORY_TAG_IDS = Object.freeze({
   care: 'care',
 });
 
+// 店铺详情随详情一起返回的最新动态条数（小程序「作品集」横向列表）；超过这个数时 hasMorePosts 为 true，客户端显示「全部动态」入口。
+const SALON_DETAIL_POST_LIMIT = 10;
+
 module.exports = (app, ctx) => {
   const {
     getCutPriceFromFenBySalonIds,
@@ -261,7 +264,7 @@ module.exports = (app, ctx) => {
     const [detail, latestPosts] = await Promise.all([
       buildPublicSalonDetail(current),
       SalonPost.find({ salonId: current.id, reviewStatus: 'approved' })
-        .sort({ createdAt: -1, _id: -1 }).limit(4).lean(),
+        .sort({ createdAt: -1, _id: -1 }).limit(SALON_DETAIL_POST_LIMIT + 1).lean(),
     ]);
     if (!detail) return res.status(404).json({ message: 'Salon not found' });
     const reviews = await addReviewHelpfulState(detail.reviews || [], sessionTokenFromRequest(req));
@@ -269,8 +272,8 @@ module.exports = (app, ctx) => {
     res.json({
       ...detail,
       reviews,
-      latestPosts: latestPosts.slice(0, 3).map(post => salonPostPayload(post, publicImageUrl)),
-      hasMorePosts: latestPosts.length > 3,
+      latestPosts: latestPosts.slice(0, SALON_DETAIL_POST_LIMIT).map(post => salonPostPayload(post, publicImageUrl)),
+      hasMorePosts: latestPosts.length > SALON_DETAIL_POST_LIMIT,
     });
   });
 

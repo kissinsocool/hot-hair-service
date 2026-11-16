@@ -140,6 +140,49 @@ test('public salon posts are scoped to an online salon and paginated newest firs
   await list({ params: { id: 'salon-1' }, query: { page: '2', limit: '10', authorStaffId: 'staff-1' } }, res);
 });
 
+test('salon detail returns up to ten latest posts and flags more only beyond ten', async () => {
+  const routes = new Map();
+  const app = { get: (path, ...handlers) => routes.set(path, handlers.at(-1)) };
+  let stored = [];
+  let requestedLimit;
+  registerPublicRoutes(app, {
+    rateLimits: { publicRead: [] },
+    Salon: { findOne: () => ({ select: () => ({ lean: async () => ({ id: 'salon-1' }) }) }) },
+    buildPublicSalonDetail: async () => ({ id: 'salon-1', reviews: [] }),
+    addReviewHelpfulState: async reviews => reviews,
+    sessionTokenFromRequest: () => '',
+    SalonPost: {
+      find(filter) {
+        assert.deepEqual(filter, { salonId: 'salon-1', reviewStatus: 'approved' });
+        return {
+          sort(value) { assert.deepEqual(value, { createdAt: -1, _id: -1 }); return this; },
+          limit(value) { requestedLimit = value; return this; },
+          async lean() { return stored.slice(0, requestedLimit); },
+        };
+      },
+    },
+    salonPostPayload: post => post,
+    publicImageUrl: value => value,
+  });
+  const detail = async (count) => {
+    stored = Array.from({ length: count }, (_, index) => ({ id: `post-${index + 1}` }));
+    const res = response();
+    res.set = function set() { return this; };
+    await routes.get('/api/salons/:id')({ params: { id: 'salon-1' }, query: {} }, res);
+    return res.body;
+  };
+  const few = await detail(3);
+  assert.equal(requestedLimit, 11);
+  assert.equal(few.latestPosts.length, 3);
+  assert.equal(few.hasMorePosts, false);
+  const exactlyTen = await detail(10);
+  assert.equal(exactlyTen.latestPosts.length, 10);
+  assert.equal(exactlyTen.hasMorePosts, false);
+  const many = await detail(25);
+  assert.deepEqual(many.latestPosts.map(post => post.id), Array.from({ length: 10 }, (_, index) => `post-${index + 1}`));
+  assert.equal(many.hasMorePosts, true);
+});
+
 test('a single public salon post is served only when approved and owned by the online salon', async () => {
   const routes = new Map();
   const app = { get: (path, ...handlers) => routes.set(path, handlers.at(-1)) };
