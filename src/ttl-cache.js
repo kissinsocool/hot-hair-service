@@ -26,11 +26,14 @@ const createTtlCache = ({ ttlMs, max = 100, now = Date.now }) => {
 // The public responses that are identical for every caller. Admin and merchant writes clear the affected cache
 // (see the clear* helpers in index.js), so a change shows at once and the lifetimes only bound how long a
 // response is reused while nothing changes. The coupon campaign also starts and ends by the clock, with no write
-// to clear it, so it keeps a short lifetime.
+// to clear it, so it keeps a short lifetime. Recommended posts hold only the part shared by everyone near one
+// spot (nearby salons and their latest posts); no write clears them, so a new post, an edited service or a salon
+// going offline shows within that one-minute lifetime.
 const createPublicResponseCaches = (now = Date.now) => ({
   ad: createTtlCache({ ttlMs: 5 * 60_000, max: 1, now }),
   couponCampaign: createTtlCache({ ttlMs: 15_000, max: 1, now }),
   promotedServices: createTtlCache({ ttlMs: 5 * 60_000, max: 200, now }),
+  recommendedPosts: createTtlCache({ ttlMs: 60_000, max: 200, now }),
 });
 
 module.exports = { createTtlCache, createPublicResponseCaches };

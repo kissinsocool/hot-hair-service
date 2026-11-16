@@ -268,7 +268,11 @@ test('home recommendations route resolves the viewer and never allows shared cac
       userQueries.push(query);
       return { select: () => ({ lean: async () => (query.sessionTokenHash === 'hash:valid' ? { id: 'user-u1' } : null) }) };
     } },
-    readRecommendedPosts: async (options) => { calls.push(options); return { categoryId: 'color', items: [{ id: 'post-1', reasons: [] }] }; },
+    readRecommendedPosts: async (options, deps) => {
+      calls.push(options);
+      assert.equal(typeof deps.cache.get, 'function', '与用户无关的部分走共用缓存');
+      return { categoryId: 'color', items: [{ id: 'post-1', reasons: [] }] };
+    },
   });
   const recommend = async (req) => {
     const res = response();

@@ -60,6 +60,7 @@ module.exports = (app, ctx) => {
     ad: adCache,
     couponCampaign: couponCampaignCache,
     promotedServices: promotedServicesCache,
+    recommendedPosts: recommendedPostsCache,
   } = ctx.publicResponseCaches || createPublicResponseCaches();
 
   // Older mini-program builds still use this endpoint before loading shops.
@@ -181,6 +182,7 @@ module.exports = (app, ctx) => {
 
   // 小程序首页「套餐推荐」：附近店铺各自最新的、关联了在售套餐的已审核动态。已登录时按最近完成的预约
   // 选分类、标出去过的店；viewedSalonIds 是客户端记录的最近看过的店铺。规则见 services/recommended-posts.js。
+  // 附近店铺和动态这部分与用户无关，按位置缓存一分钟；因人而异的部分每次现算。
   app.get('/api/salons/recommended-posts', ...rateLimits.publicRead, async (req, res) => {
     const userLocation = getCoordinates(req.query);
     if (!userLocation) return res.status(400).json({ message: 'latitude and longitude are required' });
@@ -196,7 +198,7 @@ module.exports = (app, ctx) => {
       limit: normalizeLimit(req.query.limit, 10, 20),
       viewerId: viewer ? normalizeUserId(viewer.id) : '',
       viewedSalonIds: personalized ? parseViewedSalonIds(req.query.viewedSalonIds) : [],
-    });
+    }, { cache: recommendedPostsCache });
     res.json(personalized ? result : result.items.map(({ reasons, ...item }) => item));
   });
 

@@ -44,9 +44,9 @@ const fakeModels = ({ salons, posts = [], bookings = [], otherSalons = [] }) => 
     } },
   };
 };
-const recommend = (models, options = {}) => readRecommendedPosts({
+const recommend = (models, options = {}, cache = null) => readRecommendedPosts({
   userLocation: { latitude: 39.9, longitude: 116.4 }, limit: 10, ...options,
-}, { models, publicImageUrl: value => value });
+}, { models, publicImageUrl: value => value, cache });
 
 test('promotion categories match the category finder and pick one interest per service', () => {
   assert.deepEqual(Object.keys(PROMOTION_CATEGORY_TAG_IDS), ['men-cut', 'women-cut', 'color', 'curly', 'straight', 'care']);
@@ -169,4 +169,40 @@ test('the latest completed booking picks the category when enough nearby posts m
   // 没有已完成预约的用户不按分类。
   const fresh = await recommend(fakeModels({ salons, posts }), { viewerId: 'u2' });
   assert.equal(fresh.categoryId, '');
+});
+
+test('nearby salons and posts are read once per location cell while personal parts stay per request', async () => {
+  const { createTtlCache } = require('../ttl-cache');
+  let time = 0;
+  const cache = createTtlCache({ ttlMs: 60_000, max: 200, now: () => time });
+  const models = fakeModels({
+    salons: [salon('a', 116.4, [service('a1')]), salon('b', 116.41, [service('b1')])],
+    posts: [post('pa', 'a', 'a1', '2026-01-01'), post('pb', 'b', 'b1', '2026-01-01')],
+    bookings: [{ salonId: 'b', serviceId: 'b1' }],
+  });
+  // 同一格（坐标取到小数点后 3 位）内的两个人：店铺和动态只查一次。
+  const guest = await recommend(models, { userLocation: { latitude: 39.9001, longitude: 116.4004 } }, cache);
+  const member = await recommend(models, {
+    userLocation: { latitude: 39.9004, longitude: 116.3996 }, viewerId: 'u1', viewedSalonIds: ['a'],
+  }, cache);
+  assert.equal(models.queries.salons.length, 1);
+  assert.equal(models.queries.posts.length, 1);
+  assert.deepEqual(models.queries.salons[0].geoLocation.$nearSphere.$geometry.coordinates, [116.4, 39.9]);
+  // 推荐理由和排序仍按各自的用户计算，互不影响。
+  assert.deepEqual(guest.items.map(item => [item.salonId, item.reasons]), [['a', []], ['b', []]]);
+  assert.deepEqual(member.items.map(item => [item.salonId, item.reasons]), [['a', ['viewed']], ['b', ['visited']]]);
+  assert.equal(models.queries.bookings.length, 1);
+  // 距离按各自的实际坐标计算。
+  assert.notEqual(guest.items[0].distanceKm, member.items[0].distanceKm);
+  // 共用的数据没有被某次请求改动。
+  assert.deepEqual((await recommend(models, {}, cache)).items.map(item => item.reasons), [[], []]);
+  assert.equal(models.queries.salons.length, 1);
+
+  // 另一格重新查询；一分钟后同一格也重新查询。
+  await recommend(models, { userLocation: { latitude: 39.902, longitude: 116.4 } }, cache);
+  assert.equal(models.queries.salons.length, 2);
+  time = 60_001;
+  await recommend(models, {}, cache);
+  assert.equal(models.queries.salons.length, 3);
+  assert.equal(models.queries.posts.length, 3);
 });
