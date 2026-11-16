@@ -1,4 +1,7 @@
-# 首页「套餐推荐」接口
+# 首页「套餐推荐」接口（第一版，已被取代）
+
+> 小程序首页推荐的数据来源已改为推广套餐，见 `docs/home-recommended-services.md`（`/api/salons/recommended-services`）。
+> 本接口只为已经对接它的客户端保留；确认没有客户端使用后，连同 `src/services/recommended-posts.js` 和它的缓存一起删除。
 
 新增 `GET /api/salons/recommended-posts?latitude=..&longitude=..&limit=10&version=2&viewedSalonIds=a,b`（公开，登录可选，沿用 publicRead 限流）。
 小程序首页在「附近店铺」上方用横向卡片展示，卡片与收藏页「套餐」是同一个组件。实现在 `src/services/recommended-posts.js`。

@@ -141,6 +141,8 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       ['merchant', '/merchant/bookings?status=pending&status=accepted'],
       ['client', '/salons/promoted-services?category=constructor'],
       ['client', '/salons/promoted-services?category=__proto__'],
+      ['client', '/salons/category-posts?category=constructor'],
+      ['client', '/salons/category-posts?category=color&sort=distance'],
     ]) {
       expect((await request(role, route)).status).toBe(400);
     }
@@ -148,6 +150,8 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       ['client', '/bookings?status=pending&staffId=staff-1'],
       ['merchant', '/merchant/bookings?status=pending'],
       ['client', '/salons/promoted-services?category=women-cut'],
+      ['client', '/salons/category-posts?category=women-cut'],
+      ['client', '/salons/category-posts?category=color&sort=distance&latitude=39.9&longitude=116.4'],
     ]) {
       expect((await request(role, route)).status).toBe(200);
     }

@@ -1,52 +1,25 @@
-const {
-  calculateDistanceKm, getCoordinates, normalizeAfterSalesPolicyIds, resolveServiceTagIds,
-} = require('./salon');
-const { userIdAliases } = require('./auth');
+const { resolveServiceTagIds } = require('./salon');
 const { postWithSalonPayload } = require('./salon-posts');
+const {
+  MIN_CATEGORY_ITEMS,
+  PROMOTION_CATEGORY_TAG_IDS,
+  locationCell,
+  orderByReasons,
+  parseViewedSalonIds,
+  readViewerBookings,
+  resolveInterestCategory,
+  salonRecommendationFields,
+  serviceMatchesPromotionCategory,
+  servicePromotionCategory,
+} = require('./recommended-services');
 
-// 小程序首页「套餐推荐」。规则与响应见 docs/home-recommended-posts.md。
+// 首页推荐的第一版数据来源：附近店铺各自最新的、关联了在售套餐的已审核动态（/api/salons/recommended-posts）。
+// 小程序现在改用推广套餐（services/recommended-services.js，/api/salons/recommended-services）；
+// 这个接口只为已经对接它的客户端保留，确认没有客户端使用后连同本文件一起删除。
+// 分类、推荐理由等与用户有关的规则两处共用 recommended-services.js 里的实现。
 
 // 只在离用户最近的这些在线店铺里选动态，每家店最多出一条。
 const SALON_CANDIDATES = 50;
-// 用最近这些已完成的预约判断用户感兴趣的分类、哪些店去过。
-const RECENT_BOOKINGS = 20;
-// 分类下可推荐的内容少于这个数时，不按分类筛选。
-const MIN_CATEGORY_ITEMS = 3;
-const MAX_VIEWED_SALON_IDS = 20;
-// 坐标取到小数点后 3 位（约 100 米）：这一格内的用户共用同一份附近店铺和动态。
-const LOCATION_DECIMALS = 3;
-
-// 分类与套餐标签的对应，和「按分类查找」（/api/salons/promoted-services）相同。
-const PROMOTION_CATEGORY_TAG_IDS = Object.freeze({
-  'men-cut': 'men',
-  'women-cut': 'women',
-  color: 'color',
-  curly: 'curly',
-  straight: 'straight',
-  care: 'care',
-});
-const WOMEN_CUT_EXCLUDED_TAG_IDS = Object.freeze(['perm', 'color', 'curly', 'straight']);
-
-// 套餐是否属于某个分类。女士精剪要求同时有洗剪吹和女士标签，且不含烫染类标签，其余分类只看对应标签。
-const serviceMatchesPromotionCategory = (categoryId, tagIds = []) => {
-  if (!Object.hasOwn(PROMOTION_CATEGORY_TAG_IDS, categoryId)) return false;
-  if (categoryId === 'women-cut') {
-    return tagIds.includes('wash_cut_blow') && tagIds.includes('women')
-      && !tagIds.some(id => WOMEN_CUT_EXCLUDED_TAG_IDS.includes(id));
-  }
-  return tagIds.includes(PROMOTION_CATEGORY_TAG_IDS[categoryId]);
-};
-
-// 一个套餐代表用户对哪个分类感兴趣：烫染护理类优先于剪发类（男士染发算染发）。都不属于时返回 ''。
-const INTEREST_CATEGORY_ORDER = Object.freeze(['color', 'curly', 'straight', 'care', 'women-cut', 'men-cut']);
-const servicePromotionCategory = (tagIds = []) =>
-  INTEREST_CATEGORY_ORDER.find(categoryId => serviceMatchesPromotionCategory(categoryId, tagIds)) || '';
-
-// 客户端传来的「最近看过的店铺」：逗号分隔的店铺 ID，只取前若干个。
-const parseViewedSalonIds = (value) => (typeof value === 'string' ? value.split(',') : [])
-  .map(id => id.trim())
-  .filter(id => id && id.length <= 100)
-  .slice(0, MAX_VIEWED_SALON_IDS);
 
 const isNewer = (a, b) => {
   const difference = new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime();
@@ -105,39 +78,15 @@ async function readRecommendedPosts({ userLocation, limit, viewerId = '', viewed
   publicImageUrl = require('../images').publicImageUrl,
   cache = null,
 } = {}) {
-  const { Salon, Booking } = models;
-  const center = {
-    latitude: Number(userLocation.latitude.toFixed(LOCATION_DECIMALS)),
-    longitude: Number(userLocation.longitude.toFixed(LOCATION_DECIMALS)),
-  };
+  const center = locationCell(userLocation);
   const loadNearby = () => loadNearbyPosts(models, center);
   const [{ salons, latestPostByService }, bookings] = await Promise.all([
     cache ? cache.get(`${center.latitude},${center.longitude}`, loadNearby) : loadNearby(),
-    viewerId
-      ? Booking.find({ userId: { $in: userIdAliases(viewerId) }, status: 'completed' })
-        .sort({ createdAt: -1 }).limit(RECENT_BOOKINGS).select('salonId serviceId').lean()
-      : [],
+    readViewerBookings(models, viewerId),
   ]);
   if (!latestPostByService.size) return { categoryId: '', items: [] };
 
-  // 订过的套餐可能属于候选范围之外的店铺，分类要从这些店铺的套餐标签里读。
-  const candidateIds = new Set(salons.map(salon => salon.id));
-  const otherBookedSalonIds = [...new Set(bookings.map(booking => booking.salonId))]
-    .filter(id => id && !candidateIds.has(id));
-  const otherBookedSalons = otherBookedSalonIds.length
-    ? await Salon.find({ id: { $in: otherBookedSalonIds } })
-      .select('id services.id services.tagIds services.tags').lean()
-    : [];
-
-  // 感兴趣的分类：最近一次能归到分类的已完成预约。
-  const servicesBySalonId = new Map([...salons, ...otherBookedSalons]
-    .map(salon => [salon.id, salon.services || []]));
-  let categoryId = '';
-  for (const booking of bookings) {
-    const service = (servicesBySalonId.get(booking.salonId) || []).find(item => item.id === booking.serviceId);
-    categoryId = service ? servicePromotionCategory(resolveServiceTagIds(service)) : '';
-    if (categoryId) break;
-  }
+  let categoryId = await resolveInterestCategory(models, bookings, salons);
   let picks = categoryId
     ? pickSalonPosts(salons, latestPostByService,
       service => serviceMatchesPromotionCategory(categoryId, resolveServiceTagIds(service)))
@@ -146,34 +95,13 @@ async function readRecommendedPosts({ userLocation, limit, viewerId = '', viewed
     categoryId = '';
     picks = pickSalonPosts(salons, latestPostByService, () => true);
   }
-
-  const visited = new Set(bookings.map(booking => booking.salonId));
-  const viewed = new Set(viewedSalonIds);
-  const reasonsOf = salon => [
-    ...(viewed.has(salon.id) ? ['viewed'] : []),
-    ...(visited.has(salon.id) ? ['visited'] : []),
-  ];
-  // 有推荐理由（看过、去过）的店铺排在前面，其余保持由近到远。
-  const withReasons = picks.map(pick => ({ ...pick, reasons: reasonsOf(pick.salon) }));
-  const ordered = [
-    ...withReasons.filter(pick => pick.reasons.length),
-    ...withReasons.filter(pick => !pick.reasons.length),
-  ];
   return {
     categoryId,
-    items: ordered.slice(0, limit).map(({ salon, post, reasons }) => {
-      const coordinates = getCoordinates(salon.location || salon.geoLocation);
-      return {
-        ...postWithSalonPayload(post, salon, publicImageUrl),
-        ...(coordinates
-          ? { distanceKm: Number(calculateDistanceKm(userLocation, coordinates).toFixed(2)) }
-          : {}),
-        reasons,
-        // 卡片标签的备选：没有推荐理由或理由不足两个时，小程序用「当日可约」和售后政策补足。
-        salonAcceptsSameDayBooking: salon.acceptsSameDayBooking !== false,
-        salonAfterSalesPolicyIds: normalizeAfterSalesPolicyIds(salon.afterSalesPolicyIds),
-      };
-    }),
+    items: orderByReasons(picks, bookings, viewedSalonIds).slice(0, limit).map(({ salon, post, reasons }) => ({
+      ...postWithSalonPayload(post, salon, publicImageUrl),
+      reasons,
+      ...salonRecommendationFields(salon, userLocation),
+    })),
   };
 }
 

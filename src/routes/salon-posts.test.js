@@ -306,3 +306,51 @@ test('home recommendations route resolves the viewer and never allows shared cac
   await recommend({ query: { latitude: '39.9', longitude: '116.4', version: '2' }, token: 'expired' });
   assert.equal(calls[2].viewerId, '');
 });
+
+test('home recommended services route resolves the viewer and never allows shared caching', async () => {
+  const routes = new Map();
+  const calls = [];
+  const userQueries = [];
+  registerPublicRoutes({ get: (path, ...handlers) => routes.set(path, handlers.at(-1)) }, {
+    rateLimits: { publicRead: [] },
+    getCoordinates: query => (query.latitude ? { latitude: Number(query.latitude), longitude: Number(query.longitude) } : null),
+    normalizeLimit: (value, fallback, max) => Math.min(Number(value) || fallback, max),
+    sessionTokenFromRequest: req => req.token || '',
+    activeSessionQuery: token => ({ sessionTokenHash: `hash:${token}` }),
+    normalizeUserId: id => String(id).replace(/^user-/, ''),
+    ClientUser: { findOne(query) {
+      userQueries.push(query);
+      return { select: () => ({ lean: async () => (query.sessionTokenHash === 'hash:valid' ? { id: 'user-u1' } : null) }) };
+    } },
+    readRecommendedServices: async (options, deps) => {
+      calls.push(options);
+      assert.equal(typeof deps.cache.get, 'function', '附近店铺的查询走共用缓存');
+      return { categoryId: 'color', items: [{ id: 'salon-1:svc-1', reasons: [] }] };
+    },
+  });
+  const recommend = async (req) => {
+    const res = response();
+    res.set = function set(name, value) { this.cacheControl = value; return this; };
+    await routes.get('/api/salons/recommended-services')(req, res);
+    return res;
+  };
+
+  assert.equal((await recommend({ query: {} })).statusCode, 400);
+  assert.equal(calls.length, 0);
+
+  const guest = await recommend({ query: { latitude: '39.9', longitude: '116.4', limit: '99', viewedSalonIds: ' s1 ,,s2' } });
+  assert.deepEqual(guest.body, { categoryId: 'color', items: [{ id: 'salon-1:svc-1', reasons: [] }] });
+  assert.equal(guest.cacheControl, 'private, no-store');
+  assert.deepEqual(calls[0], {
+    userLocation: { latitude: 39.9, longitude: 116.4 }, limit: 20, viewerId: '', viewedSalonIds: ['s1', 's2'],
+  });
+  assert.equal(userQueries.length, 0, '未登录不查用户');
+
+  await recommend({ query: { latitude: '39.9', longitude: '116.4' }, token: 'valid' });
+  assert.deepEqual(userQueries[0], { sessionTokenHash: 'hash:valid', authProvider: 'wechat' });
+  assert.equal(calls[1].viewerId, 'u1');
+  assert.equal(calls[1].limit, 10);
+  // 登录态失效时按未登录处理，不报错。
+  await recommend({ query: { latitude: '39.9', longitude: '116.4' }, token: 'expired' });
+  assert.equal(calls[2].viewerId, '');
+});

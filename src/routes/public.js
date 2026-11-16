@@ -2,11 +2,13 @@ const { createPublicResponseCaches } = require('../ttl-cache');
 const { BOOKING_SALON_PROJECTION } = require('../services/salon');
 const { SALON_RATING_STATS_SELECTION } = require('../services/salon-ratings');
 
+const { readRecommendedPosts: defaultReadRecommendedPosts } = require('../services/recommended-posts');
 const {
   PROMOTION_CATEGORY_TAG_IDS,
   parseViewedSalonIds,
-  readRecommendedPosts: defaultReadRecommendedPosts,
-} = require('../services/recommended-posts');
+  readRecommendedServices: defaultReadRecommendedServices,
+} = require('../services/recommended-services');
+const { readCategoryPosts: defaultReadCategoryPosts } = require('../services/category-posts');
 
 // 店铺详情随详情一起返回的最新动态条数（小程序「作品集」横向列表）；超过这个数时 hasMorePosts 为 true，客户端显示「全部动态」入口。
 const SALON_DETAIL_POST_LIMIT = 10;
@@ -49,6 +51,8 @@ module.exports = (app, ctx) => {
     activeSessionQuery,
     normalizeUserId,
     readRecommendedPosts = defaultReadRecommendedPosts,
+    readRecommendedServices = defaultReadRecommendedServices,
+    readCategoryPosts = defaultReadCategoryPosts,
     countStaffFavorites,
   } = ctx;
 
@@ -61,6 +65,8 @@ module.exports = (app, ctx) => {
     couponCampaign: couponCampaignCache,
     promotedServices: promotedServicesCache,
     recommendedPosts: recommendedPostsCache,
+    recommendedServices: recommendedServicesCache,
+    categoryPosts: categoryPostsCache,
   } = ctx.publicResponseCaches || createPublicResponseCaches();
 
   // Older mini-program builds still use this endpoint before loading shops.
@@ -90,6 +96,31 @@ module.exports = (app, ctx) => {
     res.json(payload);
   });
 
+  // 小程序「按分类查找」：该分类下店铺动态的图片（每条动态第一张），点击进入动态详情。
+  // 动态按关联套餐的标签归类，规则见 services/category-posts.js。
+  app.get('/api/salons/category-posts', ...rateLimits.publicRead, async (req, res) => {
+    const { category } = req.query;
+    if (typeof category !== 'string' || !Object.hasOwn(PROMOTION_CATEGORY_TAG_IDS, category)) {
+      return res.status(400).json({ message: '分类不存在' });
+    }
+    const pagination = normalizePagination(req.query);
+    const sort = req.query.sort === 'distance' ? 'distance' : 'latest';
+    const userLocation = sort === 'distance' ? getCoordinates(req.query) : null;
+    if (sort === 'distance' && !userLocation) {
+      return res.status(400).json({ message: 'latitude and longitude are required' });
+    }
+    const load = () => readCategoryPosts({ categoryId: category, sort, userLocation, pagination });
+    // Distance order depends on the caller's coordinates; only the shared latest order is cached.
+    const { images, total } = sort === 'latest'
+      ? await categoryPostsCache.get(`${category}:${pagination.page}:${pagination.limit}`, load)
+      : await load();
+    setPaginationHeaders(res, pagination, total);
+    res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
+    res.json(images);
+  });
+
+  // 「按分类查找」的第一版数据（推广套餐的图片，点击进入店铺）：已发布的小程序仍在使用，
+  // 新版小程序改用上面的 /api/salons/category-posts。线上不再有旧版本后删除。
   app.get('/api/salons/promoted-services', ...rateLimits.publicRead, async (req, res) => {
     const { category } = req.query;
     if (typeof category !== 'string' || !Object.hasOwn(PROMOTION_CATEGORY_TAG_IDS, category)) {
@@ -180,6 +211,33 @@ module.exports = (app, ctx) => {
     res.json(images);
   });
 
+  // 已登录的小程序用户（登录态无效时按未登录处理）。
+  const viewerIdFromRequest = async (req) => {
+    const token = sessionTokenFromRequest(req);
+    const viewer = token
+      ? await ClientUser.findOne({ ...activeSessionQuery(token), authProvider: 'wechat' }).select('id').lean()
+      : null;
+    return viewer ? normalizeUserId(viewer.id) : '';
+  };
+
+  // 小程序首页推荐（「你可能喜欢」）：附近店铺开了推广且已审核通过的套餐。已登录时按最近完成的预约选分类、
+  // 标出去过的店；viewedSalonIds 是客户端记录的最近看过的店铺。规则见 services/recommended-services.js。
+  // 附近店铺这部分与用户无关，按位置缓存一分钟；因人而异的部分每次现算。
+  app.get('/api/salons/recommended-services', ...rateLimits.publicRead, async (req, res) => {
+    const userLocation = getCoordinates(req.query);
+    if (!userLocation) return res.status(400).json({ message: 'latitude and longitude are required' });
+    const viewerId = await viewerIdFromRequest(req);
+    // 结果因人而异，不允许共享缓存。
+    res.set('Cache-Control', 'private, no-store');
+    res.json(await readRecommendedServices({
+      userLocation,
+      limit: normalizeLimit(req.query.limit, 10, 20),
+      viewerId,
+      viewedSalonIds: parseViewedSalonIds(req.query.viewedSalonIds),
+    }, { cache: recommendedServicesCache }));
+  });
+
+  // 首页推荐的第一版（数据来自店铺动态）：只为已经对接它的客户端保留，见 services/recommended-posts.js。
   // 小程序首页「套餐推荐」：附近店铺各自最新的、关联了在售套餐的已审核动态。已登录时按最近完成的预约
   // 选分类、标出去过的店；viewedSalonIds 是客户端记录的最近看过的店铺。规则见 services/recommended-posts.js。
   // 附近店铺和动态这部分与用户无关，按位置缓存一分钟；因人而异的部分每次现算。
@@ -187,16 +245,13 @@ module.exports = (app, ctx) => {
     const userLocation = getCoordinates(req.query);
     if (!userLocation) return res.status(400).json({ message: 'latitude and longitude are required' });
     const personalized = req.query.version === '2';
-    const token = personalized ? sessionTokenFromRequest(req) : '';
-    const viewer = token
-      ? await ClientUser.findOne({ ...activeSessionQuery(token), authProvider: 'wechat' }).select('id').lean()
-      : null;
+    const viewerId = personalized ? await viewerIdFromRequest(req) : '';
     // 结果可能因人而异，不允许共享缓存。
     res.set('Cache-Control', 'private, no-store');
     const result = await readRecommendedPosts({
       userLocation,
       limit: normalizeLimit(req.query.limit, 10, 20),
-      viewerId: viewer ? normalizeUserId(viewer.id) : '',
+      viewerId,
       viewedSalonIds: personalized ? parseViewedSalonIds(req.query.viewedSalonIds) : [],
     }, { cache: recommendedPostsCache });
     res.json(personalized ? result : result.items.map(({ reasons, ...item }) => item));
