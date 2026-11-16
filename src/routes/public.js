@@ -293,10 +293,14 @@ module.exports = (app, ctx) => {
     const salon = await Salon.findOne({ id: req.params.id, publishStatus: 'online' }).select('id').lean();
     if (!salon) return res.status(404).json({ message: 'Salon not found' });
     const pagination = normalizePagination(req.query);
+    const filter = { salonId: salon.id, reviewStatus: 'approved' };
+    if (typeof req.query.authorStaffId === 'string' && req.query.authorStaffId) {
+      filter.authorStaffId = req.query.authorStaffId;
+    }
     const [posts, total] = await Promise.all([
-      SalonPost.find({ salonId: salon.id, reviewStatus: 'approved' }).sort({ createdAt: -1, _id: -1 })
+      SalonPost.find(filter).sort({ createdAt: -1, _id: -1 })
         .skip(pagination.skip).limit(pagination.limit).lean(),
-      SalonPost.countDocuments({ salonId: salon.id, reviewStatus: 'approved' }),
+      SalonPost.countDocuments(filter),
     ]);
     setPaginationHeaders(res, pagination, total);
     res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');

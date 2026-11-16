@@ -104,6 +104,7 @@ test('public salon posts are scoped to an online salon and paginated newest firs
     limit(value) { assert.equal(value, 10); return this; },
     async lean() { return [{ id: 'post-11', salonId: 'salon-1', imageUrls: [] }]; },
   };
+  let expectedFilter = { salonId: 'salon-1', reviewStatus: 'approved' };
   registerPublicRoutes(app, {
     rateLimits: { publicRead: [] },
     Salon: {
@@ -114,10 +115,13 @@ test('public salon posts are scoped to an online salon and paginated newest firs
     },
     SalonPost: {
       find: filter => {
-        assert.deepEqual(filter, { salonId: 'salon-1', reviewStatus: 'approved' });
+        assert.deepEqual(filter, expectedFilter);
         return query;
       },
-      countDocuments: async () => 11,
+      countDocuments: async filter => {
+        assert.deepEqual(filter, expectedFilter);
+        return 11;
+      },
     },
     normalizePagination: () => ({ page: 2, limit: 10, skip: 10 }),
     setPaginationHeaders(res, pagination, total) {
@@ -128,9 +132,12 @@ test('public salon posts are scoped to an online salon and paginated newest firs
   });
   const res = response();
   res.set = function set() { return this; };
-  await routes.get('/api/salons/:id/posts')({ params: { id: 'salon-1' }, query: {} }, res);
+  const list = routes.get('/api/salons/:id/posts');
+  await list({ params: { id: 'salon-1' }, query: { page: '2', limit: '10' } }, res);
   assert.deepEqual(res.headers, { page: 2, total: 11 });
   assert.equal(res.body[0].id, 'post-11');
+  expectedFilter = { ...expectedFilter, authorStaffId: 'staff-1' };
+  await list({ params: { id: 'salon-1' }, query: { page: '2', limit: '10', authorStaffId: 'staff-1' } }, res);
 });
 
 test('admin approval changes a pending salon post to approved', async () => {
