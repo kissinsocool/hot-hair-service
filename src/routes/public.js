@@ -2,17 +2,11 @@ const { createPublicResponseCaches } = require('../ttl-cache');
 const { BOOKING_SALON_PROJECTION } = require('../services/salon');
 const { SALON_RATING_STATS_SELECTION } = require('../services/salon-ratings');
 
-const PROMOTION_CATEGORY_TAG_IDS = Object.freeze({
-  'men-cut': 'men',
-  'women-cut': 'women',
-  color: 'color',
-  curly: 'curly',
-  straight: 'straight',
-  care: 'care',
-});
-
-// 首页「套餐推荐」只在离用户最近的这些在线店铺里选动态，每家店最多出一条。
-const RECOMMENDED_POST_SALON_CANDIDATES = 50;
+const {
+  PROMOTION_CATEGORY_TAG_IDS,
+  parseViewedSalonIds,
+  readRecommendedPosts: defaultReadRecommendedPosts,
+} = require('../services/recommended-posts');
 
 // 店铺详情随详情一起返回的最新动态条数（小程序「作品集」横向列表）；超过这个数时 hasMorePosts 为 true，客户端显示「全部动态」入口。
 const SALON_DETAIL_POST_LIMIT = 10;
@@ -51,7 +45,10 @@ module.exports = (app, ctx) => {
     setPaginationHeaders,
     SalonPost,
     salonPostPayload,
-    salonPostWithSalonPayload,
+    ClientUser,
+    activeSessionQuery,
+    normalizeUserId,
+    readRecommendedPosts = defaultReadRecommendedPosts,
     countStaffFavorites,
   } = ctx;
 
@@ -182,50 +179,25 @@ module.exports = (app, ctx) => {
     res.json(images);
   });
 
-  // 小程序首页「套餐推荐」：按距离由近到远，每家在线店铺取一条最新的已审核动态，且动态关联的套餐仍在该店在售。
-  // 返回结构与 /api/favorites/posts 的条目相同（动态 + 店铺名称、简介、封面、标签 + relatedService），另带 distanceKm。
+  // 小程序首页「套餐推荐」：附近店铺各自最新的、关联了在售套餐的已审核动态。已登录时按最近完成的预约
+  // 选分类、标出去过的店；viewedSalonIds 是客户端记录的最近看过的店铺。规则见 services/recommended-posts.js。
   app.get('/api/salons/recommended-posts', ...rateLimits.publicRead, async (req, res) => {
     const userLocation = getCoordinates(req.query);
     if (!userLocation) return res.status(400).json({ message: 'latitude and longitude are required' });
-    const limit = normalizeLimit(req.query.limit, 10, 20);
-    res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
-    const salons = await Salon.find({
-      publishStatus: 'online',
-      'services.0': { $exists: true },
-      geoLocation: { $nearSphere: { $geometry: {
-        type: 'Point',
-        coordinates: [userLocation.longitude, userLocation.latitude],
-      } } },
-    })
-      .select('id name description tags image images promoImages services location geoLocation')
-      .limit(RECOMMENDED_POST_SALON_CANDIDATES)
-      .lean();
-    // 每家店只匹配关联了本店现有套餐的动态，套餐已下架的动态不参与推荐。
-    const salonFilters = salons
-      .map(salon => ({
-        salonId: salon.id,
-        serviceId: { $in: (salon.services || []).map(service => service.id).filter(Boolean) },
-      }))
-      .filter(filter => filter.serviceId.$in.length);
-    if (!salonFilters.length) return res.json([]);
-    const latestPosts = await SalonPost.aggregate([
-      { $match: { reviewStatus: 'approved', $or: salonFilters } },
-      { $sort: { createdAt: -1, _id: -1 } },
-      { $group: { _id: '$salonId', post: { $first: '$$ROOT' } } },
-    ]).option({ maxTimeMS: 5000 });
-    const postBySalonId = new Map(latestPosts.map(entry => [entry._id, entry.post]));
-    res.json(salons
-      .filter(salon => postBySalonId.has(salon.id))
-      .slice(0, limit)
-      .map((salon) => {
-        const coordinates = getCoordinates(salon.location || salon.geoLocation);
-        return {
-          ...salonPostWithSalonPayload(postBySalonId.get(salon.id), salon, publicImageUrl),
-          ...(coordinates
-            ? { distanceKm: Number(calculateDistanceKm(userLocation, coordinates).toFixed(2)) }
-            : {}),
-        };
-      }));
+    const personalized = req.query.version === '2';
+    const token = personalized ? sessionTokenFromRequest(req) : '';
+    const viewer = token
+      ? await ClientUser.findOne({ ...activeSessionQuery(token), authProvider: 'wechat' }).select('id').lean()
+      : null;
+    // 结果可能因人而异，不允许共享缓存。
+    res.set('Cache-Control', 'private, no-store');
+    const result = await readRecommendedPosts({
+      userLocation,
+      limit: normalizeLimit(req.query.limit, 10, 20),
+      viewerId: viewer ? normalizeUserId(viewer.id) : '',
+      viewedSalonIds: personalized ? parseViewedSalonIds(req.query.viewedSalonIds) : [],
+    });
+    res.json(personalized ? result : result.items.map(({ reasons, ...item }) => item));
   });
 
   app.get('/api/salons', ...rateLimits.publicRead, async (req, res) => {

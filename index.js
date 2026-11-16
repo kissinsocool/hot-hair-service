@@ -1507,7 +1507,6 @@ const routeContext = {
   Salon,
   SalonPost,
   salonPostPayload: salonPosts.postPayload,
-  salonPostWithSalonPayload: salonPosts.postWithSalonPayload,
   validateSalonPostInput: salonPosts.validatePostInput,
   salonCoverImage,
   SALON_RATING_STATS_SELECTION,
