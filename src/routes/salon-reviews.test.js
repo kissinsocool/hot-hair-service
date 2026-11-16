@@ -9,6 +9,27 @@ const response = () => ({
   set() { return this; },
 });
 
+test('staff review preview opts into positive reviews while legacy requests still use latest', async () => {
+  const routes = new Map();
+  const calls = [];
+  registerPublicRoutes({ get: (path, ...handlers) => routes.set(path, handlers.at(-1)) }, {
+    rateLimits: { publicRead: [] },
+    getStaffById: id => ({ lean: async () => ({ id }) }),
+    normalizePagination: query => ({ page: Number(query.page), limit: Number(query.limit) }),
+    async getSalonReviewsPage(...args) { calls.push(args); return { items: [] }; },
+    addReviewHelpfulState: async items => items,
+    sessionTokenFromRequest: () => '',
+  });
+  const handler = routes.get('/api/staff/:id/reviews');
+  const params = { id: 'staff-1' };
+  await handler({ params, query: { page: '1', limit: '10' } }, response());
+  await handler({ params, query: { filter: 'positive', page: '1', limit: '3' } }, response());
+  assert.deepEqual(calls, [
+    [{ staffIds: ['staff-1'] }, { page: 1, limit: 10 }, 'latest'],
+    [{ staffIds: ['staff-1'] }, { page: 1, limit: 3 }, 'positive'],
+  ]);
+});
+
 test('public review endpoint validates filters and restricts reads to online salons', async () => {
   const routes = new Map();
   let exists = true;

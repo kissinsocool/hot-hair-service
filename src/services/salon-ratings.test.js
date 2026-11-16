@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { Booking, ClientUser, Salon } = require('../models');
+const { Booking, ClientUser, Salon, StaffRatingSummary } = require('../models');
 const {
   SALON_RATING_STATS_SELECTION,
   refreshSalonRatingSummaries,
@@ -137,4 +137,28 @@ test('a salon review page reads every review of the salon and counts from its st
   assert.equal(page.total, 3);
   assert.equal(page.hasMore, true);
   assert.deepEqual(page.counts, { all: 5, negative: 3, neutral: 0, photos: 0 });
+});
+
+test('the staff preview applies the positive rating threshold before the newest-first limit', async (t) => {
+  const chain = {
+    sort(value) { assert.deepEqual(value, { 'review.createdAt': -1, _id: -1 }); return this; },
+    skip(value) { assert.equal(value, 0); return this; },
+    limit(value) { assert.equal(value, 3); return this; },
+    select() { return this; },
+    maxTimeMS() { return this; },
+    lean: async () => [],
+  };
+  stub(t, Booking, 'find', filter => {
+    assert.deepEqual(filter, {
+      staffId: { $in: ['staff-1'] },
+      'review.reviewStatus': 'approved',
+      'review.rating': { $gte: 4, $lte: 5 },
+    });
+    return chain;
+  });
+  stub(t, StaffRatingSummary, 'find', () => ({
+    select: () => ({ lean: async () => [{ reviewCount: 8, negativeCount: 2, neutralCount: 3 }] }),
+  }));
+  const page = await getSalonReviewsPage({ staffIds: ['staff-1'] }, { page: 1, limit: 3, skip: 0 }, 'positive');
+  assert.equal(page.total, 3);
 });

@@ -140,6 +140,46 @@ test('public salon posts are scoped to an online salon and paginated newest firs
   await list({ params: { id: 'salon-1' }, query: { page: '2', limit: '10', authorStaffId: 'staff-1' } }, res);
 });
 
+test('a single public salon post is served only when approved and owned by the online salon', async () => {
+  const routes = new Map();
+  const app = { get: (path, ...handlers) => routes.set(path, handlers.at(-1)) };
+  const postFilters = [];
+  registerPublicRoutes(app, {
+    rateLimits: { publicRead: [] },
+    Salon: {
+      findOne(filter) {
+        assert.equal(filter.publishStatus, 'online');
+        return { select: () => ({ lean: async () => (filter.id === 'salon-1' ? { id: 'salon-1' } : null) }) };
+      },
+    },
+    SalonPost: {
+      findOne(filter) {
+        postFilters.push(filter);
+        return { lean: async () => (filter.id === 'post-1' ? { id: 'post-1', salonId: 'salon-1', imageUrls: [] } : null) };
+      },
+    },
+    salonPostPayload: post => ({ ...post, payload: true }),
+    publicImageUrl: value => value,
+  });
+  const detail = routes.get('/api/salons/:id/posts/:postId');
+  const open = async (params) => {
+    const res = response();
+    res.set = function set(name, value) { this.cacheControl = value; return this; };
+    await detail({ params, query: {} }, res);
+    return res;
+  };
+  const found = await open({ id: 'salon-1', postId: 'post-1' });
+  assert.equal(found.statusCode, 200);
+  assert.deepEqual(found.body, { id: 'post-1', salonId: 'salon-1', imageUrls: [], payload: true });
+  assert.equal(found.cacheControl, 'public, max-age=15, stale-while-revalidate=30');
+  assert.deepEqual(postFilters[0], { id: 'post-1', salonId: 'salon-1', reviewStatus: 'approved' });
+  // 未通过审核、已删除或属于其他店铺的动态都查不到。
+  assert.equal((await open({ id: 'salon-1', postId: 'pending-or-other' })).statusCode, 404);
+  // 店铺已下线时不再查询动态。
+  assert.equal((await open({ id: 'offline', postId: 'post-1' })).statusCode, 404);
+  assert.equal(postFilters.length, 2);
+});
+
 test('admin approval changes a pending salon post to approved', async () => {
   const routes = new Map();
   const app = Object.fromEntries(['get', 'post', 'patch', 'delete'].map(method => [

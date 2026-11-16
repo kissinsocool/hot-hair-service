@@ -6,6 +6,7 @@ const { salonReviewStats } = require('./salon-ratings');
 
 const RATING_FILTERS = Object.freeze({
   latest: { $gte: 1, $lte: 5 },
+  positive: { $gte: 4, $lte: 5 },
   negative: { $gte: 1, $lt: 3 },
   neutral: { $gte: 3, $lt: 4 },
   photos: { $gte: 1, $lte: 5 },
@@ -49,7 +50,9 @@ async function getSalonReviewsPage(salon, pagination, filter) {
     ? await ClientUser.find({ id: { $in: userIds } }).select('id avatarUrl').lean()
     : [];
   const avatars = new Map(users.map(user => [normalizeUserId(user.id), user.avatarUrl]));
-  const total = counts[filter === 'latest' ? 'all' : filter] || 0;
+  const total = filter === 'positive'
+    ? Math.max(0, counts.all - counts.negative - counts.neutral)
+    : counts[filter === 'latest' ? 'all' : filter] || 0;
   return {
     items: bookings.map(booking => publicReviewFromBooking(booking, avatars.get(normalizeUserId(booking.userId)) || '')),
     page: pagination.page,

@@ -307,6 +307,18 @@ module.exports = (app, ctx) => {
     res.json(posts.map(post => salonPostPayload(post, publicImageUrl)));
   });
 
+  // 单条动态：小程序动态详情页（含从分享卡片直接打开）使用，可见范围与列表一致。
+  app.get('/api/salons/:id/posts/:postId', ...rateLimits.publicRead, async (req, res) => {
+    const salon = await Salon.findOne({ id: req.params.id, publishStatus: 'online' }).select('id').lean();
+    if (!salon) return res.status(404).json({ message: 'Salon not found' });
+    const post = await SalonPost.findOne({
+      id: req.params.postId, salonId: salon.id, reviewStatus: 'approved',
+    }).lean();
+    if (!post) return res.status(404).json({ message: 'Post not found' });
+    res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
+    res.json(salonPostPayload(post, publicImageUrl));
+  });
+
   // Review text is served by /api/staff/:id/reviews so this payload stays small as reviews accumulate.
   app.get('/api/staff/:id', ...rateLimits.publicRead, async (req, res) => {
     const person = await getStaffById(req.params.id).lean();
@@ -331,7 +343,8 @@ module.exports = (app, ctx) => {
     const person = await getStaffById(req.params.id).lean();
     if (!person) return res.status(404).json({ message: 'Staff not found' });
     const pagination = normalizePagination(req.query, 10, 50);
-    const result = await getSalonReviewsPage({ staffIds: [person.id] }, pagination, 'latest');
+    const filter = req.query.filter === 'positive' ? 'positive' : 'latest';
+    const result = await getSalonReviewsPage({ staffIds: [person.id] }, pagination, filter);
     const items = await addReviewHelpfulState(result.items, sessionTokenFromRequest(req));
     res.set('Cache-Control', 'private, no-store');
     res.json({ ...result, items });
