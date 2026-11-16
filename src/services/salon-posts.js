@@ -1,3 +1,5 @@
+const { normalizeSalonTags, salonCoverImageUrl, servicePayload } = require('./salon');
+
 const MAX_CONTENT_LENGTH = 500;
 const MAX_IMAGE_COUNT = 9;
 const MAX_IMAGE_URL_LENGTH = 2048;
@@ -37,9 +39,24 @@ const postPayload = (post, publicImageUrl = value => value) => ({
   updatedAt: post.updatedAt,
 });
 
+// 套餐卡片（小程序收藏页「套餐」、首页「套餐推荐」）用的动态：动态本身，加上所属店铺的名称、简介、
+// 封面、标签，以及关联套餐的当前信息。relatedService 为 null 表示动态没有关联套餐或套餐已下架。
+const postWithSalonPayload = (post, salon, publicImageUrl = value => value) => {
+  const service = post.serviceId ? (salon.services || []).find(item => item.id === post.serviceId) : null;
+  return {
+    ...postPayload(post, publicImageUrl),
+    salonName: salon.name || '',
+    salonDescription: salon.description || '',
+    salonImageUrl: salonCoverImageUrl(salon),
+    salonTags: normalizeSalonTags(salon.tags),
+    relatedService: service ? servicePayload(service) : null,
+  };
+};
+
 module.exports = {
   MAX_CONTENT_LENGTH,
   MAX_IMAGE_COUNT,
   postPayload,
+  postWithSalonPayload,
   validatePostInput,
 };

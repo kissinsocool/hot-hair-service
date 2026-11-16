@@ -252,3 +252,84 @@ test('admin approval changes a pending salon post to approved', async () => {
   assert.ok(update.$set.reviewedAt instanceof Date);
   assert.equal(res.body.post.reviewStatus, 'approved');
 });
+
+test('home recommendations return the nearest salons latest approved post whose service is still on sale', async () => {
+  const salonService = require('../services/salon');
+  const { postWithSalonPayload } = require('../services/salon-posts');
+  const routes = new Map();
+  const salonQueries = [];
+  const pipelines = [];
+  const service = (id, priceFen) => ({ id, name: `套餐${id}`, priceFen, durationMinutes: 30, tagIds: [] });
+  const salons = [
+    { id: 'near', name: '近店', description: '地铁口', tags: ['近地铁'], image: 'https://example.com/near.jpg',
+      services: [service('svc-near', 8800)], geoLocation: { type: 'Point', coordinates: [116.4, 39.9] } },
+    // 没有可推荐动态的店铺不出现，也不占名额。
+    { id: 'no-post', name: '无动态', services: [service('svc-none', 5000)],
+      geoLocation: { type: 'Point', coordinates: [116.41, 39.9] } },
+    { id: 'far', name: '远店', services: [service('svc-far', 12000)],
+      geoLocation: { type: 'Point', coordinates: [116.5, 39.9] } },
+  ];
+  registerPublicRoutes({ get: (path, ...handlers) => routes.set(path, handlers.at(-1)) }, {
+    rateLimits: { publicRead: [] },
+    getCoordinates: salonService.getCoordinates,
+    calculateDistanceKm: salonService.calculateDistanceKm,
+    normalizeLimit: (value, fallback, max) => Math.min(Number(value) || fallback, max),
+    Salon: {
+      find(query) {
+        salonQueries.push(query);
+        return { select() { return this; }, limit() { return this; }, lean: async () => salons };
+      },
+    },
+    SalonPost: {
+      aggregate(pipeline) {
+        pipelines.push(pipeline);
+        return { option: async () => [
+          { _id: 'far', post: { id: 'post-far', salonId: 'far', serviceId: 'svc-far', serviceName: '套餐svc-far', content: '远店动态', imageUrls: [] } },
+          { _id: 'near', post: { id: 'post-near', salonId: 'near', serviceId: 'svc-near', serviceName: '套餐svc-near', content: '近店动态', imageUrls: [] } },
+        ] };
+      },
+    },
+    salonPostWithSalonPayload: postWithSalonPayload,
+    publicImageUrl: value => value,
+  });
+  const recommend = async (query) => {
+    const res = response();
+    res.set = function set(name, value) { this.cacheControl = value; return this; };
+    await routes.get('/api/salons/recommended-posts')({ query }, res);
+    return res;
+  };
+
+  assert.equal((await recommend({})).statusCode, 400);
+  assert.equal(salonQueries.length, 0);
+
+  const found = await recommend({ latitude: '39.9', longitude: '116.4' });
+  assert.equal(found.cacheControl, 'public, max-age=15, stale-while-revalidate=30');
+  // 只查在线且有套餐的店铺，由近到远。
+  assert.equal(salonQueries[0].publishStatus, 'online');
+  assert.deepEqual(salonQueries[0].geoLocation.$nearSphere.$geometry.coordinates, [116.4, 39.9]);
+  // 每家店只匹配已审核、且关联本店现有套餐的动态，取最新一条。
+  assert.deepEqual(pipelines[0][0], { $match: { reviewStatus: 'approved', $or: [
+    { salonId: 'near', serviceId: { $in: ['svc-near'] } },
+    { salonId: 'no-post', serviceId: { $in: ['svc-none'] } },
+    { salonId: 'far', serviceId: { $in: ['svc-far'] } },
+  ] } });
+  assert.deepEqual(pipelines[0][1], { $sort: { createdAt: -1, _id: -1 } });
+  assert.deepEqual(pipelines[0][2], { $group: { _id: '$salonId', post: { $first: '$$ROOT' } } });
+  // 结果按店铺距离排序，与收藏接口的套餐条目同结构，另带距离。
+  assert.deepEqual(found.body.map(item => item.id), ['post-near', 'post-far']);
+  assert.equal(found.body[0].salonName, '近店');
+  assert.equal(found.body[0].salonDescription, '地铁口');
+  assert.equal(found.body[0].salonImageUrl, 'https://example.com/near.jpg');
+  assert.deepEqual(found.body[0].salonTags, ['近地铁']);
+  assert.equal(found.body[0].relatedService.id, 'svc-near');
+  assert.equal(found.body[0].relatedService.priceFen, 8800);
+  assert.equal(found.body[0].distanceKm, 0);
+  assert.ok(found.body[1].distanceKm > 8 && found.body[1].distanceKm < 9);
+
+  assert.deepEqual((await recommend({ latitude: '39.9', longitude: '116.4', limit: '1' })).body.map(item => item.id), ['post-near']);
+
+  // 附近店铺都没有套餐时不查询动态。
+  salons.forEach((salon) => { salon.services = []; });
+  assert.deepEqual((await recommend({ latitude: '39.9', longitude: '116.4' })).body, []);
+  assert.equal(pipelines.length, 2);
+});

@@ -1,7 +1,7 @@
 const { FavoriteStaff, FavoritePost, StaffProfile, SalonPost, Salon } = require('../models');
 const { publicImageUrl } = require('../images');
-const { normalizeSalonTags, normalizeStaffRoleId, salonCoverImageUrl, servicePayload } = require('./salon');
-const { postPayload } = require('./salon-posts');
+const { normalizeStaffRoleId } = require('./salon');
+const { postWithSalonPayload } = require('./salon-posts');
 
 // 理发师、店铺动态的收藏只按规范化后的 userId 写入，不存在历史别名，读写都直接用 userId。
 const FAVORITE_KINDS = Object.freeze({
@@ -95,18 +95,7 @@ async function readFavoritePosts(userId) {
   return postIds
     .map(postId => postsById.get(postId))
     .filter(post => post && salonsById.has(post.salonId))
-    .map((post) => {
-      const salon = salonsById.get(post.salonId);
-      const service = post.serviceId ? (salon.services || []).find(item => item.id === post.serviceId) : null;
-      return {
-        ...postPayload(post, publicImageUrl),
-        salonName: salon.name || '',
-        salonDescription: salon.description || '',
-        salonImageUrl: salonCoverImageUrl(salon),
-        salonTags: normalizeSalonTags(salon.tags),
-        relatedService: service ? servicePayload(service) : null,
-      };
-    });
+    .map(post => postWithSalonPayload(post, salonsById.get(post.salonId), publicImageUrl));
 }
 
 module.exports = {

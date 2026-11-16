@@ -11,6 +11,9 @@ const PROMOTION_CATEGORY_TAG_IDS = Object.freeze({
   care: 'care',
 });
 
+// 首页「套餐推荐」只在离用户最近的这些在线店铺里选动态，每家店最多出一条。
+const RECOMMENDED_POST_SALON_CANDIDATES = 50;
+
 // 店铺详情随详情一起返回的最新动态条数（小程序「作品集」横向列表）；超过这个数时 hasMorePosts 为 true，客户端显示「全部动态」入口。
 const SALON_DETAIL_POST_LIMIT = 10;
 
@@ -48,6 +51,7 @@ module.exports = (app, ctx) => {
     setPaginationHeaders,
     SalonPost,
     salonPostPayload,
+    salonPostWithSalonPayload,
     countStaffFavorites,
   } = ctx;
 
@@ -176,6 +180,52 @@ module.exports = (app, ctx) => {
     setPaginationHeaders(res, pagination, total);
     res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
     res.json(images);
+  });
+
+  // 小程序首页「套餐推荐」：按距离由近到远，每家在线店铺取一条最新的已审核动态，且动态关联的套餐仍在该店在售。
+  // 返回结构与 /api/favorites/posts 的条目相同（动态 + 店铺名称、简介、封面、标签 + relatedService），另带 distanceKm。
+  app.get('/api/salons/recommended-posts', ...rateLimits.publicRead, async (req, res) => {
+    const userLocation = getCoordinates(req.query);
+    if (!userLocation) return res.status(400).json({ message: 'latitude and longitude are required' });
+    const limit = normalizeLimit(req.query.limit, 10, 20);
+    res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
+    const salons = await Salon.find({
+      publishStatus: 'online',
+      'services.0': { $exists: true },
+      geoLocation: { $nearSphere: { $geometry: {
+        type: 'Point',
+        coordinates: [userLocation.longitude, userLocation.latitude],
+      } } },
+    })
+      .select('id name description tags image images promoImages services location geoLocation')
+      .limit(RECOMMENDED_POST_SALON_CANDIDATES)
+      .lean();
+    // 每家店只匹配关联了本店现有套餐的动态，套餐已下架的动态不参与推荐。
+    const salonFilters = salons
+      .map(salon => ({
+        salonId: salon.id,
+        serviceId: { $in: (salon.services || []).map(service => service.id).filter(Boolean) },
+      }))
+      .filter(filter => filter.serviceId.$in.length);
+    if (!salonFilters.length) return res.json([]);
+    const latestPosts = await SalonPost.aggregate([
+      { $match: { reviewStatus: 'approved', $or: salonFilters } },
+      { $sort: { createdAt: -1, _id: -1 } },
+      { $group: { _id: '$salonId', post: { $first: '$$ROOT' } } },
+    ]).option({ maxTimeMS: 5000 });
+    const postBySalonId = new Map(latestPosts.map(entry => [entry._id, entry.post]));
+    res.json(salons
+      .filter(salon => postBySalonId.has(salon.id))
+      .slice(0, limit)
+      .map((salon) => {
+        const coordinates = getCoordinates(salon.location || salon.geoLocation);
+        return {
+          ...salonPostWithSalonPayload(postBySalonId.get(salon.id), salon, publicImageUrl),
+          ...(coordinates
+            ? { distanceKm: Number(calculateDistanceKm(userLocation, coordinates).toFixed(2)) }
+            : {}),
+        };
+      }));
   });
 
   app.get('/api/salons', ...rateLimits.publicRead, async (req, res) => {
