@@ -1,4 +1,6 @@
-const { calculateDistanceKm, getCoordinates, resolveServiceTagIds } = require('./salon');
+const {
+  calculateDistanceKm, getCoordinates, normalizeAfterSalesPolicyIds, resolveServiceTagIds,
+} = require('./salon');
 const { userIdAliases } = require('./auth');
 const { postWithSalonPayload } = require('./salon-posts');
 
@@ -71,7 +73,7 @@ async function loadNearbyPosts({ Salon, SalonPost }, center) {
       coordinates: [center.longitude, center.latitude],
     } } },
   })
-    .select('id name description tags image images promoImages services location geoLocation')
+    .select('id name description tags image images promoImages services location geoLocation afterSalesPolicyIds acceptsSameDayBooking')
     .limit(SALON_CANDIDATES)
     .lean();
   // 每家店只匹配关联了本店现有套餐的动态，套餐已下架的动态不参与推荐。
@@ -167,6 +169,9 @@ async function readRecommendedPosts({ userLocation, limit, viewerId = '', viewed
           ? { distanceKm: Number(calculateDistanceKm(userLocation, coordinates).toFixed(2)) }
           : {}),
         reasons,
+        // 卡片标签的备选：没有推荐理由或理由不足两个时，小程序用「当日可约」和售后政策补足。
+        salonAcceptsSameDayBooking: salon.acceptsSameDayBooking !== false,
+        salonAfterSalesPolicyIds: normalizeAfterSalesPolicyIds(salon.afterSalesPolicyIds),
       };
     }),
   };

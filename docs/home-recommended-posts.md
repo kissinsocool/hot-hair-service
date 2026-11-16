@@ -18,6 +18,8 @@
 
 传 `version=2` 时返回 `{ categoryId, items }`。旧请求继续返回按距离排序的数组，不包含 `reasons`。`categoryId` 是分类 ID（如 `color`）或空字符串。
 
+`items` 每项另带 `salonAcceptsSameDayBooking`（店铺是否接受当日预约，未设置按接受）和 `salonAfterSalesPolicyIds`（店铺的售后政策 ID）。小程序每张卡片显示两个标签，按顺序取前两个：推荐理由、「当日可约」、售后政策、店铺标签。
+
 `items` 每项与 `GET /api/favorites/posts` 的条目同结构（两处共用 `services/salon-posts.js` 的 `postWithSalonPayload`），另带 `reasons` 和可选的 `distanceKm`：
 
 动态字段（`id`、`salonId`、`content`、`serviceId`、`serviceName`、`imageUrls`、`createdAt` 等）+ `salonName`、`salonDescription`、`salonImageUrl`、`salonTags`、`relatedService`（套餐当前的名称、价格、折扣、说明等，同 `servicePayload`）。

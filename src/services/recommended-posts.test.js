@@ -72,10 +72,10 @@ test('promotion categories match the category finder and pick one interest per s
 test('guests get each nearby salons latest post whose service is still on sale, nearest first', async () => {
   const models = fakeModels({
     salons: [
-      salon('near', 116.4, [service('n1'), service('n2')], { description: '地铁口', tags: ['近地铁'], image: 'https://example.com/near.jpg' }),
+      salon('near', 116.4, [service('n1'), service('n2')], { description: '地铁口', tags: ['近地铁'], image: 'https://example.com/near.jpg', afterSalesPolicyIds: ['no_active_sales', 'no_hidden_charges'] }),
       // 没有可推荐动态的店铺不出现，也不占名额。
       salon('no-post', 116.41, [service('x1')]),
-      salon('far', 116.5, [service('f1')]),
+      salon('far', 116.5, [service('f1')], { acceptsSameDayBooking: false }),
     ],
     posts: [
       post('near-old', 'near', 'n1', '2026-01-01'),
@@ -98,6 +98,11 @@ test('guests get each nearby salons latest post whose service is still on sale, 
   assert.equal(first.distanceKm, 0);
   assert.ok(second.distanceKm > 8 && second.distanceKm < 9);
   assert.deepEqual(first.reasons, []);
+  // 标签备选：是否当日可约（未设置按可约）、店铺的售后政策。
+  assert.equal(first.salonAcceptsSameDayBooking, true);
+  assert.deepEqual(first.salonAfterSalesPolicyIds, ['no_active_sales', 'no_hidden_charges']);
+  assert.equal(second.salonAcceptsSameDayBooking, false);
+  assert.deepEqual(second.salonAfterSalesPolicyIds, []);
 
   // 只查在线且有套餐的店铺，由近到远；未登录不查预约。
   assert.equal(models.queries.salons.length, 1);
