@@ -55,6 +55,7 @@ module.exports = (app, ctx) => {
     readRecommendedServices = defaultReadRecommendedServices,
     readCategoryPosts = defaultReadCategoryPosts,
     countStaffFavorites,
+    countPostFavorites,
   } = ctx;
 
   // These responses are the same for every caller, and the mini-program does not cache requests itself, so the
@@ -410,8 +411,9 @@ module.exports = (app, ctx) => {
       id: req.params.postId, salonId: salon.id, reviewStatus: 'approved',
     }).lean();
     if (!post) return res.status(404).json({ message: 'Post not found' });
-    res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
-    res.json(salonPostPayload(post, publicImageUrl));
+    res.set('Cache-Control', 'no-store');
+    const favoriteCount = await countPostFavorites(post.id);
+    res.json({ ...salonPostPayload(post, publicImageUrl), favoriteCount });
   });
 
   // Review text is served by /api/staff/:id/reviews so this payload stays small as reviews accumulate.

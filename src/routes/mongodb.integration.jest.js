@@ -74,8 +74,11 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     const packageId = 'salon-1:service-1';
     const packageRoute = `/favorites/packages/${encodeURIComponent(packageId)}`;
     const postRoute = '/favorites/posts/favorite-contract-post';
+    const detailRoute = '/salons/salon-1/posts/favorite-contract-post';
     try {
-      expect((await request('client', postRoute, undefined, 'PUT')).body).toEqual({ favorite: true });
+      expect((await request('client', detailRoute)).body.favoriteCount).toBe(0);
+      expect((await request('client', postRoute, undefined, 'PUT')).body).toEqual({ favorite: true, favoriteCount: 1 });
+      expect((await request('client', detailRoute)).body.favoriteCount).toBe(1);
       expect((await request('client', '/favorites/packages/ids')).body).toEqual({ packageIds: [] });
       expect((await request('client', packageRoute, undefined, 'PUT')).body).toEqual({ favorite: true });
       expect((await request('client', '/favorites/packages/ids')).body).toEqual({ packageIds: [packageId] });
@@ -93,6 +96,7 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       expect(await migrateFavoritePackages()).toBe(0);
       expect((await request('client', '/favorites/packages/ids')).body).toEqual({ packageIds: [packageId] });
       expect((await request('client', '/favorites/posts/ids')).body).toEqual({ postIds: ['favorite-contract-post'] });
+      expect((await request('client', postRoute, undefined, 'DELETE')).body).toEqual({ favorite: false, favoriteCount: 0 });
     } finally {
       await request('client', packageRoute, undefined, 'DELETE');
       await request('client', postRoute, undefined, 'DELETE');

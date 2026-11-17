@@ -9,6 +9,7 @@ module.exports = (app, ctx) => {
     readFavoritePosts,
     readFavoritePackages,
     countStaffFavorites,
+    countPostFavorites,
   } = ctx;
 
   const kinds = [
@@ -36,6 +37,14 @@ module.exports = (app, ctx) => {
       await setFavoriteTarget(kind, userId, targetId, favorite);
       const body = { favorite };
       if (kind === 'staff') body.favoriteCount = await countStaffFavorites(targetId);
+      if (kind === 'posts') {
+        try {
+          body.favoriteCount = await countPostFavorites(targetId);
+        } catch (error) {
+          // 收藏已写入，统计暂时不可用时客户端仍应确认本次操作。
+          console.error('Unable to count post favorites:', error.message);
+        }
+      }
       res.json(body);
     };
 

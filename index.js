@@ -1505,6 +1505,7 @@ const routeContext = {
   readFavoritePosts: favoritesDomain.readFavoritePosts,
   readFavoritePackages: favoritesDomain.readFavoritePackages,
   countStaffFavorites: favoritesDomain.countStaffFavorites,
+  countPostFavorites: favoritesDomain.countPostFavorites,
   rateLimits,
   revokeSessionHash,
   rotateSession,

@@ -18,6 +18,7 @@ const collectRoutes = (ctx) => {
     async favoriteTargetExists() { return true; },
     async setFavoriteTarget() {},
     async countStaffFavorites() { return 0; },
+    async countPostFavorites() { return 0; },
     ...ctx,
   });
   return routes;
@@ -52,10 +53,11 @@ test('favorite writes pass the normalized user id and return the stylist favorit
       count = favorite ? 1 : 0;
     },
     async countStaffFavorites() { return count; },
+    async countPostFavorites(id) { assert.equal(id, 'post-1'); return count; },
   });
   assert.deepEqual((await call(routes.get('PUT /api/favorites/staff/:id'), { id: 'staff-1' })).body, { favorite: true, favoriteCount: 1 });
   assert.deepEqual((await call(routes.get('DELETE /api/favorites/staff/:id'), { id: 'staff-1' })).body, { favorite: false, favoriteCount: 0 });
-  assert.deepEqual((await call(routes.get('PUT /api/favorites/posts/:id'), { id: 'post-1' })).body, { favorite: true });
+  assert.deepEqual((await call(routes.get('PUT /api/favorites/posts/:id'), { id: 'post-1' })).body, { favorite: true, favoriteCount: 1 });
   assert.deepEqual((await call(routes.get('PUT /api/favorites/packages/:id'), { id: 'salon-1:svc-1' })).body, { favorite: true });
   assert.deepEqual((await call(routes.get('DELETE /api/favorites/packages/:id'), { id: 'salon-1:svc-1' })).body, { favorite: false });
   assert.deepEqual(writes, [

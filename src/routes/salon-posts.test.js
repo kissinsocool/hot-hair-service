@@ -295,6 +295,7 @@ test('a single public salon post is served only when approved and owned by the o
       },
     },
     salonPostPayload: post => ({ ...post, payload: true }),
+    countPostFavorites: async (id) => { assert.equal(id, 'post-1'); return 3; },
     publicImageUrl: value => value,
   });
   const detail = routes.get('/api/salons/:id/posts/:postId');
@@ -306,8 +307,8 @@ test('a single public salon post is served only when approved and owned by the o
   };
   const found = await open({ id: 'salon-1', postId: 'post-1' });
   assert.equal(found.statusCode, 200);
-  assert.deepEqual(found.body, { id: 'post-1', salonId: 'salon-1', imageUrls: [], payload: true });
-  assert.equal(found.cacheControl, 'public, max-age=15, stale-while-revalidate=30');
+  assert.deepEqual(found.body, { id: 'post-1', salonId: 'salon-1', imageUrls: [], payload: true, favoriteCount: 3 });
+  assert.equal(found.cacheControl, 'no-store');
   assert.deepEqual(postFilters[0], { id: 'post-1', salonId: 'salon-1', reviewStatus: 'approved' });
   // 未通过审核、已删除或属于其他店铺的动态都查不到。
   assert.equal((await open({ id: 'salon-1', postId: 'pending-or-other' })).statusCode, 404);

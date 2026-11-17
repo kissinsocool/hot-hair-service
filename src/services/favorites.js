@@ -58,6 +58,8 @@ async function favoriteTargetExists(kind, targetId) {
   return Boolean(post && await Salon.exists({ id: post.salonId, publishStatus: 'online' }));
 }
 
+const countPostFavorites = postId => FavoritePost.countDocuments({ postId });
+
 const countStaffFavorites = staffId => (staffId ? FavoriteStaff.countDocuments({ staffId }) : Promise.resolve(0));
 
 const favoriteStaffPayload = (person, salon) => ({
@@ -138,6 +140,7 @@ async function readFavoritePackages(userId) {
 
 module.exports = {
   countStaffFavorites,
+  countPostFavorites,
   favoriteTargetExists,
   readFavoritePosts,
   readFavoritePackages,
