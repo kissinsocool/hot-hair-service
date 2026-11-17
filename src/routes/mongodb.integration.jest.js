@@ -66,6 +66,40 @@ describeWithMongo('three-client booking contracts against a real replica set', (
       sessionTokenHash: session.tokenHash, sessionExpiresAt: session.expiresAt });
   }
 
+  test('package and post favorites persist independently through their public contracts', async () => {
+    await models.SalonPost.create({
+      id: 'favorite-contract-post', salonId: 'salon-1', authorType: 'salon', authorName: 'Salon',
+      content: 'Cut style', serviceId: 'service-1', serviceName: 'Cut', reviewStatus: 'approved',
+    });
+    const packageId = 'salon-1:service-1';
+    const packageRoute = `/favorites/packages/${encodeURIComponent(packageId)}`;
+    const postRoute = '/favorites/posts/favorite-contract-post';
+    try {
+      expect((await request('client', postRoute, undefined, 'PUT')).body).toEqual({ favorite: true });
+      expect((await request('client', '/favorites/packages/ids')).body).toEqual({ packageIds: [] });
+      expect((await request('client', packageRoute, undefined, 'PUT')).body).toEqual({ favorite: true });
+      expect((await request('client', '/favorites/packages/ids')).body).toEqual({ packageIds: [packageId] });
+      expect((await request('client', '/favorites/packages')).body).toMatchObject([
+        { id: packageId, salonId: 'salon-1', service: { id: 'service-1', priceFen: 8000 } },
+      ]);
+      expect((await request('client', packageRoute, undefined, 'DELETE')).body).toEqual({ favorite: false });
+      expect((await request('client', '/favorites/packages')).body).toEqual([]);
+      expect((await request('client', '/favorites/posts/ids')).body).toEqual({ postIds: ['favorite-contract-post'] });
+      expect((await request('client', '/favorites/posts')).body).toMatchObject([
+        { id: 'favorite-contract-post', serviceId: 'service-1' },
+      ]);
+      const { migrateFavoritePackages } = require('../../scripts/migrate-favorite-packages');
+      expect(await migrateFavoritePackages()).toBe(1);
+      expect(await migrateFavoritePackages()).toBe(0);
+      expect((await request('client', '/favorites/packages/ids')).body).toEqual({ packageIds: [packageId] });
+      expect((await request('client', '/favorites/posts/ids')).body).toEqual({ postIds: ['favorite-contract-post'] });
+    } finally {
+      await request('client', packageRoute, undefined, 'DELETE');
+      await request('client', postRoute, undefined, 'DELETE');
+      await models.SalonPost.deleteOne({ id: 'favorite-contract-post' });
+    }
+  });
+
   test('merchants require an explicit salon, including a valid association to salon 1', async () => {
     const id = 'merchant-missing-salon';
     const password = 'fixture-pass7';

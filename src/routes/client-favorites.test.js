@@ -11,9 +11,10 @@ const collectRoutes = (ctx) => {
   };
   registerClientFavoriteRoutes(app, {
     normalizeUserId: value => String(value).replace(/^user-/, ''),
-    async readFavoriteTargetIds(kind) { return kind === 'staff' ? ['staff-1'] : ['post-1']; },
+    async readFavoriteTargetIds(kind) { return { staff: ['staff-1'], posts: ['post-1'], packages: ['salon-1:svc-1'] }[kind]; },
     async readFavoriteStaff() { return [{ id: 'staff-1' }]; },
     async readFavoritePosts() { return [{ id: 'post-1' }]; },
+    async readFavoritePackages() { return [{ id: 'salon-1:svc-1' }]; },
     async favoriteTargetExists() { return true; },
     async setFavoriteTarget() {},
     async countStaffFavorites() { return 0; },
@@ -32,12 +33,14 @@ const call = async (handler, params = {}) => {
   return response;
 };
 
-test('favorite staff and post routes read ids and lists for the signed-in user', async () => {
+test('favorite staff, post and package routes read ids and lists for the signed-in user', async () => {
   const routes = collectRoutes();
   assert.deepEqual((await call(routes.get('GET /api/favorites/staff/ids'))).body, { staffIds: ['staff-1'] });
   assert.deepEqual((await call(routes.get('GET /api/favorites/posts/ids'))).body, { postIds: ['post-1'] });
   assert.deepEqual((await call(routes.get('GET /api/favorites/staff'))).body, [{ id: 'staff-1' }]);
   assert.deepEqual((await call(routes.get('GET /api/favorites/posts'))).body, [{ id: 'post-1' }]);
+  assert.deepEqual((await call(routes.get('GET /api/favorites/packages'))).body, [{ id: 'salon-1:svc-1' }]);
+  assert.deepEqual((await call(routes.get('GET /api/favorites/packages/ids'))).body, { packageIds: ['salon-1:svc-1'] });
 });
 
 test('favorite writes pass the normalized user id and return the stylist favorite count', async () => {
@@ -53,10 +56,14 @@ test('favorite writes pass the normalized user id and return the stylist favorit
   assert.deepEqual((await call(routes.get('PUT /api/favorites/staff/:id'), { id: 'staff-1' })).body, { favorite: true, favoriteCount: 1 });
   assert.deepEqual((await call(routes.get('DELETE /api/favorites/staff/:id'), { id: 'staff-1' })).body, { favorite: false, favoriteCount: 0 });
   assert.deepEqual((await call(routes.get('PUT /api/favorites/posts/:id'), { id: 'post-1' })).body, { favorite: true });
+  assert.deepEqual((await call(routes.get('PUT /api/favorites/packages/:id'), { id: 'salon-1:svc-1' })).body, { favorite: true });
+  assert.deepEqual((await call(routes.get('DELETE /api/favorites/packages/:id'), { id: 'salon-1:svc-1' })).body, { favorite: false });
   assert.deepEqual(writes, [
     ['staff', '1', 'staff-1', true],
     ['staff', '1', 'staff-1', false],
     ['posts', '1', 'post-1', true],
+    ['packages', '1', 'salon-1:svc-1', true],
+    ['packages', '1', 'salon-1:svc-1', false],
   ]);
 });
 

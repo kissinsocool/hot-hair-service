@@ -1,12 +1,13 @@
-const { FavoriteStaff, FavoritePost, StaffProfile, SalonPost, Salon } = require('../models');
+const { FavoriteStaff, FavoritePost, FavoritePackage, StaffProfile, SalonPost, Salon } = require('../models');
 const { publicImageUrl } = require('../images');
-const { normalizeStaffRoleId } = require('./salon');
+const { normalizeStaffRoleId, normalizeSalonTags, salonCoverImageUrl, servicePayload } = require('./salon');
 const { postWithSalonPayload } = require('./salon-posts');
 
-// 理发师、店铺动态的收藏只按规范化后的 userId 写入，不存在历史别名，读写都直接用 userId。
+// 理发师、作品和套餐的收藏只按规范化后的 userId 写入，不存在历史别名，读写都直接用 userId。
 const FAVORITE_KINDS = Object.freeze({
   staff: { model: () => FavoriteStaff, field: 'staffId' },
   posts: { model: () => FavoritePost, field: 'postId' },
+  packages: { model: () => FavoritePackage, field: 'packageId' },
 });
 
 const favoriteKind = (kind) => {
@@ -46,6 +47,12 @@ async function favoriteTargetExists(kind, targetId) {
       Salon.exists({ staffIds: targetId, publishStatus: 'online' }),
     ]);
     return Boolean(staff && salon);
+  }
+  if (kind === 'packages') {
+    const { salonId, serviceId } = splitPackageId(targetId);
+    return Boolean(salonId && serviceId && await Salon.exists({
+      id: salonId, publishStatus: 'online', 'services.id': serviceId,
+    }));
   }
   const post = await SalonPost.findOne({ id: targetId, reviewStatus: 'approved' }).select('salonId').lean();
   return Boolean(post && await Salon.exists({ id: post.salonId, publishStatus: 'online' }));
@@ -98,10 +105,42 @@ async function readFavoritePosts(userId) {
     .map(post => postWithSalonPayload(post, salonsById.get(post.salonId), publicImageUrl));
 }
 
+// 与首页推荐套餐的 ID 使用同一格式。
+function splitPackageId(id) {
+  const separator = id.indexOf(':');
+  return separator < 0 ? {} : { salonId: id.slice(0, separator), serviceId: id.slice(separator + 1) };
+}
+
+async function readFavoritePackages(userId) {
+  if (!userId) return [];
+  const favorites = await FavoritePackage.find({ userId }).select('packageId serviceName').sort({ createdAt: -1, _id: -1 }).lean();
+  if (!favorites.length) return [];
+  const entries = favorites.map(({ packageId, serviceName }) => ({ packageId, serviceName, ...splitPackageId(packageId) }));
+  const salonIds = [...new Set(entries.map(entry => entry.salonId).filter(Boolean))];
+  const salons = await Salon.find({ id: { $in: salonIds }, publishStatus: 'online' })
+    .select('id name description tags image images promoImages services').lean();
+  const salonsById = new Map(salons.map(salon => [salon.id, salon]));
+  return entries.map(({ packageId, salonId, serviceId, serviceName }) => {
+    const salon = salonsById.get(salonId);
+    const service = (salon?.services || []).find(item => item.id === serviceId);
+    return {
+      id: packageId,
+      salonId: salon ? salonId : '',
+      salonName: salon?.name || '',
+      salonDescription: salon?.description || '',
+      salonImageUrl: salon ? salonCoverImageUrl(salon) : '',
+      salonTags: normalizeSalonTags(salon?.tags),
+      service: service ? servicePayload(service) : null,
+      serviceName: service?.name || serviceName || '套餐',
+    };
+  });
+}
+
 module.exports = {
   countStaffFavorites,
   favoriteTargetExists,
   readFavoritePosts,
+  readFavoritePackages,
   readFavoriteStaff,
   readFavoriteTargetIds,
   setFavoriteTarget,

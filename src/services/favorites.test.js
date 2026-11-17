@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { FavoriteStaff, FavoritePost, StaffProfile, SalonPost, Salon } = require('../models');
+const { FavoriteStaff, FavoritePost, FavoritePackage, StaffProfile, SalonPost, Salon } = require('../models');
 const favorites = require('./favorites');
 
 const query = rows => ({
@@ -65,5 +65,43 @@ test('favorite writes are idempotent upserts and deletes scoped to the user', as
   assert.deepEqual(calls, [
     ['update', { userId: 'user-1', staffId: 'staff-1' }, { $setOnInsert: { userId: 'user-1', staffId: 'staff-1' } }, { upsert: true }],
     ['delete', { userId: 'user-1', staffId: 'staff-1' }],
+  ]);
+});
+
+test('package favorites are scoped to the user and the specific salon service', async (t) => {
+  const calls = [];
+  t.after(patch(FavoritePackage, {
+    find(filter) {
+      assert.deepEqual(filter, { userId: 'user-1' });
+      return query([
+        { packageId: 'salon-1:svc-1' },
+        { packageId: 'salon-1:gone', serviceName: '旧套餐' },
+        { packageId: 'salon-2:svc-1' },
+      ]);
+    },
+    async updateOne(filter) { calls.push(['put', filter]); },
+    async deleteOne(filter) { calls.push(['delete', filter]); },
+  }));
+  t.after(patch(Salon, {
+    find(filter) {
+      assert.deepEqual(filter, { id: { $in: ['salon-1', 'salon-2'] }, publishStatus: 'online' });
+      return query([{ id: 'salon-1', services: [{ id: 'svc-1', name: '剪发', priceFen: 8800 }] }]);
+    },
+    async exists(filter) {
+      assert.deepEqual(filter, { id: 'salon-1', publishStatus: 'online', 'services.id': 'svc-1' });
+      return { _id: 'salon' };
+    },
+  }));
+  assert.equal(await favorites.favoriteTargetExists('packages', 'salon-1:svc-1'), true);
+  assert.equal(await favorites.favoriteTargetExists('packages', 'post-1'), false);
+  const list = await favorites.readFavoritePackages('user-1');
+  assert.equal(list[0].service.priceFen, 8800);
+  assert.deepEqual([list[1].service, list[1].serviceName], [null, '旧套餐']);
+  assert.deepEqual([list[2].service, list[2].salonId], [null, '']);
+  await favorites.setFavoriteTarget('packages', 'user-1', 'salon-1:svc-1', true);
+  await favorites.setFavoriteTarget('packages', 'user-1', 'salon-1:svc-1', false);
+  assert.deepEqual(calls, [
+    ['put', { userId: 'user-1', packageId: 'salon-1:svc-1' }],
+    ['delete', { userId: 'user-1', packageId: 'salon-1:svc-1' }],
   ]);
 });

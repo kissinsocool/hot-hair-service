@@ -305,13 +305,21 @@ const favoriteStaffSchema = new mongoose.Schema({
 
 favoriteStaffSchema.index({ userId: 1, staffId: 1 }, { unique: true });
 
-// 用户收藏的店铺动态（小程序收藏页“套餐”分类）。
+// 用户收藏的店铺动态。
 const favoritePostSchema = new mongoose.Schema({
   userId: { type: String, required: true, index: true },
   postId: { type: String, required: true, index: true },
 }, { timestamps: true });
 
 favoritePostSchema.index({ userId: 1, postId: 1 }, { unique: true });
+
+const favoritePackageSchema = new mongoose.Schema({
+  userId: { type: String, required: true },
+  packageId: { type: String, required: true },
+  serviceName: String,
+}, { timestamps: true });
+
+favoritePackageSchema.index({ userId: 1, packageId: 1 }, { unique: true });
 
 const salonSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
@@ -591,6 +599,7 @@ module.exports = {
   FavoriteSalon: mongoose.model('FavoriteSalon', favoriteSalonSchema),
   FavoriteStaff: mongoose.model('FavoriteStaff', favoriteStaffSchema),
   FavoritePost: mongoose.model('FavoritePost', favoritePostSchema),
+  FavoritePackage: mongoose.model('FavoritePackage', favoritePackageSchema),
   Salon: mongoose.model('Salon', salonSchema),
   StaffProfile: mongoose.model('StaffProfile', staffProfileSchema),
   SalonPost: mongoose.model('SalonPost', salonPostSchema),

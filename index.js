@@ -31,6 +31,7 @@ const {
   FavoriteSalon,
   FavoriteStaff,
   FavoritePost,
+  FavoritePackage,
   Salon,
   StaffProfile,
   SalonPost,
@@ -1502,6 +1503,7 @@ const routeContext = {
   favoriteTargetExists: favoritesDomain.favoriteTargetExists,
   readFavoriteStaff: favoritesDomain.readFavoriteStaff,
   readFavoritePosts: favoritesDomain.readFavoritePosts,
+  readFavoritePackages: favoritesDomain.readFavoritePackages,
   countStaffFavorites: favoritesDomain.countStaffFavorites,
   rateLimits,
   revokeSessionHash,
@@ -1627,6 +1629,7 @@ const startServer = async () => {
     // Unique (userId, target) indexes keep favorite writes idempotent and stylist favorite counts exact.
     FavoriteStaff.createIndexes(),
     FavoritePost.createIndexes(),
+    FavoritePackage.createIndexes(),
   ]);
   console.log('MongoDB connected');
 

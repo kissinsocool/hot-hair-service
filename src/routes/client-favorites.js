@@ -1,4 +1,4 @@
-// 理发师、店铺动态的收藏；店铺收藏沿用 client.js 里的 /api/favorites 与 /api/favorites/:id。
+// 理发师、作品、套餐的收藏；店铺收藏沿用 client.js 里的 /api/favorites 与 /api/favorites/:id。
 module.exports = (app, ctx) => {
   const {
     normalizeUserId,
@@ -7,12 +7,14 @@ module.exports = (app, ctx) => {
     favoriteTargetExists,
     readFavoriteStaff,
     readFavoritePosts,
+    readFavoritePackages,
     countStaffFavorites,
   } = ctx;
 
   const kinds = [
     { path: 'staff', kind: 'staff', idsKey: 'staffIds', label: '理发师', readList: readFavoriteStaff },
     { path: 'posts', kind: 'posts', idsKey: 'postIds', label: '动态', readList: readFavoritePosts },
+    { path: 'packages', kind: 'packages', idsKey: 'packageIds', label: '套餐', readList: readFavoritePackages },
   ];
 
   kinds.forEach(({ path, kind, idsKey, label, readList }) => {
