@@ -393,9 +393,19 @@ const staffProfileSchema = new mongoose.Schema({
 const salonPostSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
   salonId: { type: String, required: true, index: true },
-  authorStaffId: { type: String, required: true, index: true },
+  // 投稿人类型：staff 为店内理发师，salon 为店铺本身（官方投稿）。
+  // 旧动态没有这个字段，读取时一律按 staff 处理（见 services/salon-posts.js 的 postAuthorType）。
+  authorType: { type: String, enum: ['staff', 'salon'], default: 'staff' },
+  // 以店铺名义投稿时没有理发师：authorStaffId 为空字符串，authorRoleId 不写入。
+  authorStaffId: {
+    type: String, default: '', index: true,
+    required() { return this.authorType !== 'salon'; },
+  },
   authorName: { type: String, required: true },
-  authorRoleId: { type: String, enum: STAFF_ROLE_IDS, required: true },
+  authorRoleId: {
+    type: String, enum: STAFF_ROLE_IDS,
+    required() { return this.authorType !== 'salon'; },
+  },
   authorImageUrl: { type: String, default: '' },
   content: { type: String, required: true },
   serviceId: { type: String, default: '' },

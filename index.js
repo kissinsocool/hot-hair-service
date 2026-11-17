@@ -1512,6 +1512,7 @@ const routeContext = {
   SalonPost,
   salonPostPayload: salonPosts.postPayload,
   validateSalonPostInput: salonPosts.validatePostInput,
+  salonPostSalonAuthor: salonPosts.salonAuthorFields,
   salonCoverImage,
   SALON_RATING_STATS_SELECTION,
   setPaginationHeaders,

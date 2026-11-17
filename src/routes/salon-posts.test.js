@@ -3,7 +3,8 @@ const test = require('node:test');
 const registerMerchantRoutes = require('./merchant');
 const registerPublicRoutes = require('./public');
 const registerAdminRoutes = require('./admin');
-const { validatePostInput } = require('../services/salon-posts');
+const { postPayload, salonAuthorFields, validatePostInput } = require('../services/salon-posts');
+const { SalonPost: SalonPostModel } = require('../models');
 
 const response = () => ({
   statusCode: 200,
@@ -26,6 +27,7 @@ test('salon post input keeps the actual merchant contract bounded', () => {
     imageUrls: ['https://example.com/1.jpg', 'https://example.com/1.jpg'],
     serviceId: ' service-1 ',
   }).value, {
+    authorType: 'staff',
     authorStaffId: 'staff-1',
     content: '新发型',
     imageUrls: ['https://example.com/1.jpg'],
@@ -93,6 +95,97 @@ test('merchant can publish only as a staff member from the same salon', async ()
   }, legacy);
   assert.equal(legacy.statusCode, 201);
   assert.equal(created[1].serviceId, '');
+  // 旧版商家端不带 authorType：仍按理发师投稿处理。
+  assert.equal(created[1].authorType, 'staff');
+  assert.equal(created[1].authorStaffId, 'staff-1');
+});
+
+test('salon post input accepts the salon itself as author and ignores any staff id', () => {
+  assert.deepEqual(validatePostInput({
+    authorType: 'salon', authorStaffId: 'staff-1', content: '店铺活动', imageUrls: [],
+  }).value, { authorType: 'salon', authorStaffId: '', content: '店铺活动', imageUrls: [], serviceId: '' });
+  assert.equal(validatePostInput({ authorType: 'salon', content: '店铺活动', imageUrls: [] }).error, undefined);
+  assert.equal(validatePostInput({ authorType: 'staff', content: '动态', imageUrls: [] }).error, '请选择投稿人');
+  assert.equal(validatePostInput({ authorType: 'admin', authorStaffId: 'staff-1', content: '动态', imageUrls: [] }).error, '投稿人类型无效');
+  assert.equal(validatePostInput({ authorType: ['salon'], content: '动态', imageUrls: [] }).error, '投稿人类型无效');
+});
+
+test('merchant can publish as the salon itself, even with no staff', async () => {
+  const routes = new Map();
+  const app = Object.fromEntries(['get', 'post', 'patch', 'delete'].map(method => [
+    method,
+    (path, ...handlers) => routes.set(`${method}:${path}`, handlers.at(-1)),
+  ]));
+  const created = [];
+  let salon = {
+    id: 'salon-1', name: '热辣发廊', staffIds: [], image: '', promoImages: ['https://example.com/promo.jpg'],
+    images: ['https://example.com/shop.jpg'], services: [{ id: 'service-1', name: '剪发套餐' }],
+  };
+  registerMerchantRoutes(app, {
+    rateLimits: new Proxy({}, { get: () => [] }),
+    normalizePagination: () => ({ page: 1, limit: 20, skip: 0 }),
+    Salon: { findOne: () => ({ select: () => ({ lean: async () => salon }) }) },
+    getStaffById: () => { throw new Error('staff must not be looked up for a salon post'); },
+    SalonPost: {
+      create: async post => {
+        // 用真实 Schema 校验：店铺投稿没有 authorStaffId / authorRoleId 也必须能保存。
+        await new SalonPostModel(post).validate();
+        created.push(post);
+        return { toObject: () => ({ ...post, createdAt: new Date('2026-11-17T10:00:00Z') }) };
+      },
+    },
+    validateSalonPostInput: validatePostInput,
+    salonPostSalonAuthor: salonAuthorFields,
+    salonPostPayload: postPayload,
+    publicImageUrl: value => value,
+    crypto: { randomUUID: () => 'post-salon' },
+    clearPublicSalonDetailCache: () => {},
+  });
+
+  const res = response();
+  await routes.get('post:/api/merchant/salon-posts')({
+    merchantUser: { salonId: 'salon-1' },
+    body: { authorType: 'salon', authorStaffId: 'someone-else', content: '周年店庆', imageUrls: [], serviceId: 'service-1' },
+  }, res);
+  assert.equal(res.statusCode, 201);
+  assert.equal(created[0].authorType, 'salon');
+  assert.equal(created[0].authorStaffId, '');
+  assert.equal(created[0].authorName, '热辣发廊');
+  assert.equal(created[0].authorImageUrl, 'https://example.com/promo.jpg');
+  assert.equal('authorRoleId' in created[0], false);
+  assert.equal(created[0].serviceName, '剪发套餐');
+  assert.deepEqual(
+    [res.body.authorType, res.body.authorStaffId, res.body.authorName, res.body.authorRoleId],
+    ['salon', '', '热辣发廊', ''],
+  );
+
+  salon = { ...salon, name: ' ' };
+  const unnamed = response();
+  await routes.get('post:/api/merchant/salon-posts')({
+    merchantUser: { salonId: 'salon-1' },
+    body: { authorType: 'salon', content: '周年店庆', imageUrls: [] },
+  }, unnamed);
+  assert.equal(unnamed.statusCode, 400);
+  assert.equal(created.length, 1);
+});
+
+test('salon post schema still requires a staff author unless the salon is the author', async () => {
+  const base = { id: 'post-x', salonId: 'salon-1', authorName: '小林', content: '动态' };
+  await assert.rejects(new SalonPostModel(base).validate(), /authorStaffId/);
+  await assert.rejects(new SalonPostModel({ ...base, authorStaffId: 'staff-1' }).validate(), /authorRoleId/);
+  const legacyShape = new SalonPostModel({ ...base, authorStaffId: 'staff-1', authorRoleId: 'senior_barber' });
+  await legacyShape.validate();
+  assert.equal(legacyShape.authorType, 'staff');
+});
+
+test('posts stored before authorType existed are returned as staff posts', () => {
+  const payload = postPayload({
+    id: 'post-old', salonId: 'salon-1', authorStaffId: 'staff-1', authorName: '小林',
+    authorRoleId: 'senior_barber', content: '旧动态', imageUrls: [],
+  });
+  assert.equal(payload.authorType, 'staff');
+  assert.equal(payload.authorStaffId, 'staff-1');
+  assert.equal(payload.authorRoleId, 'senior_barber');
 });
 
 test('public salon posts are scoped to an online salon and paginated newest first', async () => {
