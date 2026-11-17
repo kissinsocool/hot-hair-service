@@ -268,6 +268,7 @@ test('home recommendations route resolves the viewer and never allows shared cac
       userQueries.push(query);
       return { select: () => ({ lean: async () => (query.sessionTokenHash === 'hash:valid' ? { id: 'user-u1' } : null) }) };
     } },
+    HomeRecommendationConfig: { findOne: () => ({ select: () => ({ lean: async () => null }) }) },
     readRecommendedPosts: async (options, deps) => {
       calls.push(options);
       assert.equal(typeof deps.cache.get, 'function', '与用户无关的部分走共用缓存');
@@ -322,6 +323,7 @@ test('home recommended services route resolves the viewer and never allows share
       userQueries.push(query);
       return { select: () => ({ lean: async () => (query.sessionTokenHash === 'hash:valid' ? { id: 'user-u1' } : null) }) };
     } },
+    HomeRecommendationConfig: { findOne: () => ({ select: () => ({ lean: async () => null }) }) },
     readRecommendedServices: async (options, deps) => {
       calls.push(options);
       assert.equal(typeof deps.cache.get, 'function', '附近店铺的查询走共用缓存');
@@ -353,4 +355,76 @@ test('home recommended services route resolves the viewer and never allows share
   // 登录态失效时按未登录处理，不报错。
   await recommend({ query: { latitude: '39.9', longitude: '116.4' }, token: 'expired' });
   assert.equal(calls[2].viewerId, '');
+});
+
+test('the admin switch hides home recommendations at once and shows them again when turned back on', async () => {
+  const { createPublicResponseCaches } = require('../ttl-cache');
+  const routes = new Map();
+  const app = Object.fromEntries(['get', 'post', 'patch', 'delete', 'put'].map(method => [
+    method,
+    (path, ...handlers) => routes.set(`${method}:${path}`, handlers.at(-1)),
+  ]));
+  const publicResponseCaches = createPublicResponseCaches();
+  let stored = null;
+  let configReads = 0;
+  let recommendationReads = 0;
+  const HomeRecommendationConfig = {
+    findOne: () => ({ select: () => ({ lean: async () => { configReads += 1; return stored; } }) }),
+    findOneAndUpdate(filter, update, options) {
+      assert.deepEqual(filter, { key: 'main' });
+      assert.equal(options.upsert, true);
+      stored = { key: 'main', ...update };
+      return { lean: async () => stored };
+    },
+  };
+  registerPublicRoutes(app, {
+    rateLimits: { publicRead: [] },
+    publicResponseCaches,
+    getCoordinates: query => (query.latitude ? { latitude: 39.9, longitude: 116.4 } : null),
+    normalizeLimit: (_value, fallback) => fallback,
+    sessionTokenFromRequest: () => '',
+    HomeRecommendationConfig,
+    readRecommendedServices: async () => { recommendationReads += 1; return { categoryId: '', items: [{ id: 'salon-1:svc-1' }] }; },
+    readRecommendedPosts: async () => { recommendationReads += 1; return { categoryId: '', items: [{ id: 'post-1', reasons: [] }] }; },
+  });
+  registerAdminRoutes(app, {
+    rateLimits: new Proxy({}, { get: () => [] }),
+    HomeRecommendationConfig,
+    clearHomeRecommendationConfigCache: () => publicResponseCaches.homeRecommendationConfig.clear(),
+  });
+  const call = async (route, req = {}) => {
+    const res = response();
+    res.set = function set() { return this; };
+    await routes.get(route)({ query: {}, body: {}, adminUser: { id: 'admin-1' }, ...req }, res);
+    return res;
+  };
+  const location = { latitude: '39.9', longitude: '116.4' };
+  const services = () => call('get:/api/salons/recommended-services', { query: location });
+
+  // 没有设置过：默认显示。开关读一次后复用，不是每次请求都查。
+  assert.deepEqual((await call('get:/api/admin/home-recommendations')).body, { enabled: true });
+  assert.equal((await services()).body.items.length, 1);
+  assert.equal((await services()).body.items.length, 1);
+  assert.equal(configReads, 2);
+
+  // 只接受布尔值。
+  assert.equal((await call('patch:/api/admin/home-recommendations', { body: { enabled: 'false' } })).statusCode, 400);
+  assert.equal(stored, null);
+
+  // 关闭：两个推荐接口立即返回空（小程序因此不显示模块），不再查询推荐数据。
+  const off = await call('patch:/api/admin/home-recommendations', { body: { enabled: false } });
+  assert.deepEqual(off.body, { enabled: false });
+  assert.deepEqual(stored, { key: 'main', enabled: false, updatedBy: 'admin-1' });
+  const readsBefore = recommendationReads;
+  assert.deepEqual((await services()).body, { categoryId: '', items: [] });
+  assert.deepEqual((await call('get:/api/salons/recommended-posts', { query: location })).body, []);
+  assert.deepEqual((await call('get:/api/salons/recommended-posts', { query: { ...location, version: '2' } })).body, { categoryId: '', items: [] });
+  assert.equal(recommendationReads, readsBefore);
+  assert.deepEqual((await call('get:/api/admin/home-recommendations')).body, { enabled: false });
+  // 关闭时仍然先校验坐标。
+  assert.equal((await call('get:/api/salons/recommended-services')).statusCode, 400);
+
+  // 重新打开后立即恢复。
+  await call('patch:/api/admin/home-recommendations', { body: { enabled: true } });
+  assert.equal((await services()).body.items.length, 1);
 });

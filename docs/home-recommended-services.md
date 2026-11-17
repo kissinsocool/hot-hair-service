@@ -14,6 +14,15 @@
 - 排序：有推荐理由的店铺在前，其余在后；两组内都按店铺距离由近到远。`limit` 默认 10、上限 20。
 - 没有可推荐的套餐时 `items` 为 `[]`，小程序整块不显示。缺少或无效的坐标返回 400。登录态无效时按未登录处理。
 
+## 后台开关
+
+后台「动态审核」页有一个开关「小程序首页显示推荐模块」：
+
+- `GET /api/admin/home-recommendations` → `{ enabled }`；`PATCH /api/admin/home-recommendations`，请求体 `{ enabled: boolean }`。需要后台登录。
+- 存在 `HomeRecommendationConfig`（`key: 'main'`）。没有记录时按显示处理。
+- 关闭后本接口和第一版 `/api/salons/recommended-posts` 都返回空（`{ categoryId: '', items: [] }`，第一版未带 `version=2` 时返回 `[]`），小程序因此整块不显示，不需要改小程序。
+- 小程序请求读到的开关在服务端缓存 5 分钟（`ttl-cache.js` 的 `homeRecommendationConfig`），后台修改时立即清除，下一次请求就生效。
+
 ## 响应
 
 `{ categoryId, items }`。`categoryId` 是分类 ID（如 `color`）或空字符串。`items` 每项：

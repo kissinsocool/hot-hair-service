@@ -38,6 +38,7 @@ const {
   AdminUser,
   ClientUser,
   AdConfig,
+  HomeRecommendationConfig,
   CouponCampaign,
   UserCoupon,
   SupportMessage,
@@ -862,6 +863,7 @@ const invalidatePublicCache = name => {
 };
 const clearPublicSalonDetailCache = () => invalidatePublicCache('salonDetail');
 const clearAdCache = () => invalidatePublicCache('ad');
+const clearHomeRecommendationConfigCache = () => invalidatePublicCache('homeRecommendationConfig');
 const clearCouponCampaignCache = () => invalidatePublicCache('couponCampaign');
 const clearPromotedServicesCache = () => invalidatePublicCache('promotedServices');
 
@@ -1400,6 +1402,7 @@ const routeContext = {
   acceptedBookingAtTimeQuery,
   AdminUser,
   AdConfig,
+  HomeRecommendationConfig,
   amapWebServiceKey,
   applyDirectSalonContent,
   validateSalonStaffIds,
@@ -1427,6 +1430,7 @@ const routeContext = {
   clearPublicSalonDetailCache,
   publicResponseCaches,
   clearAdCache,
+  clearHomeRecommendationConfigCache,
   clearCouponCampaignCache,
   clearPromotedServicesCache,
   ClientUser,

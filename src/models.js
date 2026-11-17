@@ -471,6 +471,13 @@ const adConfigSchema = new mongoose.Schema({
   enabled: { type: Boolean, default: true },
 }, { timestamps: true });
 
+// 小程序首页推荐模块（「你可能喜欢」）的总开关，后台「动态审核」页设置。没有记录时按显示处理。
+const homeRecommendationConfigSchema = new mongoose.Schema({
+  key: { type: String, required: true, unique: true, default: 'main' },
+  enabled: { type: Boolean, default: true },
+  updatedBy: { type: String, default: '' },
+}, { timestamps: true });
+
 const couponTemplateSchema = new mongoose.Schema({
   key: { type: String, required: true },
   minimumSpendFen: { ...integer(), required: true },
@@ -581,6 +588,7 @@ module.exports = {
   AdminUser: mongoose.model('AdminUser', adminUserSchema),
   ClientUser: mongoose.model('ClientUser', clientUserSchema),
   AdConfig: mongoose.model('AdConfig', adConfigSchema),
+  HomeRecommendationConfig: mongoose.model('HomeRecommendationConfig', homeRecommendationConfigSchema),
   CouponCampaign: mongoose.model('CouponCampaign', couponCampaignSchema),
   UserCoupon: mongoose.model('UserCoupon', userCouponSchema),
   SupportMessage: mongoose.model('SupportMessage', supportMessageSchema),

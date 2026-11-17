@@ -32,6 +32,8 @@ const createTtlCache = ({ ttlMs, max = 100, now = Date.now }) => {
 // service or a salon going offline shows within their one-minute lifetime.
 const createPublicResponseCaches = (now = Date.now) => ({
   ad: createTtlCache({ ttlMs: 5 * 60_000, max: 1, now }),
+  // The admin switch for the home recommendation module; cleared when the admin changes it.
+  homeRecommendationConfig: createTtlCache({ ttlMs: 5 * 60_000, max: 1, now }),
   couponCampaign: createTtlCache({ ttlMs: 15_000, max: 1, now }),
   promotedServices: createTtlCache({ ttlMs: 5 * 60_000, max: 200, now }),
   recommendedPosts: createTtlCache({ ttlMs: 60_000, max: 200, now }),

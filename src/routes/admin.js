@@ -35,6 +35,7 @@ module.exports = (app, ctx) => {
   const {
     AdminUser,
     AdConfig,
+    HomeRecommendationConfig,
     crypto,
     buildAdminUserPayload,
     buildClientUserPayload,
@@ -71,6 +72,7 @@ module.exports = (app, ctx) => {
     revokeSessionHash,
     clearPublicSalonDetailCache,
     clearAdCache,
+    clearHomeRecommendationConfigCache,
     clearCouponCampaignCache,
     clearPromotedServicesCache,
     refreshStaffRatingSummaries,
@@ -701,6 +703,25 @@ module.exports = (app, ctx) => {
       { $max: { newBookingsViewedBefore: before } },
     );
     res.json({ ok: true });
+  });
+
+  // 小程序首页推荐模块（「你可能喜欢」）的总开关，在后台「动态审核」页设置。没有记录时按显示处理。
+  app.get('/api/admin/home-recommendations', async (_req, res) => {
+    const config = await HomeRecommendationConfig.findOne({ key: 'main' }).select('enabled').lean();
+    res.set('Cache-Control', 'no-store');
+    res.json({ enabled: config?.enabled !== false });
+  });
+
+  app.patch('/api/admin/home-recommendations', async (req, res) => {
+    if (typeof req.body.enabled !== 'boolean') return res.status(400).json({ message: '是否显示必须是布尔值' });
+    const config = await HomeRecommendationConfig.findOneAndUpdate(
+      { key: 'main' },
+      { enabled: req.body.enabled, updatedBy: req.adminUser.id },
+      { upsert: true, new: true },
+    ).lean();
+    // 小程序读到的开关有缓存，改动后立即清掉，下一次请求就按新设置返回。
+    clearHomeRecommendationConfigCache?.();
+    res.json({ enabled: config.enabled !== false });
   });
 
   app.get('/api/admin/salon-posts', async (req, res) => {

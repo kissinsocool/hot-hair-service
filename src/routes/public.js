@@ -31,6 +31,7 @@ module.exports = (app, ctx) => {
     calculateDistanceKm,
     stripSensitiveSalonFields,
     AdConfig,
+    HomeRecommendationConfig,
     buildAdPayload,
     CouponCampaign,
     rateLimits,
@@ -62,6 +63,7 @@ module.exports = (app, ctx) => {
   // gets its own empty set.
   const {
     ad: adCache,
+    homeRecommendationConfig: homeRecommendationConfigCache,
     couponCampaign: couponCampaignCache,
     promotedServices: promotedServicesCache,
     recommendedPosts: recommendedPostsCache,
@@ -211,6 +213,12 @@ module.exports = (app, ctx) => {
     res.json(images);
   });
 
+  // 后台「动态审核」页的开关：关闭后两个推荐接口都返回空，小程序首页不显示推荐模块。没有记录时按显示处理。
+  const homeRecommendationsEnabled = () => homeRecommendationConfigCache.get('main', async () => {
+    const config = await HomeRecommendationConfig.findOne({ key: 'main' }).select('enabled').lean();
+    return config?.enabled !== false;
+  });
+
   // 已登录的小程序用户（登录态无效时按未登录处理）。
   const viewerIdFromRequest = async (req) => {
     const token = sessionTokenFromRequest(req);
@@ -226,9 +234,10 @@ module.exports = (app, ctx) => {
   app.get('/api/salons/recommended-services', ...rateLimits.publicRead, async (req, res) => {
     const userLocation = getCoordinates(req.query);
     if (!userLocation) return res.status(400).json({ message: 'latitude and longitude are required' });
-    const viewerId = await viewerIdFromRequest(req);
     // 结果因人而异，不允许共享缓存。
     res.set('Cache-Control', 'private, no-store');
+    if (!await homeRecommendationsEnabled()) return res.json({ categoryId: '', items: [] });
+    const viewerId = await viewerIdFromRequest(req);
     res.json(await readRecommendedServices({
       userLocation,
       limit: normalizeLimit(req.query.limit, 10, 20),
@@ -245,6 +254,10 @@ module.exports = (app, ctx) => {
     const userLocation = getCoordinates(req.query);
     if (!userLocation) return res.status(400).json({ message: 'latitude and longitude are required' });
     const personalized = req.query.version === '2';
+    if (!await homeRecommendationsEnabled()) {
+      res.set('Cache-Control', 'private, no-store');
+      return res.json(personalized ? { categoryId: '', items: [] } : []);
+    }
     const viewerId = personalized ? await viewerIdFromRequest(req) : '';
     // 结果可能因人而异，不允许共享缓存。
     res.set('Cache-Control', 'private, no-store');
