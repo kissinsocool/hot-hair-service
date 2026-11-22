@@ -3,13 +3,14 @@ const test = require('node:test');
 const registerAdminRoutes = require('./admin');
 const { bookingDayRange } = require('../services/booking');
 
-test('admin overview separates total clients from clients created yesterday', async () => {
+test('admin overview separates total clients from clients created yesterday and today', async () => {
   const routes = new Map();
   const app = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map(method => [
     method,
     (path, ...handlers) => routes.set(`${method}:${path}`, handlers.at(-1)),
   ]));
   let yesterdayQuery;
+  let todayQuery;
   let funnelPipeline;
   const counts = { countDocuments: async () => 0 };
   registerAdminRoutes(app, {
@@ -21,6 +22,10 @@ test('admin overview separates total clients from clients created yesterday', as
           assert.deepEqual(query, {});
           assert.deepEqual(options.hint, { _id: 1 });
           return 20;
+        }
+        if (query.createdAt.$gte.getTime() === bookingDayRange().start.getTime()) {
+          todayQuery = query;
+          return 5;
         }
         yesterdayQuery = query;
         return 3;
@@ -52,4 +57,7 @@ test('admin overview separates total clients from clients created yesterday', as
   });
   assert.equal(payload.clientCount, 20);
   assert.equal(payload.yesterdayNewClientCount, 3);
+  assert.equal(todayQuery.createdAt.$gte.getTime(), today.start.getTime());
+  assert.equal(todayQuery.createdAt.$lt.toISOString(), payload.bookingsSnapshotBefore);
+  assert.equal(payload.todayNewClientCount, 5);
 });

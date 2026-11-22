@@ -144,10 +144,11 @@ module.exports = (app, ctx) => {
       start: new Date(today.start.getTime() - 24 * 60 * 60 * 1000),
       end: today.start,
     };
-    const [merchantCount, clientCount, yesterdayNewClientCount, salonCount, bookingCount, pendingCount, acceptedCount, funnelRows, todayBookingCount, unviewedBookingCount] = await Promise.all([
+    const [merchantCount, clientCount, yesterdayNewClientCount, todayNewClientCount, salonCount, bookingCount, pendingCount, acceptedCount, funnelRows, todayBookingCount, unviewedBookingCount] = await Promise.all([
       MerchantUser.countDocuments({}, { hint: { _id: 1 } }),
       ClientUser.countDocuments({}, { hint: { _id: 1 } }),
       ClientUser.countDocuments({ createdAt: { $gte: yesterday.start, $lt: yesterday.end } }),
+      ClientUser.countDocuments({ createdAt: { $gte: today.start, $lt: before } }),
       Salon.countDocuments({}, { hint: { _id: 1 } }),
       Booking.countDocuments({}, { hint: { _id: 1 } }),
       Booking.countDocuments({ status: 'pending' }),
@@ -164,6 +165,7 @@ module.exports = (app, ctx) => {
       merchantCount,
       clientCount,
       yesterdayNewClientCount,
+      todayNewClientCount,
       salonCount,
       bookingCount,
       pendingCount,
