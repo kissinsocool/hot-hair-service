@@ -31,7 +31,7 @@ const SERVICE_TAG_LABELS = Object.freeze({
   color: '染发',
   perm: '烫发',
   care: '护理',
-  styling: '发型设计',
+  styling: '造型设计',
   scalp_care: '头皮护理',
   men: '男士',
   women: '女士',
@@ -39,9 +39,10 @@ const SERVICE_TAG_LABELS = Object.freeze({
   curly: '卷发',
   nutrition: '营养',
 });
-const SERVICE_TAG_IDS_BY_LABEL = new Map(
-  Object.entries(SERVICE_TAG_LABELS).map(([id, label]) => [label, id]),
-);
+const SERVICE_TAG_IDS_BY_LABEL = new Map([
+  ...Object.entries(SERVICE_TAG_LABELS).map(([id, label]) => [label, id]),
+  ['发型设计', 'styling'], // 兼容旧客户端和已有数据中的中文标签。
+]);
 const SERVICE_TAG_ID_SET = new Set(SERVICE_TAG_IDS);
 const STAFF_ROLE_LABELS = Object.freeze({
   junior_barber: '初级理发师',
