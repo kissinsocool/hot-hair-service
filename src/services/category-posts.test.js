@@ -7,13 +7,13 @@ const fakeModels = (page) => {
   const pipelines = [];
   return {
     pipelines,
-    Salon: { aggregate(pipeline) { pipelines.push(pipeline); return { option: async () => [page] }; } },
-    SalonPost: { collection: { name: 'salonposts' } },
+    SalonPost: { aggregate(pipeline) { pipelines.push(pipeline); return { option: async () => [page] }; } },
+    Salon: { collection: { name: 'salons' } },
   };
 };
 const pagination = { page: 2, limit: 30, skip: 30 };
 
-test('category posts come from approved posts with images whose service belongs to the category', async () => {
+test('category posts come from approved posts with images in the merchant-chosen promotion category', async () => {
   const models = fakeModels({
     items: [{ salonId: 'salon-1', postId: 'post-1', imageUrl: 'a.jpg' }],
     total: [{ count: 31 }],
@@ -28,22 +28,20 @@ test('category posts come from approved posts with images whose service belongs 
   });
 
   const [pipeline] = models.pipelines;
-  const tagFilter = { $all: ['wash_cut_blow', 'women'], $nin: ['perm', 'color', 'curly', 'straight'] };
-  // 从在线店铺里属于该分类的套餐出发。
-  assert.deepEqual(pipeline[0], { $match: { publishStatus: 'online', services: { $elemMatch: { tagIds: tagFilter } } } });
-  assert.deepEqual(pipeline[2], { $match: { 'services.tagIds': tagFilter } });
-  // 只接关联这个套餐、已审核、有图片的动态，取第一张图。
-  const lookup = pipeline.find(stage => stage.$lookup).$lookup;
-  assert.equal(lookup.from, 'salonposts');
-  assert.deepEqual(lookup.let, { salonId: '$salonId', serviceId: '$serviceId' });
-  assert.deepEqual(lookup.pipeline[0].$match, {
-    $expr: { $and: [{ $eq: ['$salonId', '$$salonId'] }, { $eq: ['$serviceId', '$$serviceId'] }] },
+  // 按动态上的推广分类筛选，不再看关联套餐的标签。
+  assert.deepEqual(pipeline[0], { $match: {
+    promotionCategoryId: 'women-cut',
     reviewStatus: 'approved',
     'imageUrls.0': { $exists: true, $nin: ['', null] },
-  });
-  assert.deepEqual(lookup.pipeline[1].$project.imageUrl, { $arrayElemAt: ['$imageUrls', 0] });
+  } });
+  assert.ok(!JSON.stringify(pipeline).includes('tagIds'));
+  // 只留在线店铺的动态，取第一张图。
+  const lookup = pipeline.find(stage => stage.$lookup).$lookup;
+  assert.equal(lookup.from, 'salons');
+  assert.deepEqual(lookup.pipeline[0].$match, { $expr: { $eq: ['$id', '$$salonId'] }, publishStatus: 'online' });
+  assert.deepEqual(pipeline.find(stage => stage.$project).$project.imageUrl, { $arrayElemAt: ['$imageUrls', 0] });
   // 默认按动态发布时间从新到旧，分页在数据库里做。
-  assert.deepEqual(pipeline.find(stage => stage.$sort), { $sort: { 'post.createdAt': -1, 'post._id': -1 } });
+  assert.deepEqual(pipeline.find(stage => stage.$sort), { $sort: { createdAt: -1, _id: -1 } });
   assert.ok(!pipeline.some(stage => stage.$set));
   const facet = pipeline.at(-1).$facet;
   assert.deepEqual(facet.items.slice(0, 2), [{ $skip: 30 }, { $limit: 30 }]);
@@ -54,10 +52,10 @@ test('category posts come from approved posts with images whose service belongs 
     categoryId: 'color', sort: 'distance', userLocation: { latitude: 39.9, longitude: 116.4 }, pagination,
   }, { models: nearby, publicImageUrl: value => value });
   assert.deepEqual(empty, { images: [], total: 0 });
-  assert.deepEqual(nearby.pipelines[0][0].$match.services, { $elemMatch: { tagIds: 'color' } });
+  assert.equal(nearby.pipelines[0][0].$match.promotionCategoryId, 'color');
   assert.ok(nearby.pipelines[0].some(stage => stage.$set && stage.$set.distanceKm));
   assert.deepEqual(nearby.pipelines[0].find(stage => stage.$sort), {
-    $sort: { distanceKm: 1, 'post.createdAt': -1, 'post._id': -1 },
+    $sort: { distanceKm: 1, createdAt: -1, _id: -1 },
   });
 
   // 不存在的分类不查询。

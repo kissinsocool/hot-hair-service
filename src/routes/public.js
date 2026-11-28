@@ -100,7 +100,7 @@ module.exports = (app, ctx) => {
   });
 
   // 小程序「按分类查找」：该分类下店铺动态的图片（每条动态第一张），点击进入动态详情。
-  // 动态按关联套餐的标签归类，规则见 services/category-posts.js。
+  // 动态按商家发布时选的推广分类归类，规则见 services/category-posts.js。
   app.get('/api/salons/category-posts', ...rateLimits.publicRead, async (req, res) => {
     const { category } = req.query;
     if (typeof category !== 'string' || !Object.hasOwn(PROMOTION_CATEGORY_TAG_IDS, category)) {

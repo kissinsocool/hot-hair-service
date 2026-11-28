@@ -3,6 +3,7 @@ const bookingService = require('../services/booking');
 const bookingMessages = require('../services/booking-messages');
 const salonService = require('../services/salon');
 const { bookingEvent, recordAnalyticsEvent } = require('../services/analytics');
+const { promotionCategoryForPost } = require('../services/salon-posts');
 const {
   bookingDayRange,
   generateBookingId,
@@ -435,6 +436,7 @@ module.exports = (app, ctx) => {
       content: parsed.value.content,
       serviceId: service?.id || '',
       serviceName: service?.name || '',
+      promotionCategoryId: promotionCategoryForPost(parsed.value.promotionCategoryId, service),
       imageUrls: parsed.value.imageUrls,
       reviewStatus: 'pending',
     });

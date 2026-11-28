@@ -1,4 +1,8 @@
-const { buildSalonImageList, normalizeSalonTags, salonCoverImageUrl, servicePayload } = require('./salon');
+const {
+  buildSalonImageList, normalizeSalonTags, resolveServiceTagIds, salonCoverImageUrl, servicePayload,
+} = require('./salon');
+const { isPromotionCategoryId } = require('./promotion-categories');
+const { servicePromotionCategory } = require('./recommended-services');
 
 const MAX_CONTENT_LENGTH = 500;
 const MAX_IMAGE_COUNT = 9;
@@ -28,7 +32,22 @@ const validatePostInput = (payload = {}) => {
   if (imageUrls.some(url => url.length > MAX_IMAGE_URL_LENGTH || !/^https:\/\//i.test(url))) {
     return { error: '动态图片地址无效' };
   }
-  return { value: { authorType, authorStaffId, content, imageUrls, serviceId } };
+  // 推广分类：新版商家端必传。旧版商家端没有这个字段（undefined / null），返回 null，
+  // 发布时由 promotionCategoryForPost 按关联套餐的标签推算。传了但不是有效分类（包括空字符串）则拒绝。
+  const rawPromotionCategoryId = payload.promotionCategoryId;
+  if (rawPromotionCategoryId != null && !isPromotionCategoryId(rawPromotionCategoryId)) {
+    return { error: '请选择推广分类' };
+  }
+  const promotionCategoryId = rawPromotionCategoryId ?? null;
+  return { value: { authorType, authorStaffId, content, imageUrls, serviceId, promotionCategoryId } };
+};
+
+// 保存到动态上的推广分类：商家选了就用商家选的；旧版商家端没传时，按关联套餐的标签推算
+// （与字段上线前「按分类查找」的规则一致，一个套餐属于多个分类时按 servicePromotionCategory 的优先级取一个），
+// 没有关联套餐则不属于任何分类。
+const promotionCategoryForPost = (promotionCategoryId, service) => {
+  if (promotionCategoryId != null) return promotionCategoryId;
+  return service ? servicePromotionCategory(resolveServiceTagIds(service)) : '';
 };
 
 // 店铺官方投稿的投稿人信息：与理发师投稿一样，保存发布时的名称和头像（店铺封面的原始地址）。
@@ -54,6 +73,7 @@ const postPayload = (post, publicImageUrl = value => value) => ({
   content: post.content,
   serviceId: post.serviceId || '',
   serviceName: post.serviceName || '',
+  promotionCategoryId: post.promotionCategoryId || '',
   imageUrls: (post.imageUrls || []).map(publicImageUrl).filter(Boolean),
   reviewStatus: post.reviewStatus || 'pending',
   reviewedAt: post.reviewedAt,
@@ -81,6 +101,7 @@ module.exports = {
   postAuthorType,
   postPayload,
   postWithSalonPayload,
+  promotionCategoryForPost,
   salonAuthorFields,
   validatePostInput,
 };

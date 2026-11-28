@@ -3,6 +3,7 @@ const {
   salonCoverImageUrl, servicePayload,
 } = require('./salon');
 const { userIdAliases } = require('./auth');
+const { PROMOTION_CATEGORY_TAG_IDS } = require('./promotion-categories');
 
 // 小程序首页推荐（「你可能喜欢」）：附近店铺开了推广、且推广已审核通过的套餐。
 // 规则与响应见 docs/home-recommended-services.md。
@@ -17,15 +18,7 @@ const MAX_VIEWED_SALON_IDS = 20;
 // 坐标取到小数点后 3 位（约 100 米）：这一格内的用户共用同一份附近店铺。
 const LOCATION_DECIMALS = 3;
 
-// 分类与套餐标签的对应，「按分类查找」和首页推荐共用。
-const PROMOTION_CATEGORY_TAG_IDS = Object.freeze({
-  'men-cut': 'men',
-  'women-cut': 'women',
-  color: 'color',
-  curly: 'curly',
-  straight: 'straight',
-  care: 'care',
-});
+// 分类与套餐标签的对应定义在 promotion-categories.js；首页推荐、旧作品补分类按这里的规则判断套餐属于哪个分类。
 const WOMEN_CUT_REQUIRED_TAG_IDS = Object.freeze(['wash_cut_blow', 'women']);
 const WOMEN_CUT_EXCLUDED_TAG_IDS = Object.freeze(['perm', 'color', 'curly', 'straight']);
 

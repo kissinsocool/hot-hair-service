@@ -1,8 +1,8 @@
-const { promotionCategoryTagFilter } = require('./recommended-services');
+const { isPromotionCategoryId } = require('./promotion-categories');
 
-// 小程序「按分类查找」的图片：店铺发布的动态。一条动态属于哪个分类，由它关联的套餐的标签决定；
-// 没有关联套餐、关联的套餐已下架、没有图片或未审核通过的动态不出现。每条动态只出第一张图。
-// 规则与响应见 docs/category-posts.md。
+// 小程序「按分类查找」的图片：店铺发布的动态。一条动态属于哪个分类，由商家发布时选的推广分类
+// （SalonPost.promotionCategoryId）决定，不再看关联套餐的标签。店铺不在线、没有图片或未审核通过的动态不出现。
+// 每条动态只出第一张图。规则与响应见 docs/category-posts.md。
 
 // 店铺到用户的球面距离（公里）；店铺没有坐标时排在最后。
 const distanceKmStage = (userLocation) => {
@@ -21,34 +21,39 @@ const distanceKmStage = (userLocation) => {
   ] } } };
 };
 
-// 从在线店铺里属于该分类的套餐出发，取关联这些套餐的已审核、有图片的动态。
+// 从该分类下已审核、有图片的动态出发（索引 promotionCategoryId + reviewStatus + createdAt），只留在线店铺的动态。
 // sort 为 'distance' 时按店铺距离由近到远（需要 userLocation），否则按动态发布时间从新到旧。
-const categoryPostsPipeline = ({ tagFilter, sort, userLocation, pagination, postsCollection }) => [
-  { $match: { publishStatus: 'online', services: { $elemMatch: { tagIds: tagFilter } } } },
-  { $unwind: '$services' },
-  { $match: { 'services.tagIds': tagFilter } },
-  { $project: { _id: 0, salonId: '$id', serviceId: '$services.id', location: 1, geoLocation: 1 } },
-  { $lookup: {
-    from: postsCollection,
-    let: { salonId: '$salonId', serviceId: '$serviceId' },
-    pipeline: [
-      { $match: {
-        $expr: { $and: [{ $eq: ['$salonId', '$$salonId'] }, { $eq: ['$serviceId', '$$serviceId'] }] },
-        reviewStatus: 'approved',
-        'imageUrls.0': { $exists: true, $nin: ['', null] },
-      } },
-      { $project: { id: 1, imageUrl: { $arrayElemAt: ['$imageUrls', 0] }, createdAt: 1 } },
-    ],
-    as: 'post',
+const categoryPostsPipeline = ({ categoryId, sort, userLocation, pagination, salonsCollection }) => [
+  { $match: {
+    promotionCategoryId: categoryId,
+    reviewStatus: 'approved',
+    'imageUrls.0': { $exists: true, $nin: ['', null] },
   } },
-  { $unwind: '$post' },
+  { $lookup: {
+    from: salonsCollection,
+    let: { salonId: '$salonId' },
+    pipeline: [
+      { $match: { $expr: { $eq: ['$id', '$$salonId'] }, publishStatus: 'online' } },
+      { $project: { _id: 0, location: 1, geoLocation: 1 } },
+    ],
+    as: 'salon',
+  } },
+  { $unwind: '$salon' },
+  { $project: {
+    salonId: 1,
+    postId: '$id',
+    imageUrl: { $arrayElemAt: ['$imageUrls', 0] },
+    createdAt: 1,
+    location: '$salon.location',
+    geoLocation: '$salon.geoLocation',
+  } },
   ...(sort === 'distance' ? [distanceKmStage(userLocation)] : []),
-  { $sort: { ...(sort === 'distance' ? { distanceKm: 1 } : {}), 'post.createdAt': -1, 'post._id': -1 } },
+  { $sort: { ...(sort === 'distance' ? { distanceKm: 1 } : {}), createdAt: -1, _id: -1 } },
   { $facet: {
     items: [
       { $skip: pagination.skip },
       { $limit: pagination.limit },
-      { $project: { salonId: 1, postId: '$post.id', imageUrl: '$post.imageUrl' } },
+      { $project: { _id: 0, salonId: 1, postId: 1, imageUrl: 1 } },
     ],
     total: [{ $count: 'count' }],
   } },
@@ -59,11 +64,10 @@ async function readCategoryPosts({ categoryId, sort, userLocation, pagination },
   models = require('../models'),
   publicImageUrl = require('../images').publicImageUrl,
 } = {}) {
-  const tagFilter = promotionCategoryTagFilter(categoryId);
-  if (!tagFilter) return null;
+  if (!isPromotionCategoryId(categoryId)) return null;
   const { Salon, SalonPost } = models;
-  const [page] = await Salon.aggregate(categoryPostsPipeline({
-    tagFilter, sort, userLocation, pagination, postsCollection: SalonPost.collection.name,
+  const [page] = await SalonPost.aggregate(categoryPostsPipeline({
+    categoryId, sort, userLocation, pagination, salonsCollection: Salon.collection.name,
   })).option({ maxTimeMS: 5000, allowDiskUse: true });
   return {
     images: (page?.items || []).map(item => ({

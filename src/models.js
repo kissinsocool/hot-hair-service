@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const { BUSINESS_DISTRICTS } = require('./services/business-districts');
 const { DEMO_USER_ID } = require('./config');
 const { AFTER_SALES_POLICY_IDS, STAFF_ROLE_IDS } = require('./services/salon');
+const { PROMOTION_CATEGORY_IDS } = require('./services/promotion-categories');
 
 const integer = (minimum = 0) => ({
   type: Number,
@@ -418,6 +419,10 @@ const salonPostSchema = new mongoose.Schema({
   content: { type: String, required: true },
   serviceId: { type: String, default: '' },
   serviceName: { type: String, default: '' },
+  // 推广分类：决定作品出现在小程序首页「按分类查找」的哪个分类，空字符串表示不属于任何分类。
+  // 新版商家端发布时必选；旧版商家端不传，发布时按关联套餐的标签推算（services/salon-posts.js）。
+  // 字段上线前的动态由 scripts/migrate-post-promotion-categories.js 补上。
+  promotionCategoryId: { type: String, enum: ['', ...PROMOTION_CATEGORY_IDS], default: '' },
   imageUrls: { type: [String], default: [] },
   reviewStatus: {
     type: String,
@@ -430,6 +435,8 @@ const salonPostSchema = new mongoose.Schema({
 
 salonPostSchema.index({ salonId: 1, createdAt: -1, _id: -1 });
 salonPostSchema.index({ reviewStatus: 1, createdAt: -1 });
+// 「按分类查找」：某个分类下已审核的动态，按发布时间从新到旧（services/category-posts.js）。
+salonPostSchema.index({ promotionCategoryId: 1, reviewStatus: 1, createdAt: -1, _id: -1 });
 
 const merchantUserSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },

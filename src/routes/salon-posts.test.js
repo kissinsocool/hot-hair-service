@@ -3,7 +3,7 @@ const test = require('node:test');
 const registerMerchantRoutes = require('./merchant');
 const registerPublicRoutes = require('./public');
 const registerAdminRoutes = require('./admin');
-const { postPayload, salonAuthorFields, validatePostInput } = require('../services/salon-posts');
+const { postPayload, promotionCategoryForPost, salonAuthorFields, validatePostInput } = require('../services/salon-posts');
 const { SalonPost: SalonPostModel } = require('../models');
 
 const response = () => ({
@@ -32,8 +32,30 @@ test('salon post input keeps the actual merchant contract bounded', () => {
     content: '新发型',
     imageUrls: ['https://example.com/1.jpg'],
     serviceId: 'service-1',
+    promotionCategoryId: null,
   });
   assert.equal(validatePostInput({ authorStaffId: 'staff-1', content: '旧客户端', imageUrls: [] }).value.serviceId, '');
+});
+
+test('salon post input accepts only known promotion categories and keeps legacy requests without one', () => {
+  const base = { authorStaffId: 'staff-1', content: '新发型', imageUrls: [] };
+  assert.equal(validatePostInput({ ...base, promotionCategoryId: 'curly' }).value.promotionCategoryId, 'curly');
+  // 旧版商家端不传：返回 null，发布时按关联套餐推算。
+  assert.equal(validatePostInput(base).value.promotionCategoryId, null);
+  assert.equal(validatePostInput({ ...base, promotionCategoryId: null }).value.promotionCategoryId, null);
+  for (const invalid of ['', 'perm', '__proto__', 'constructor', ['color'], 1]) {
+    assert.equal(validatePostInput({ ...base, promotionCategoryId: invalid }).error, '请选择推广分类');
+  }
+});
+
+test('post promotion category is the merchant choice, or derived from the related service for legacy clients', () => {
+  assert.equal(promotionCategoryForPost('care', { tagIds: ['color'] }), 'care');
+  assert.equal(promotionCategoryForPost('men-cut', null), 'men-cut');
+  // 旧版商家端：按关联套餐标签推算，与字段上线前的分类规则一致。
+  assert.equal(promotionCategoryForPost(null, { tagIds: ['wash_cut_blow', 'women'] }), 'women-cut');
+  assert.equal(promotionCategoryForPost(null, { tagIds: ['men', 'color'] }), 'color');
+  assert.equal(promotionCategoryForPost(null, { tagIds: ['wash_blow'] }), '');
+  assert.equal(promotionCategoryForPost(null, null), '');
 });
 
 test('merchant can publish only as a staff member from the same salon', async () => {
@@ -48,7 +70,7 @@ test('merchant can publish only as a staff member from the same salon', async ()
     normalizePagination: () => ({ page: 1, limit: 20, skip: 0 }),
     Salon: {
       findOne: () => ({ select: () => ({ lean: async () => ({
-        id: 'salon-1', staffIds: ['staff-1'], services: [{ id: 'service-1', name: '剪发套餐' }],
+        id: 'salon-1', staffIds: ['staff-1'], services: [{ id: 'service-1', name: '剪发套餐', tagIds: ['curly'] }],
       }) }) }),
     },
     getStaffById: id => ({ lean: async () => ({
@@ -73,9 +95,11 @@ test('merchant can publish only as a staff member from the same salon', async ()
   const res = response();
   await routes.get('post:/api/merchant/salon-posts')({
     merchantUser: { salonId: 'salon-1' },
-    body: { authorStaffId: 'staff-1', content: '今日作品', imageUrls: [], serviceId: 'service-1' },
+    body: { authorStaffId: 'staff-1', content: '今日作品', imageUrls: [], serviceId: 'service-1', promotionCategoryId: 'color' },
   }, res);
   assert.equal(res.statusCode, 201);
+  // 商家选的推广分类优先，不看关联套餐的标签（curly）。
+  assert.equal(created[0].promotionCategoryId, 'color');
   assert.equal(created[0].authorName, '小林');
   assert.equal(created[0].salonId, 'salon-1');
   assert.equal(created[0].reviewStatus, 'pending');
@@ -95,15 +119,31 @@ test('merchant can publish only as a staff member from the same salon', async ()
   }, legacy);
   assert.equal(legacy.statusCode, 201);
   assert.equal(created[1].serviceId, '');
+  assert.equal(created[1].promotionCategoryId, '');
   // 旧版商家端不带 authorType：仍按理发师投稿处理。
   assert.equal(created[1].authorType, 'staff');
   assert.equal(created[1].authorStaffId, 'staff-1');
+  // 旧版商家端关联了套餐但不带推广分类：按套餐标签推算。
+  const legacyWithService = response();
+  await routes.get('post:/api/merchant/salon-posts')({
+    merchantUser: { salonId: 'salon-1' },
+    body: { authorStaffId: 'staff-1', content: '旧客户端卷发', imageUrls: [], serviceId: 'service-1' },
+  }, legacyWithService);
+  assert.equal(legacyWithService.statusCode, 201);
+  assert.equal(created[2].promotionCategoryId, 'curly');
+  const badCategory = response();
+  await routes.get('post:/api/merchant/salon-posts')({
+    merchantUser: { salonId: 'salon-1' },
+    body: { authorStaffId: 'staff-1', content: '今日作品', imageUrls: [], promotionCategoryId: 'perm' },
+  }, badCategory);
+  assert.equal(badCategory.statusCode, 400);
+  assert.equal(created.length, 3);
 });
 
 test('salon post input accepts the salon itself as author and ignores any staff id', () => {
   assert.deepEqual(validatePostInput({
     authorType: 'salon', authorStaffId: 'staff-1', content: '店铺活动', imageUrls: [],
-  }).value, { authorType: 'salon', authorStaffId: '', content: '店铺活动', imageUrls: [], serviceId: '' });
+  }).value, { authorType: 'salon', authorStaffId: '', content: '店铺活动', imageUrls: [], serviceId: '', promotionCategoryId: null });
   assert.equal(validatePostInput({ authorType: 'salon', content: '店铺活动', imageUrls: [] }).error, undefined);
   assert.equal(validatePostInput({ authorType: 'staff', content: '动态', imageUrls: [] }).error, '请选择投稿人');
   assert.equal(validatePostInput({ authorType: 'admin', authorStaffId: 'staff-1', content: '动态', imageUrls: [] }).error, '投稿人类型无效');
@@ -145,9 +185,15 @@ test('merchant can publish as the salon itself, even with no staff', async () =>
   const res = response();
   await routes.get('post:/api/merchant/salon-posts')({
     merchantUser: { salonId: 'salon-1' },
-    body: { authorType: 'salon', authorStaffId: 'someone-else', content: '周年店庆', imageUrls: [], serviceId: 'service-1' },
+    body: {
+      authorType: 'salon', authorStaffId: 'someone-else', content: '周年店庆', imageUrls: [], serviceId: 'service-1',
+      promotionCategoryId: 'women-cut',
+    },
   }, res);
   assert.equal(res.statusCode, 201);
+  // 推广分类经真实 Schema 校验后保存，并在响应里返回给商家端。
+  assert.equal(created[0].promotionCategoryId, 'women-cut');
+  assert.equal(res.body.promotionCategoryId, 'women-cut');
   assert.equal(created[0].authorType, 'salon');
   assert.equal(created[0].authorStaffId, '');
   assert.equal(created[0].authorName, '热辣发廊');

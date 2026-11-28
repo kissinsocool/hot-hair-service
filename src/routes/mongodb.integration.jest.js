@@ -195,6 +195,59 @@ describeWithMongo('three-client booking contracts against a real replica set', (
     }
   });
 
+  test('category posts follow the merchant-chosen promotion category, with legacy merchant posts derived from service tags', async () => {
+    const { SalonPost } = models;
+    const offlineSalonId = 'salon-offline-category';
+    await Salon.create({ id: offlineSalonId, name: 'Offline', publishStatus: 'offline', staffIds: [], services: [] });
+    try {
+      const image = 'https://example.com/category-post.jpg';
+      // 新版商家端：选了推广分类，以它为准（关联套餐 service-1 的标签是洗剪吹，不属于染发）。
+      const chosen = await request('merchant', '/merchant/salon-posts',
+        { authorType: 'salon', content: '染发作品', imageUrls: [image], serviceId: 'service-1', promotionCategoryId: 'color' }, 'POST');
+      expect(chosen.status).toBe(201);
+      expect(chosen.body.promotionCategoryId).toBe('color');
+      // 当前线上的旧版商家端请求结构：不带 promotionCategoryId。
+      const legacy = await request('merchant', '/merchant/salon-posts',
+        { authorType: 'staff', authorStaffId: 'staff-1', content: '旧客户端作品', imageUrls: [image], serviceId: 'service-1' }, 'POST');
+      expect(legacy.status).toBe(201);
+      expect(legacy.body.promotionCategoryId).toBe('');
+      expect((await request('merchant', '/merchant/salon-posts',
+        { authorType: 'salon', content: '作品', imageUrls: [], promotionCategoryId: '' }, 'POST')).status).toBe(400);
+      // 字段上线前的老动态（没有这个字段）和下线店铺的动态。
+      await SalonPost.collection.insertMany([
+        { id: 'legacy-no-field', salonId: 'salon-1', authorType: 'salon', authorName: 'Salon', content: '老动态',
+          serviceId: 'service-1', imageUrls: [image], reviewStatus: 'approved', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'offline-color', salonId: offlineSalonId, authorType: 'salon', authorName: 'Offline', content: '下线店铺',
+          promotionCategoryId: 'color', imageUrls: [image], reviewStatus: 'approved', createdAt: new Date(), updatedAt: new Date() },
+      ]);
+      const colorPosts = async () => request('client', '/salons/category-posts?category=color&page=1&limit=30');
+      // 未审核的不出现。
+      expect((await colorPosts()).body).toEqual([]);
+      await SalonPost.updateMany({ id: { $in: [chosen.body.id, legacy.body.id] } }, { $set: { reviewStatus: 'approved' } });
+      // latest 排序有 1 分钟缓存：按距离排序不缓存，用它检查最新数据。
+      const nearby = await request('client', '/salons/category-posts?category=color&sort=distance&latitude=39.9&longitude=116.4');
+      expect(nearby.status).toBe(200);
+      expect(nearby.body.map(item => item.postId)).toEqual([chosen.body.id]);
+      expect(nearby.body[0]).toMatchObject({ id: chosen.body.id, salonId: 'salon-1', imageUrl: expect.stringContaining('category-post') });
+      const womenCut = await request('client', '/salons/category-posts?category=women-cut&sort=distance&latitude=39.9&longitude=116.4');
+      expect(womenCut.body).toEqual([]);
+      // 补数据脚本：老动态按关联套餐标签推算（洗剪吹不属于任何分类），不改已有分类。
+      const { migratePostPromotionCategories } = require('../../scripts/migrate-post-promotion-categories');
+      expect(await migratePostPromotionCategories()).toEqual({ '(none)': 1 });
+      expect((await SalonPost.findOne({ id: 'legacy-no-field' }).lean()).promotionCategoryId).toBe('');
+      expect((await SalonPost.findOne({ id: chosen.body.id }).lean()).promotionCategoryId).toBe('color');
+      // 分类查询走新索引。
+      const plan = await SalonPost.find({ promotionCategoryId: 'color', reviewStatus: 'approved' })
+        .sort({ createdAt: -1, _id: -1 }).explain('queryPlanner');
+      expect(JSON.stringify(plan.queryPlanner.winningPlan)).toContain('promotionCategoryId_1_reviewStatus_1_createdAt_-1__id_-1');
+    } finally {
+      await Promise.all([
+        models.SalonPost.deleteMany({}),
+        Salon.deleteOne({ id: offlineSalonId }),
+      ]);
+    }
+  });
+
   test('analytics event retention uses a 180-day TTL index', async () => {
     const indexes = await models.AnalyticsEvent.collection.indexes();
     expect(indexes).toContainEqual(expect.objectContaining({
